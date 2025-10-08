@@ -1,0 +1,94 @@
+---
+alwaysApply: true
+---
+
+# ======================================================================
+# Cursor Context Rules for DnD World & Campaign Manager Project
+# ======================================================================
+
+rules:
+
+  - name: "Always Request Clarification If Unclear"
+    description: >
+      If a user instruction is ambiguous or has multiple valid interpretations,
+      always ask clarifying questions before writing or editing code.
+      Never assume user intent or invent behavior. Clarify first, then act.
+
+  - name: "Follow the Established Data Model & Conventions"
+    description: >
+      Use the established ID pattern: type_prefix_uniqueid_slug
+      (e.g. person_03a2a911_beowulf). Follow existing TypeScript interfaces and
+      JSON schema fields: id, name, type, description, parent_id, images,
+      tags, created, updated, deleted. Do not add new top-level fields without
+      asking for confirmation.
+
+  - name: "Keep Changes Modular and Minimal"
+    description: >
+      Each change must represent a clear, logical unit of work. Avoid large
+      refactors or unrelated edits unless specifically requested. Always explain
+      what will change before performing a major code update.
+
+  - name: "Maintain Code Quality and Style Consistency"
+    description: >
+      Follow these standards:
+        • TypeScript for all code.
+        • React functional components with hooks for UI.
+        • TailwindCSS for styling.
+        • PascalCase for components, camelCase for functions and variables.
+        • kebab-case for file and folder names.
+        • 2-space indentation.
+        • Explicit return types for exported functions.
+        • No unused imports or commented-out code.
+
+  - name: "Editor and Form UX Rules"
+    description: >
+      All editing views must support inline linking (e.g. [[EntityName]]) to
+      existing objects. Hovering over links shows a tooltip preview with name,
+      short description, and optional image. Forms must clearly show required
+      fields, indicate unsaved changes, and auto-save smoothly without lag.
+
+  - name: "Data Integrity Standards"
+    description: >
+      All entities require unique IDs following the type_prefix_slug pattern.
+      Relationships must reference IDs, not names. Use ISO 8601 timestamps for
+      created, updated, and deleted. Only soft-delete entities unless explicit
+      permanent deletion is requested.
+
+  - name: "Performance and Efficiency"
+    description: >
+      Maintain a fast and responsive UI with minimal lag. Implement keyboard
+      shortcuts for key actions (new entity, search, save, link). Support quick
+      linking or creation via inline syntax (e.g. [[NewName]]).
+
+  - name: "No Guessing or Silent Behavior"
+    description: >
+      Do not invent new behaviors, refactors, or workflows without user
+      direction. When missing details, ask for confirmation rather than making
+      assumptions.
+
+  - name: "Preserve File Structure"
+    description: >
+      Follow the agreed structure:
+        src/
+          components/
+          data/
+          utils/
+          types/
+          hooks/
+        tests/
+        public/
+      Place new files logically within this hierarchy. Do not reorganize or
+      rename core folders without approval.
+
+  - name: "Documentation and Clarity"
+    description: >
+      Every exported module, function, and interface must include clear JSDoc
+      or comments. Document the purpose and reasoning for non-trivial logic,
+      particularly for performance or data model decisions. Keep the codebase
+      readable for human review.
+
+  - name: "Respect Project Philosophy"
+    description: >
+      Prioritize flexibility, simplicity, and clarity over automation or
+      over-engineering. The AI and IDE should collaborate with the user, not
+      guess what the user wants. The goal is transparency, speed, and control.
