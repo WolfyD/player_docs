@@ -1,4 +1,4 @@
-## DnD World & Campaign Manager — Project Context
+## PlayerDocs — Project Context
 
 ### Vision
 Build a fast, flexible desktop tool for TTRPG worldbuilding and campaign management. Users create and organize interconnected entries (people, cities, factions, myths, places, etc.) in an entirely user-defined hierarchy, link any text to one or more entries, and navigate/edit with a fluid, keyboard-centric UI.
@@ -32,13 +32,15 @@ Build a fast, flexible desktop tool for TTRPG worldbuilding and campaign managem
 - The default image is shown in hover previews and as the main image in the object view.
 
 ### Storage & Project Layout
-- **Project folder**: User-chosen directory at first run or install. The app prompts to select a GameDocs folder and populates it.
+- **Project folder**: User-chosen directory at first run or install. The app prompts to select a PlayerDocs folder and populates it.
   - Suggested layout:
-    - `world.db` (SQLite database)
-    - `images/` (originals; may be grouped by object or flat)
-    - `thumbs/` (generated thumbnails)
-    - `backups/` (periodic DB backups)
-    - `export/` (optional JSON/zip exports)
+    - `player_docs.db` (single SQLite database at project root)
+    - `games/`
+      - `<campaign>/`
+        - `images/` (originals)
+        - `thumbs/` (350px thumbnails)
+    - `backups/` (global backups)
+    - `export/` (global exports)
 
 ### Database Schema (SQLite, soft-delete on all tables)
 All tables include `created_at`, `updated_at`, and `deleted_at` (NULL = active). Times are ISO 8601 UTC strings.
