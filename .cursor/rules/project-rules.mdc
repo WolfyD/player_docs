@@ -92,3 +92,10 @@ rules:
       Prioritize flexibility, simplicity, and clarity over automation or
       over-engineering. The AI and IDE should collaborate with the user, not
       guess what the user wants. The goal is transparency, speed, and control.
+
+  - name: "Response Verbosity"
+    description: >
+      Provide clear, thorough answers by default. Favor short responses for
+      trivial questions, but include detailed reasoning, trade‑offs, and
+      actionable steps for non‑trivial tasks unless the user explicitly asks
+      for brevity.

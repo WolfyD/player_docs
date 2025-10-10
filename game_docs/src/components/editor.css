@@ -142,7 +142,7 @@
 .ctx-menu-item { padding: 6px 10px; cursor: pointer; }
 .ctx-menu-item.muted { color: #777; cursor: default; }
 .ctx-menu-scroll { max-height: 200px; overflow: auto; }
-.ctx-menu-item:hover { background: #666; }
+.ctx-menu-item:hover, .tag-menu-item:hover { background: #666; }
 
 .tag-menu {
   position: fixed;
@@ -265,4 +265,9 @@
 .w-160 { width: 160px; }
 .w-260 { width: 260px; }
 .text-tomato { color: tomato; }
+
+/* Misc modal list */
+.misc-list { display: flex; flex-direction: column; gap: 6px; }
+.misc-item { padding: 6px 10px; cursor: pointer; border: 1px solid #333; border-radius: 6px; background: #202020; }
+.misc-item:hover { background: #262626; }
 

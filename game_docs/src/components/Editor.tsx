@@ -76,6 +76,7 @@ export const Editor: React.FC = () => {
   const [picName, setPicName] = useState('')
   const [picIsDefault, setPicIsDefault] = useState(true)
   const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
+  const [showMisc, setShowMisc] = useState(false)
   const [showEditObject, setShowEditObject] = useState(false)
   const [editName, setEditName] = useState('')
   const [ownerTags, setOwnerTags] = useState<Array<{ id: string }>>([])
@@ -684,10 +685,12 @@ span[data-tag] {
               }
               return { visible: true, x, y, items: [
                 { id: '__SETTINGS__', name: 'Settings', path: '' },
-                { id: '__SEPARATOR__', name: '', path: '' },
+                { id: '__SEPARATOR_TOP__', name: '', path: '' },
                 { id: '__ADDPICTURE__', name: 'Add picture', path: '' },
                 { id: '__EDITOBJECT__', name: 'Edit object', path: '' },
-                { id: '__SEPARATOR__', name: '', path: '' },
+                { id: '__SEPARATOR_MIDDLE__', name: '', path: '' },
+                { id: '__MISC_STUFF__', name: 'Misc stuff', path: '' },
+                { id: '__SEPARATOR_BOTTOM__', name: '', path: '' },
                 { id: '__DELETE__', name: 'Delete', path: '' },
             ], hoverPreview: null, source: 'dropdown' }
             })
@@ -915,46 +918,14 @@ span[data-tag] {
               ref={tagMenuRef}
             >
               <div className="tag-menu-list">
-                {tagMenu.items.map(t => (
+                {tagMenu.items.map(t => {
+                  if (/^__SEPARATOR/.test(t.id)) {
+                    return <div key={t.id} className="separator" role="separator" />
+                  }
+                  return (
                   <div key={t.id} className="tag-menu-item"
-                    onMouseEnter={async () => {
-                      if (t.id === '__DELETE__') return
-                      const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
-                      let imgUrl = (preview as any)?.thumbDataUrl || null
-                      if (!imgUrl) {
-                        const primary = (preview as any)?.imagePath as (string | undefined)
-                        const secondary = (preview as any)?.thumbPath as (string | undefined)
-                        if (primary) {
-                          const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
-                          if (resA?.ok) imgUrl = resA.dataUrl
-                        }
-                        if (!imgUrl && secondary) {
-                          const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
-                          if (resB?.ok) imgUrl = resB.dataUrl
-                        }
-                        if (!imgUrl && (preview as any)?.fileUrl) {
-                          try {
-                            const u = new URL((preview as any).fileUrl)
-                            let p = decodeURIComponent(u.pathname)
-                            if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
-                            const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
-                            if (res2?.ok) imgUrl = res2.dataUrl
-                          } catch {}
-                        }
-                      }
-                      try {
-                        // eslint-disable-next-line no-console
-                        console.log('[HoverPreview:Menu] objectId:', t.id, {
-                          preview,
-                          thumbPath: (preview as any)?.thumbPath,
-                          imagePath: (preview as any)?.imagePath,
-                          fileUrl: (preview as any)?.fileUrl,
-                          imgUrlSample: imgUrl ? (imgUrl as string).slice(0, 64) + '...' : null,
-                        })
-                      } catch {}
-                      if (preview) setTagMenu(m => ({ ...m, hoverPreview: { id: t.id, name: t.name, snippet: preview.snippet || '', imageUrl: imgUrl } }))
-                    }}
                     onClick={async () => {
+                      if (/^__SEPARATOR/.test(t.id)) return
                       if (t.id === '__DELETE__') {
                         const ok = confirm(`Delete '${activeName}' and all descendants?`)
                         if (!ok) { setTagMenu(m => ({ ...m, visible: false, hoverPreview: null })); return }
@@ -993,10 +964,15 @@ span[data-tag] {
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         return
                       }
+              if (t.id === '__MISC_STUFF__') {
+                setShowMisc(true)
+                setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                return
+              }
                       selectObject(t.id, t.name); setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                     }}
-                  >{t.name}</div>
-                ))}
+                  >{t.name}</div>)
+                })}
               </div>
               {tagMenu.hoverPreview && (
                 <div className="preview-card">
@@ -1009,6 +985,24 @@ span[data-tag] {
                   )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Misc Stuff modal: compact context-like options */}
+          {showMisc && (
+            <div className="modal-overlay" onClick={() => setShowMisc(false)}>
+              <div className="dialog-card w-360" onClick={e => e.stopPropagation()}>
+                <h3 className="mt-0">Misc</h3>
+                <div className="misc-list">
+                  <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
+                  <div className="misc-item" onClick={() => { /* TODO: Export to HTML */ }}>Export to HTML</div>
+                  <div className="misc-item" onClick={() => { /* TODO: Generate Map */ }}>Generate map</div>
+                  <div className="misc-item" onClick={() => { /* TODO: Create Backup */ }}>Create backup</div>
+                </div>
+                <div className="actions mt-12">
+                  <button onClick={() => setShowMisc(false)}>Close</button>
+                </div>
+              </div>
             </div>
           )}
 
