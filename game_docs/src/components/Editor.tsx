@@ -591,7 +591,6 @@ span[data-tag] {
   }
 
   function htmlToDesc(container: HTMLElement): string {
-    console.log('htmlToDesc', container)
     // Convert spans back to token syntax and preserve line breaks
     const clone = container.cloneNode(true) as HTMLElement
     clone.querySelectorAll('span[data-tag]').forEach((el) => {
@@ -683,10 +682,12 @@ span[data-tag] {
                 return { ...prev, visible: false, hoverPreview: null }
               }
               return { visible: true, x, y, items: [
-              { id: '__DELETE__', name: 'Delete…', path: '' },
-              { id: '__ADDPICTURE__', name: 'Add picture…', path: '' },
-              { id: '__SETTINGS__', name: 'Settings…', path: '' },
-              { id: '__EDITOBJECT__', name: 'Edit object…', path: '' },
+                { id: '__SETTINGS__', name: 'Settings', path: '' },
+                { id: '__SEPARATOR__', name: '', path: '' },
+                { id: '__ADDPICTURE__', name: 'Add picture', path: '' },
+                { id: '__EDITOBJECT__', name: 'Edit object', path: '' },
+                { id: '__SEPARATOR__', name: '', path: '' },
+                { id: '__DELETE__', name: 'Delete', path: '' },
             ], hoverPreview: null, source: 'dropdown' }
             })
           }}
@@ -898,8 +899,9 @@ span[data-tag] {
               }}
               ref={ctxMenuRef}
             >
-              <div style={{ padding: '6px 10px', cursor: 'pointer', fontWeight: 600 }}>Add</div>
-              <div style={{ padding: '6px 10px', cursor: 'pointer' }} onClick={handleAddLinkOpen}>Add link…</div>
+              <div style={{ padding: '2px 10px 0px 10px', color: '#aaa', cursor: 'default', userSelect: 'none', fontWeight: 600 }}>Add</div>
+              <div style={{ borderTop: '1px solid #333', margin: '6px 0' }} />
+              <div style={{ padding: '6px 10px', cursor: 'pointer' }}  onClick={handleAddLinkOpen}>Add link</div>
               <div style={{ padding: '6px 10px', cursor: 'pointer' }}
                 onClick={handleEditOpen}
               >Edit…</div>
