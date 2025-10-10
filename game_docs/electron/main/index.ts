@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, nativeImage } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
@@ -79,6 +79,71 @@ function generateTagId(): string {
     }
     return parts.reverse().join('->')
   }
+
+// Ensure runtime migrations for existing databases
+async function ensureMigrations(db: any) {
+  try {
+    const cols = db.prepare('PRAGMA table_info(link_tags)').all() as Array<{ name: string }>
+    const hasObjectId = cols.some(c => c.name === 'object_id')
+    if (!hasObjectId) {
+      db.prepare('ALTER TABLE link_tags ADD COLUMN object_id TEXT').run()
+    }
+    // Backfill owner object for legacy rows where missing
+    const legacy = db.prepare('SELECT id FROM link_tags WHERE object_id IS NULL AND deleted_at IS NULL').all() as Array<{ id: string }>
+    for (const t of legacy) {
+      const owner = db.prepare('SELECT id FROM objects WHERE deleted_at IS NULL AND description LIKE ? LIMIT 1').get('%|' + t.id + ']%') as { id: string } | undefined
+      if (owner?.id) {
+        db.prepare('UPDATE link_tags SET object_id = ? WHERE id = ?').run(owner.id, t.id)
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+// Cleanup orphaned and floating link data
+function cleanupLinkData(db: any) {
+  // Remove tag_links pointing to missing tags
+  db.prepare('DELETE FROM tag_links WHERE tag_id NOT IN (SELECT id FROM link_tags WHERE deleted_at IS NULL)').run()
+  // Remove tag_links pointing to missing objects
+  db.prepare('DELETE FROM tag_links WHERE object_id NOT IN (SELECT id FROM objects WHERE deleted_at IS NULL)').run()
+  // Remove floating link_tags with no tag_links
+  db.prepare('DELETE FROM link_tags WHERE deleted_at IS NULL AND id NOT IN (SELECT DISTINCT tag_id FROM tag_links)').run()
+  // Remove link_tags whose owner object no longer references the token in its description
+  const tags = db.prepare('SELECT id, object_id FROM link_tags WHERE deleted_at IS NULL').all() as Array<{ id: string; object_id: string | null }>
+  for (const t of tags) {
+    if (!t.object_id) continue
+    const obj = db.prepare('SELECT description FROM objects WHERE id = ? AND deleted_at IS NULL').get(t.object_id) as { description?: string } | undefined
+    const text = (obj?.description || '') as string
+    if (!text.includes(`|${t.id}]`)) {
+      db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(t.id)
+      db.prepare('DELETE FROM link_tags WHERE id = ?').run(t.id)
+    }
+  }
+}
+
+function extractTagIdsFromText(text: string): Set<string> {
+  const set = new Set<string>()
+  const re = /\[\[[^\]|]+\|([^\]]+)\]\]/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    set.add(String(m[1]))
+  }
+  return set
+}
+
+function cleanupTagsForObject(db: any, objectId: string) {
+  const row = db.prepare('SELECT description FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { description?: string } | undefined
+  const text = (row?.description || '') as string
+  const present = extractTagIdsFromText(text)
+  const tags = db.prepare('SELECT id FROM link_tags WHERE object_id = ? AND deleted_at IS NULL').all(objectId) as Array<{ id: string }>
+  for (const t of tags) {
+    if (!present.has(t.id)) {
+      db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(t.id)
+      db.prepare('DELETE FROM link_tags WHERE id = ?').run(t.id)
+    }
+  }
+}
 
 async function createEditorWindow(title: string, routeHash: string) {
   if (editorWin) {
@@ -163,7 +228,9 @@ app.whenReady().then(async () => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
-    const { file } = await initGameDatabase(projectDirCache, schemaSql)
+    const { file, db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
+    db.close()
     return listCampaigns(file)
   })
 
@@ -178,6 +245,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db, file } = await initGameDatabase(projectDirCache, schemaSql, dbName)
+    try { ensureMigrations(db) } catch {}
     const now = new Date().toISOString()
     const id = crypto.randomUUID()
     db.prepare('INSERT INTO games (id, name, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)').run(id, safeName, now, now)
@@ -206,6 +274,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db, file } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
     const row = db.prepare('SELECT id, name FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId)
     db.close()
     if (!row) throw new Error('Campaign not found')
@@ -217,6 +286,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
     let row = db.prepare('SELECT id, name, type FROM objects WHERE game_id = ? AND parent_id IS NULL AND deleted_at IS NULL LIMIT 1').get(gameId)
     if (!row) {
       // Backfill: create a root object for existing campaigns created before root insertion logic
@@ -237,6 +307,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
     let rows: any[]
     if (parentId) {
       rows = db.prepare('SELECT id, name, type FROM objects WHERE game_id = ? AND parent_id = ? AND deleted_at IS NULL ORDER BY name COLLATE NOCASE').all(gameId, parentId)
@@ -247,11 +318,12 @@ app.whenReady().then(async () => {
     return rows as Array<{ id: string; name: string; type: string }>
   })
 
-  ipcMain.handle('gamedocs:create-object-and-link-tag', async (_evt, gameId: string, parentId: string | null, name: string, type: string | null) => {
+  ipcMain.handle('gamedocs:create-object-and-link-tag', async (_evt, gameId: string, parentId: string | null, ownerObjectId: string, name: string, type: string | null) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
 
     const now = new Date().toISOString()
     const objectId = generateObjectId(name)
@@ -260,8 +332,8 @@ app.whenReady().then(async () => {
     ).run(objectId, gameId, name, type || null, parentId, '', now, now)
 
     const tagId = generateTagId()
-    db.prepare('INSERT INTO link_tags (id, game_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)')
-      .run(tagId, gameId, now, now)
+    db.prepare('INSERT INTO link_tags (id, game_id, object_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
+      .run(tagId, gameId, ownerObjectId, now, now)
     db.prepare('INSERT INTO tag_links (tag_id, object_id, created_at, deleted_at) VALUES (?, ?, ?, NULL)')
       .run(tagId, objectId, now)
 
@@ -274,6 +346,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
     const now = new Date().toISOString()
     const exists = db.prepare('SELECT 1 FROM objects WHERE game_id = ? AND parent_id = ? AND LOWER(name) = LOWER(?) AND deleted_at IS NULL LIMIT 1').get(gameId, parentId, name)
     if (exists) { db.close(); throw new Error('A category with this name already exists here.') }
@@ -289,6 +362,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
     const rows = db.prepare('SELECT id, name, parent_id FROM objects WHERE game_id = ? AND deleted_at IS NULL LIMIT ?').all(gameId, limit)
     db.close()
     return rows as Array<{ id: string; name: string; parent_id: string | null }>
@@ -299,10 +373,199 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
     const rows = db.prepare('SELECT id, name FROM objects WHERE game_id = ? AND deleted_at IS NULL AND LOWER(name) = LOWER(?)').all(gameId, name)
     const withPaths = rows.map((r: any) => ({ id: r.id, name: r.name, path: getPathString(db, gameId, r.id) }))
     db.close()
     return withPaths as Array<{ id: string; name: string; path: string }>
+  })
+
+  // Settings: get/set key-value JSON
+  ipcMain.handle('gamedocs:get-setting', async (_evt, key: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const row = db.prepare('SELECT setting_value FROM settings WHERE setting_name = ? AND deleted_at IS NULL').get(key) as { setting_value?: string } | undefined
+    db.close()
+    if (!row?.setting_value) return null
+    try { return JSON.parse(row.setting_value) } catch { return null }
+  })
+
+  ipcMain.handle('gamedocs:set-setting', async (_evt, key: string, value: any) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    const text = JSON.stringify(value ?? null)
+    const exists = db.prepare('SELECT 1 FROM settings WHERE setting_name = ? AND deleted_at IS NULL').get(key)
+    if (exists) {
+      db.prepare('UPDATE settings SET setting_value = ?, updated_at = ? WHERE setting_name = ? AND deleted_at IS NULL').run(text, now, key)
+    } else {
+      const id = crypto.randomUUID()
+      db.prepare('INSERT INTO settings (id, setting_name, setting_value, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
+        .run(id, key, text, now, now)
+    }
+    db.close()
+    return true
+  })
+
+  // Quick search across objects by name and description, and link_tags by id
+  ipcMain.handle('gamedocs:quick-search', async (_evt, gameId: string, query: string, limit = 20) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const q = (query || '').trim()
+    if (!q) { db.close(); return { objects: [], tags: [] } }
+    const like = `%${q.replace(/%/g, '')}%`
+    const objects = db.prepare('SELECT id, name FROM objects WHERE game_id = ? AND deleted_at IS NULL AND (name LIKE ? OR description LIKE ?) ORDER BY name COLLATE NOCASE LIMIT ?').all(gameId, like, like, limit)
+    const tags = db.prepare('SELECT id, object_id FROM link_tags WHERE deleted_at IS NULL AND id LIKE ? LIMIT ?').all(like, limit)
+    db.close()
+    return { objects, tags }
+  })
+
+  // Choose image file from disk
+  ipcMain.handle('gamedocs:choose-image', async () => {
+    const res = await dialog.showOpenDialog({ title: 'Choose image', properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] })
+    if (res.canceled || res.filePaths.length === 0) return { path: null }
+    return { path: res.filePaths[0] }
+  })
+
+  // Choose a font file (TTF/OTF/WOFF) - placeholder for future custom font loading
+  ipcMain.handle('gamedocs:choose-font-file', async () => {
+    const res = await dialog.showOpenDialog({ title: 'Choose font', properties: ['openFile'], filters: [{ name: 'Fonts', extensions: ['ttf', 'otf', 'woff', 'woff2'] }] })
+    if (res.canceled || res.filePaths.length === 0) return { path: null }
+    return { path: res.filePaths[0] }
+  })
+
+  ipcMain.handle('gamedocs:read-font-as-dataurl', async (_evt, fontPath: string) => {
+    try {
+      const buf = await fs.readFile(fontPath)
+      const ext = (path.extname(fontPath) || '').toLowerCase()
+      const mime = ext === '.ttf' ? 'font/ttf' : ext === '.otf' ? 'font/otf' : ext === '.woff' ? 'font/woff' : ext === '.woff2' ? 'font/woff2' : 'application/octet-stream'
+      const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+      const base = path.basename(fontPath).replace(/\.(ttf|otf|woff2?|TTF|OTF|WOFF2?)$/, '')
+      return { dataUrl, suggestedFamily: base, mime }
+    } catch (e) {
+      return { dataUrl: null, suggestedFamily: null, mime: null }
+    }
+  })
+
+  // List images for an object
+  ipcMain.handle('gamedocs:list-images', async (_evt, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    const rows = db.prepare('SELECT id, object_id, file_path, thumb_path, name, is_default FROM images WHERE object_id = ? AND deleted_at IS NULL ORDER BY created_at ASC').all(objectId) as Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number }>
+    const withUrls = await Promise.all(rows.map(async (r) => {
+      const file_url = (() => { try { return pathToFileURL(r.file_path).href } catch { return null } })()
+      const thumb_url = (() => { try { return pathToFileURL(r.thumb_path).href } catch { return null } })()
+      let thumb_data_url: string | null = null
+      try {
+        const buf = await fs.readFile(r.thumb_path)
+        const ext = (path.extname(r.thumb_path) || '.png').toLowerCase()
+        const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+        thumb_data_url = `data:${mime};base64,${buf.toString('base64')}`
+      } catch {}
+      return { ...r, file_url, thumb_url, thumb_data_url }
+    }))
+    db.close()
+    return withUrls
+  })
+
+  // Add image to object, copy file or download URL, create thumb, set default if requested
+  ipcMain.handle('gamedocs:add-image', async (_evt, objectId: string, opts: { name?: string | null; source: { type: 'file' | 'url'; value: string }; isDefault?: boolean }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const obj = db.prepare('SELECT id, game_id FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { id: string; game_id: string } | undefined
+    if (!obj) { db.close(); throw new Error('Object not found') }
+    const gameId = obj.game_id
+    const game = db.prepare('SELECT name FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId) as { name?: string } | undefined
+    const campaignFolder = game?.name || 'UnknownCampaign'
+    const now = new Date().toISOString()
+    const baseDir = path.join(projectDirCache!, 'games', campaignFolder)
+    const imagesDir = path.join(baseDir, 'images')
+    const thumbsDir = path.join(baseDir, 'thumbs')
+    await fs.mkdir(imagesDir, { recursive: true })
+    await fs.mkdir(thumbsDir, { recursive: true })
+
+    // Resolve source to buffer and extension
+    let buffer: Buffer
+    let ext = ''
+    if (opts.source.type === 'file') {
+      const srcPath = opts.source.value
+      buffer = await (await import('node:fs/promises')).readFile(srcPath)
+      const guess = path.extname(srcPath).toLowerCase()
+      ext = guess && ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(guess) ? guess : '.png'
+    } else {
+      const urlStr = opts.source.value
+      const res = await fetch(urlStr)
+      if (!res.ok) { db.close(); throw new Error('Failed to download image') }
+      const ab = await res.arrayBuffer()
+      buffer = Buffer.from(ab)
+      const urlExt = path.extname(new URL(urlStr).pathname).toLowerCase()
+      ext = urlExt && ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(urlExt) ? urlExt : '.png'
+    }
+
+    // Write original
+    const uuid = crypto.randomUUID().replace(/-/g, '')
+    const fileName = uuid + ext
+    const filePath = path.join(imagesDir, fileName)
+    await fs.writeFile(filePath, buffer)
+
+    // Create thumb (max 300x300) using nativeImage
+    let thumbBuffer: Buffer
+    try {
+      const img = nativeImage.createFromBuffer(buffer)
+      const size = img.getSize()
+      let targetW = size.width
+      let targetH = size.height
+      if (targetW > 300 || targetH > 300) {
+        const ratio = Math.min(300 / Math.max(1, targetW), 300 / Math.max(1, targetH))
+        targetW = Math.max(1, Math.round(targetW * ratio))
+        targetH = Math.max(1, Math.round(targetH * ratio))
+      }
+      const resized = img.resize({ width: targetW, height: targetH })
+      thumbBuffer = resized.toPNG()
+    } catch {
+      // Fallback: use original
+      thumbBuffer = buffer
+    }
+    const thumbName = uuid + '.png'
+    const thumbPath = path.join(thumbsDir, thumbName)
+    await fs.writeFile(thumbPath, thumbBuffer)
+
+    // Determine default flag
+    const existing = db.prepare('SELECT COUNT(1) as c FROM images WHERE object_id = ? AND deleted_at IS NULL').get(objectId) as { c: number }
+    const shouldDefault = existing.c === 0 ? 1 : (opts.isDefault ? 1 : 0)
+    if (shouldDefault === 1) {
+      db.prepare('UPDATE images SET is_default = 0 WHERE object_id = ? AND deleted_at IS NULL').run(objectId)
+    }
+
+    const imageId = crypto.randomUUID().replace(/-/g, '')
+    db.prepare('INSERT INTO images (id, object_id, file_path, thumb_path, name, is_default, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)')
+      .run(imageId, objectId, filePath, thumbPath, (opts.name || null), shouldDefault, now, now)
+
+    const row = db.prepare('SELECT id, object_id, file_path, thumb_path, name, is_default FROM images WHERE id = ?').get(imageId) as any
+    try {
+      const buf = await fs.readFile(row.thumb_path)
+      const ext = (path.extname(row.thumb_path) || '.png').toLowerCase()
+      const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+      row.thumb_data_url = `data:${mime};base64,${buf.toString('base64')}`
+      row.file_url = pathToFileURL(row.file_path).href
+      row.thumb_url = pathToFileURL(row.thumb_path).href
+    } catch {}
+    db.close()
+    return row
   })
 
   ipcMain.handle('gamedocs:list-link-targets', async (_evt, tagId: string) => {
@@ -310,20 +573,23 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
     const links = db.prepare('SELECT o.id, o.name, o.game_id FROM tag_links tl JOIN objects o ON o.id = tl.object_id WHERE tl.tag_id = ? AND o.deleted_at IS NULL').all(tagId)
     const withPaths = links.map((r: any) => ({ id: r.id, name: r.name, path: getPathString(db, r.game_id, r.id) }))
     db.close()
     return withPaths as Array<{ id: string; name: string; path: string }>
   })
 
-  ipcMain.handle('gamedocs:create-link-tag', async (_evt, gameId: string) => {
+  ipcMain.handle('gamedocs:create-link-tag', async (_evt, gameId: string, ownerObjectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
     const now = new Date().toISOString()
     const tagId = generateTagId()
-    db.prepare('INSERT INTO link_tags (id, game_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)').run(tagId, gameId, now, now)
+    // Owner object provided from renderer
+    db.prepare('INSERT INTO link_tags (id, game_id, object_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)').run(tagId, gameId, ownerObjectId, now, now)
     db.close()
     return { tagId }
   })
@@ -350,6 +616,35 @@ app.whenReady().then(async () => {
     return row as { id: string; game_id: string; name: string; type: string; parent_id: string | null; description: string | null }
   })
 
+  // Delete an object and cascade: children, tag_links, orphan link_tags
+  ipcMain.handle('gamedocs:delete-object-cascade', async (_evt, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    // Collect all descendant object ids (simple iterative approach)
+    const toDelete: string[] = []
+    const queue: string[] = [objectId]
+    while (queue.length) {
+      const cur = queue.shift()!
+      toDelete.push(cur)
+      const rows = db.prepare('SELECT id FROM objects WHERE parent_id = ? AND deleted_at IS NULL').all(cur) as Array<{ id: string }>
+      for (const r of rows) queue.push(r.id)
+    }
+    // Soft delete objects
+    const stmtDelObj = db.prepare('UPDATE objects SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL')
+    for (const id of toDelete) stmtDelObj.run(now, id)
+    // Remove tag_links to these objects
+    const stmtDelLinks = db.prepare('DELETE FROM tag_links WHERE object_id = ?')
+    for (const id of toDelete) stmtDelLinks.run(id)
+    // Remove floating link_tags
+    cleanupLinkData(db)
+    db.close()
+    return { count: toDelete.length }
+  })
+
   // Lightweight preview payload for hover/tooltips
   ipcMain.handle('gamedocs:get-object-preview', async (_evt, objectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
@@ -361,14 +656,24 @@ app.whenReady().then(async () => {
     const img = db.prepare('SELECT thumb_path FROM images WHERE object_id = ? AND deleted_at IS NULL AND is_default = 1 LIMIT 1').get(objectId) as { thumb_path?: string } | undefined
     db.close()
     const raw = obj.description || ''
-    const textOnly = raw.replace(/\[\[[^\]]+\]\]/g, '')
-    const snippet = textOnly.slice(0, 240)
+    // Preserve tag labels in snippet: [[Label|tag_xxx]] -> Label
+    const withLabels = raw
+      .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$1')
+      .replace(/\[\[([^\]]+)\]\]/g, '$1')
+    const snippet = withLabels.slice(0, 240)
     const thumbPath = img?.thumb_path || null
     let fileUrl: string | null = null
+    let thumbDataUrl: string | null = null
     try {
-      if (thumbPath) fileUrl = pathToFileURL(thumbPath).href
+      if (thumbPath) {
+        fileUrl = pathToFileURL(thumbPath).href
+        const buf = await fs.readFile(thumbPath)
+        const ext = (path.extname(thumbPath) || '.png').toLowerCase()
+        const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+        thumbDataUrl = `data:${mime};base64,${buf.toString('base64')}`
+      }
     } catch {}
-    return { id: obj.id, name: obj.name, snippet, thumbPath, fileUrl }
+    return { id: obj.id, name: obj.name, snippet, thumbPath, fileUrl, thumbDataUrl }
   })
 
   ipcMain.handle('gamedocs:update-object-description', async (_evt, objectId: string, description: string) => {
@@ -378,6 +683,11 @@ app.whenReady().then(async () => {
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     const now = new Date().toISOString()
     db.prepare('UPDATE objects SET description = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(description ?? '', now, objectId)
+    try {
+      ensureMigrations(db)
+      cleanupTagsForObject(db, objectId)
+      cleanupLinkData(db)
+    } catch {}
     db.close()
     return true
   })

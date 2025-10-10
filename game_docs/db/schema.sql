@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS link_tags (
   id TEXT PRIMARY KEY,
   game_id TEXT NOT NULL REFERENCES games(id),
+  object_id TEXT NOT NULL REFERENCES objects(id),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   deleted_at TEXT DEFAULT NULL

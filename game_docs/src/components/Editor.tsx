@@ -34,7 +34,7 @@ export const Editor: React.FC = () => {
 
   const getHeight = () => {
     let title = document.querySelector('.header_line')?.clientHeight || 0
-    return `calc(100vh - ${30 + title + 10 + 10 + 60}px)`
+    return `calc(100vh - ${30 + title + 10 + 10 + 110}px)`
   }
 
   const [desc, setDesc] = useState<string>('')
@@ -64,11 +64,160 @@ export const Editor: React.FC = () => {
   const [hoverCard, setHoverCard] = useState<{ visible: boolean; x: number; y: number; name: string; snippet: string; imageUrl: string | null }>({ visible: false, x: 0, y: 0, name: '', snippet: '', imageUrl: null })
   const lastHoverTagRef = useRef<string | null>(null)
   // Left-click menu for multi-target tags
-  const [tagMenu, setTagMenu] = useState<{ visible: boolean; x: number; y: number; items: Array<{ id: string; name: string; path: string }>; hoverPreview: { id: string; name: string; snippet: string; imageUrl: string | null } | null }>({ visible: false, x: 0, y: 0, items: [], hoverPreview: null })
+  const [tagMenu, setTagMenu] = useState<{ visible: boolean; x: number; y: number; items: Array<{ id: string; name: string; path: string }>; hoverPreview: { id: string; name: string; snippet: string; imageUrl: string | null } | null; source?: 'dropdown' | 'tag' }>({ visible: false, x: 0, y: 0, items: [], hoverPreview: null, source: undefined })
+  const ctxMenuRef = useRef<HTMLDivElement | null>(null)
+  const tagMenuRef = useRef<HTMLDivElement | null>(null)
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [images, setImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
+  const [addPictureModal, setAddPictureModal] = useState(false)
+  const [picName, setPicName] = useState('')
+  const [picIsDefault, setPicIsDefault] = useState(true)
+  const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
+  const [showPalette, setShowPalette] = useState(false)
+  const [paletteInput, setPaletteInput] = useState('')
+  const [paletteResults, setPaletteResults] = useState<{ objects: Array<{ id: string; name: string }>; tags: Array<{ id: string; object_id: string }> }>({ objects: [], tags: [] })
+  const [showSettings, setShowSettings] = useState(false)
+  const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
+  const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
+  const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
   }, [root?.id])
+
+  // Load palette from settings on mount
+  useEffect(() => {
+    (async () => {
+      const savedPalette = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.palette').catch(() => null)
+      if (savedPalette && savedPalette.key) {
+        setPaletteKey(savedPalette.key)
+        if (savedPalette.key === 'custom' && savedPalette.colors) setCustomColors(savedPalette.colors)
+        applyPalette(savedPalette.key, savedPalette.colors || null)
+      } else {
+        applyPalette('dracula', null)
+      }
+
+      const savedFonts = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.fonts').catch(() => null)
+      if (savedFonts) {
+        const f = {
+          family: savedFonts.family || fonts.family,
+          size: typeof savedFonts.size === 'number' ? savedFonts.size : fonts.size,
+          weight: typeof savedFonts.weight === 'number' ? savedFonts.weight : fonts.weight,
+          color: savedFonts.color || fonts.color,
+        }
+        setFonts(f)
+        applyFonts(f)
+      } else {
+        applyFonts(fonts)
+      }
+    })()
+  }, [])
+
+  // Inject global CSS once to bind typography variables across the app
+  useEffect(() => {
+    const styleId = 'pd-global-typography'
+    if (!document.getElementById(styleId)) {
+      const s = document.createElement('style')
+      s.id = styleId
+      s.innerHTML = `
+:root { color-scheme: light dark; }
+body, input, button, select, textarea {
+  font-family: var(--pd-font-family, system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif);
+  font-size: var(--pd-font-size, 14px);
+  font-weight: var(--pd-font-weight, 400);
+  color: var(--pd-text, #e5e5e5);
+}
+body, .pd-bg-surface {
+  background: var(--pd-surface, #1e1e1e);
+  color: var(--pd-text, #e5e5e5);
+}
+button, input, select, textarea {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid #444;
+  color: var(--pd-text, #e5e5e5);
+  accent-color: var(--pd-primary, #6495ED);
+  outline-color: var(--pd-primary, #6495ED);
+}
+a { color: var(--pd-primary, #6495ED); }
+.editor_container [contenteditable="true"] {
+  color: var(--pd-text, #e5e5e5);
+}
+span[data-tag] {
+  background: var(--pd-tag-bg, rgba(100,149,237,0.2));
+  border-bottom: 1px dotted var(--pd-tag-border, #6495ED);
+}
+      `
+      document.head.appendChild(s)
+    }
+  }, [])
+
+  function applyPalette(key: 'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom', colors: any) {
+    const rootEl = document.documentElement
+    const themes: Record<string, any> = {
+      'dracula': { primary: '#bd93f9', surface: '#282a36', text: '#f8f8f2', tagBg: 'rgba(189,147,249,0.25)', tagBorder: '#bd93f9' },
+      'solarized-dark': { primary: '#268bd2', surface: '#002b36', text: '#eee8d5', tagBg: 'rgba(38,139,210,0.2)', tagBorder: '#268bd2' },
+      'solarized-light': { primary: '#268bd2', surface: '#fdf6e3', text: '#073642', tagBg: 'rgba(38,139,210,0.15)', tagBorder: '#268bd2' },
+      'github-dark': { primary: '#2f81f7', surface: '#0d1117', text: '#c9d1d9', tagBg: 'rgba(47,129,247,0.2)', tagBorder: '#2f81f7' },
+      'github-light': { primary: '#0969da', surface: '#ffffff', text: '#24292f', tagBg: 'rgba(9,105,218,0.15)', tagBorder: '#0969da' },
+      'night-owl': { primary: '#7fdbca', surface: '#011627', text: '#d6deeb', tagBg: 'rgba(127,219,202,0.22)', tagBorder: '#7fdbca' },
+      'monokai': { primary: '#a6e22e', surface: '#272822', text: '#f8f8f2', tagBg: 'rgba(166,226,46,0.25)', tagBorder: '#a6e22e' },
+      'parchment': { primary: '#7b5e2a', surface: '#fbf3dc', text: '#3a2a0a', tagBg: 'rgba(123,94,42,0.18)', tagBorder: '#7b5e2a' },
+      'primary-blue': { primary: '#3b82f6', surface: '#0b1220', text: '#e5e7eb', tagBg: 'rgba(59,130,246,0.22)', tagBorder: '#3b82f6' },
+      'primary-green': { primary: '#22c55e', surface: '#0b1a12', text: '#e5e7eb', tagBg: 'rgba(34,197,94,0.22)', tagBorder: '#22c55e' },
+      'custom': customColors,
+    }
+    const c = key === 'custom' ? (colors || customColors) : themes[key]
+    rootEl.style.setProperty('--pd-primary', c.primary)
+    rootEl.style.setProperty('--pd-surface', c.surface)
+    rootEl.style.setProperty('--pd-text', c.text)
+    rootEl.style.setProperty('--pd-tag-bg', c.tagBg)
+    rootEl.style.setProperty('--pd-tag-border', c.tagBorder)
+    // Basic font vars defaults; will be overridden by settings section below
+    if (getComputedStyle(rootEl).getPropertyValue('--pd-font-family') === '') {
+      rootEl.style.setProperty('--pd-font-family', 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif')
+    }
+    if (getComputedStyle(rootEl).getPropertyValue('--pd-font-size') === '') {
+      rootEl.style.setProperty('--pd-font-size', '14px')
+    }
+    if (getComputedStyle(rootEl).getPropertyValue('--pd-font-weight') === '') {
+      rootEl.style.setProperty('--pd-font-weight', '400')
+    }
+  }
+
+  function applyFonts(f: { family: string; size: number; weight: number; color: string }) {
+    const rootEl = document.documentElement
+    rootEl.style.setProperty('--pd-font-family', f.family)
+    rootEl.style.setProperty('--pd-font-size', `${f.size}px`)
+    rootEl.style.setProperty('--pd-font-weight', `${f.weight}`)
+    rootEl.style.setProperty('--pd-text', f.color)
+  }
+
+  // Global shortcut: Ctrl+K opens command palette
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        setShowPalette(true)
+        setPaletteInput('')
+        setPaletteResults({ objects: [], tags: [] })
+      } else if (e.key === 'Escape') {
+        setShowPalette(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
+    const run = setTimeout(async () => {
+      if (!showPalette || !campaign) return
+      const q = paletteInput.trim()
+      if (!q) { setPaletteResults({ objects: [], tags: [] }); return }
+      const res = await window.ipcRenderer.invoke('gamedocs:quick-search', campaign.id, q).catch(() => ({ objects: [], tags: [] }))
+      setPaletteResults(res || { objects: [], tags: [] })
+    }, 150)
+    return () => clearTimeout(run)
+  }, [showPalette, paletteInput, campaign?.id])
 
   useEffect(() => {
     if (!activeId) return
@@ -199,7 +348,7 @@ export const Editor: React.FC = () => {
     if (!tid) return
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, pc.id)
     if (createdNew) {
-      replaceSelectionWithSpan(linkerInput || pc.name, tid)
+    replaceSelectionWithSpan(linkerInput || pc.name, tid)
     }
     setShowLinker(false)
   }, [campaign, linkerInput, linkerTagId])
@@ -220,7 +369,7 @@ export const Editor: React.FC = () => {
     if (!tid) return
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, m.id)
     if (createdNew) {
-      replaceSelectionWithSpan(linkerInput || m.name, tid)
+    replaceSelectionWithSpan(linkerInput || m.name, tid)
     }
     setShowLinker(false)
   }, [campaign, linkerInput, linkerTagId])
@@ -229,7 +378,8 @@ export const Editor: React.FC = () => {
     const label = (wizardName || '').trim()
     if (!label) return
     const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
-    const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, label, (wizardType || null))
+    const ownerId = activeId || rootObj.id
+    const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, ownerId, label, (wizardType || null))
     setShowWizard(false)
     replaceSelectionWithSpan(label, res.tagId)
   }, [wizardName, wizardType, campaign, activeId])
@@ -293,14 +443,21 @@ export const Editor: React.FC = () => {
     const text = obj?.description || ''
     setDesc(text)
     // Render tokens as span tags with data-tag
-    requestAnimationFrame(() => {
+    requestAnimationFrame(async () => {
       if (editorRef.current) {
-        editorRef.current.innerHTML = descToHtml(text)
+        // Strip broken/empty references: remove tokens whose tag id no longer exists
+        const cleaned = await removeMissingTags(text)
+        editorRef.current.innerHTML = descToHtml(cleaned)
+        setDesc(cleaned)
       }
     })
     // Load children and parent
     const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, id)
     setChildren(kids)
+    try {
+      const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', id)
+      setImages(imgs || [])
+    } catch { setImages([]) }
     const pId = obj?.parent_id as string | null
     if (pId) {
       const pobj = await window.ipcRenderer.invoke('gamedocs:get-object', pId)
@@ -353,14 +510,16 @@ export const Editor: React.FC = () => {
     insertAtSelection(text)
   }
 
+  // removed erroneous function shadowing setAddPictureModal
+
   function replaceSelectionWithSpan(label: string, tagId: string) {
     const selRange = selectionRangeRef.current
     const el = editorRef.current
     const span = document.createElement('span')
     span.textContent = label
     span.setAttribute('data-tag', tagId)
-    span.style.background = 'rgba(100, 149, 237, 0.2)'
-    span.style.borderBottom = '1px dotted #6495ED'
+    span.style.background = 'var(--pd-tag-bg, rgba(100, 149, 237, 0.2))'
+    span.style.borderBottom = '1px dotted var(--pd-tag-border, #6495ED)'
     span.style.cursor = 'pointer'
     if (el && selRange) {
       selRange.deleteContents()
@@ -379,12 +538,12 @@ export const Editor: React.FC = () => {
     return text.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label, tag) => {
       const safeLabel = String(label)
       const safeTag = String(tag)
-      return `<span data-tag="${safeTag}" style="background: rgba(100,149,237,0.2); border-bottom: 1px dotted #6495ED; cursor: pointer;">${safeLabel}</span>`
+      return `<span data-tag="${safeTag}" style="background: var(--pd-tag-bg, rgba(100,149,237,0.2)); border-bottom: 1px dotted var(--pd-tag-border, #6495ED); cursor: pointer;">${safeLabel}</span>`
     })
   }
 
   function htmlToDesc(container: HTMLElement): string {
-    // Convert spans back to token syntax for persistence
+    // Convert spans back to token syntax and preserve line breaks
     const clone = container.cloneNode(true) as HTMLElement
     clone.querySelectorAll('span[data-tag]').forEach((el) => {
       const label = el.textContent || ''
@@ -392,7 +551,53 @@ export const Editor: React.FC = () => {
       const token = document.createTextNode(`[[${label}|${tag}]]`)
       el.replaceWith(token)
     })
-    return clone.innerText
+    // Replace <div>, <p> with \n boundaries and <br> with \n
+    // Insert newline markers after block elements to preserve intentional breaks
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT, null)
+    const blocks = new Set(['DIV', 'P'])
+    const brs: HTMLElement[] = []
+    // Collect <br> separately to avoid live tree issues
+    clone.querySelectorAll('br').forEach(br => brs.push(br as any))
+    for (const br of brs) {
+      br.replaceWith(document.createTextNode('\n'))
+    }
+    const toAppendNewline: HTMLElement[] = []
+    let node: Element | null = walker.nextNode() as Element | null
+    while (node) {
+      if (blocks.has(node.nodeName)) toAppendNewline.push(node as HTMLElement)
+      node = walker.nextNode() as Element | null
+    }
+    for (const el of toAppendNewline) {
+      el.appendChild(document.createTextNode('\n'))
+    }
+    const text = clone.textContent || ''
+    return text.replace(/\n{3,}/g, '\n\n')
+  }
+
+  async function removeMissingTags(text: string): Promise<string> {
+    const tokenRe = /\[\[([^\]|]+)\|([^\]]+)\]\]/g
+    let m: RegExpExecArray | null
+    let result = text
+    const seen = new Set<string>()
+    const missing = new Set<string>()
+    while ((m = tokenRe.exec(text))) {
+      const tagId = m[2]
+      if (seen.has(tagId) || missing.has(tagId)) continue
+      try {
+        const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId)
+        if (!Array.isArray(targets) || targets.length === 0) {
+          missing.add(tagId)
+        } else {
+          seen.add(tagId)
+        }
+      } catch {
+        missing.add(tagId)
+      }
+    }
+    if (missing.size === 0) return text
+    // Remove tokens with missing tag ids
+    result = result.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label, tid) => missing.has(String(tid)) ? String(label) : _m)
+    return result
   }
 
   if (error) return <div style={{ padding: 16, color: 'red' }}>{error}</div>
@@ -401,22 +606,62 @@ export const Editor: React.FC = () => {
   return (
     <div style={{ display: 'grid', gridTemplateRows: '30px 1fr', gridTemplateColumns: '1fr', height: '90vh', width: '98%', position: 'absolute', left: '1%', top: 40 }}>
       <div className="main_header" style={{ display: 'grid', gridTemplateColumns: '1fr', position: 'absolute', left: 10, width: '90%' }}>
-        <h2 style={{ position: 'absolute', marginTop: -40, left: '0px' }}>{campaign.name}</h2>
-        <button className="menu_button" style={{ marginTop: -30, position: 'fixed', right: '2%' }}>...</button>
+        <h2 style={{ userSelect: 'none', position: 'absolute', marginTop: -40, left: '0px' }}>
+          {root ? (
+            <a style={{ cursor: 'pointer', userSelect: 'none' }} onClick={(e) => { e.preventDefault(); selectObject(root.id, root.name) }}>
+              <i className={root.id === activeId ? 'ri-home-2-line' : 'ri-home-2-fill'}></i>
+            </a>
+          ) : (
+            <i className={'ri-home-2-line'}></i>
+          )}
+          {' '} {campaign.name}
+        </h2>
+        <button ref={menuButtonRef} className="menu_button" style={{ userSelect: 'none', marginTop: -30, position: 'fixed', right: '2%' }}
+          onClick={(e) => {
+            e.preventDefault()
+            setCtxMenu(m => ({ ...m, visible: false }))
+            const btn = (e.target as HTMLElement)
+            const rect = btn.getBoundingClientRect()
+            const padding = 4
+            const menuWidth = 260
+            const x = Math.max(padding, rect.right - menuWidth)
+            const y = rect.bottom + 6
+            // toggle behavior: if already open via dropdown, close
+            setTagMenu(prev => {
+              if (prev.visible && prev.source === 'dropdown') {
+                return { ...prev, visible: false, hoverPreview: null }
+              }
+              return { visible: true, x, y, items: [
+              { id: '__DELETE__', name: 'Delete…', path: '' },
+              { id: '__ADDPICTURE__', name: 'Add picture…', path: '' },
+              { id: '__SETTINGS__', name: 'Settings…', path: '' },
+            ], hoverPreview: null, source: 'dropdown' }
+            })
+          }}
+        >...</button>
       </div>
-      <div style={{ width: '100%', height: '96%', margin: 0, position: 'absolute', left: 0, top: 30, display: 'grid', gridTemplateColumns: '200px 1fr' }}>
+      <div style={{ width: '100%', height: '94%', margin: 0, position: 'absolute', left: 0, top: 30, display: 'grid', gridTemplateColumns: '200px 1fr' }} onClick={(e) => {
+        // Close menus when clicking outside
+        const target = e.target as Node
+        if (ctxMenu.visible && ctxMenuRef.current && !ctxMenuRef.current.contains(target)) {
+          setCtxMenu(m => ({ ...m, visible: false }))
+        }
+        if (tagMenu.visible && tagMenuRef.current && !tagMenuRef.current.contains(target)) {
+          setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+        }
+      }}>
         {/* Sidebar */}
         <div style={{ borderRight: '1px solid #333', padding: 12 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}></div>
           {root && (
             <div>
               {parent && parent.id && parent.id !== activeId && (
-                <a className="jump_to_parent" style={{ position: 'absolute', width: '200px', whiteSpace: 'nowrap', marginTop: -30, marginLeft: -10, display: 'flex', flexDirection: 'column', alignItems: 'center'}} href='#' onClick={(e) => { e.preventDefault(); selectObject(parent.id, parent.name) }}><span style={{ whiteSpace: 'nowrap' }}>parent <i className="ri-arrow-up-circle-line"></i></span></a>
+                <a className="jump_to_parent" style={{ cursor: 'pointer', userSelect: 'none', position: 'absolute', width: '200px', whiteSpace: 'nowrap', marginTop: -30, marginLeft: -10, display: 'flex', flexDirection: 'column', alignItems: 'center'}} onClick={(e) => { e.preventDefault(); selectObject(parent.id, parent.name) }}><span style={{ whiteSpace: 'nowrap' }}>parent <i className="ri-arrow-up-circle-line"></i></span></a>
               )}
-              <div className="header_line" style={{ fontWeight: 600, paddingBottom: 10}}>{activeName || root.name}</div>
-              <a className="add_child" href='#' onClick={() => { setCatErr(null); setCatName(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
-              <div  style={{ height: '10px', borderBottom: '1px solid #333' }}></div>
-              <div className="menu_items_container" style={{ display: 'flex', flexDirection: 'column', height: getHeight(), width: '100%', flexGrow: 1 }}>
+              <div className="header_line" style={{ userSelect: 'none', fontWeight: 600, paddingBottom: 10}}>{activeName || root.name}</div>
+              <a style={{ userSelect: 'none', cursor: 'pointer' }} className="add_child" onClick={() => { setCatErr(null); setCatName(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
+              <div  style={{ userSelect: 'none', height: '10px', borderBottom: '1px solid #333' }}></div>
+              <div className="menu_items_container" style={{ userSelect: 'none', display: 'flex', flexDirection: 'column', height: getHeight(), width: '100%', flexGrow: 1 }}>
                 {children.map(c => (
                   <div key={c.id} onClick={() => selectObject(c.id, c.name)} style={{ paddingBottom: 10, borderBottom: '1px solid #333', cursor: 'pointer' }}>{c.name}</div>
                 ))}
@@ -456,9 +701,9 @@ export const Editor: React.FC = () => {
                 return
               }
               const only = targets[0]
-              const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null } | null
+              const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null } | null
               if (!preview) return
-              setHoverCard({ visible: true, x: e.clientX + 10, y: e.clientY + 10, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: (preview as any).fileUrl || null })
+              setHoverCard({ visible: true, x: e.clientX + 10, y: e.clientY + 10, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: (preview as any).thumbDataUrl || (preview as any).fileUrl || null })
             }}
             onMouseLeave={() => { if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false })) }}
             onClick={async (e) => {
@@ -527,7 +772,7 @@ export const Editor: React.FC = () => {
                 setDesc(htmlToDesc(editorRef.current))
               }
             }}
-            style={{ width: '100%', height: '100%', outline: 'none', whiteSpace: 'pre-wrap' }}
+            style={{ width: '100%', height: '70vh', outline: 'none', whiteSpace: 'pre-wrap', textAlign: 'left' }}
           />
           {/* Hover preview card for single-target tags */}
           {hoverCard.visible && (
@@ -554,7 +799,7 @@ export const Editor: React.FC = () => {
                 zIndex: 10,
                 boxShadow: '0 2px 8px rgba(0,0,0,0.35)'
               }}
-              onMouseLeave={() => setCtxMenu(m => ({ ...m, visible: false }))}
+              ref={ctxMenuRef}
             >
               <div style={{ padding: '6px 10px', cursor: 'pointer', fontWeight: 600 }}>Add</div>
               <div style={{ padding: '6px 10px', cursor: 'pointer' }} onClick={handleAddLinkOpen}>Add link…</div>
@@ -580,16 +825,42 @@ export const Editor: React.FC = () => {
           {/* Left-click tag menu for multi-target links */}
           {tagMenu.visible && (
             <div style={{ position: 'fixed', left: tagMenu.x, top: tagMenu.y, background: '#202020', border: '1px solid #333', borderRadius: 6, padding: 6, zIndex: 16, boxShadow: '0 2px 8px rgba(0,0,0,0.35)', display: 'flex', gap: 8 }}
-              onMouseLeave={() => setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))}
+              ref={tagMenuRef}
             >
               <div style={{ maxHeight: 260, overflow: 'auto', minWidth: 220 }}>
                 {tagMenu.items.map(t => (
                   <div key={t.id} style={{ padding: '6px 10px', cursor: 'pointer' }}
                     onMouseEnter={async () => {
-                      const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null } | null
-                      if (preview) setTagMenu(m => ({ ...m, hoverPreview: { id: t.id, name: t.name, snippet: preview.snippet || '', imageUrl: (preview as any).fileUrl || null } }))
+                      if (t.id === '__DELETE__') return
+                      const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null } | null
+                      if (preview) setTagMenu(m => ({ ...m, hoverPreview: { id: t.id, name: t.name, snippet: preview.snippet || '', imageUrl: (preview as any).thumbDataUrl || (preview as any).fileUrl || null } }))
                     }}
-                    onClick={() => { selectObject(t.id, t.name); setTagMenu(m => ({ ...m, visible: false, hoverPreview: null })) }}
+                    onClick={async () => {
+                      if (t.id === '__DELETE__') {
+                        const ok = confirm(`Delete '${activeName}' and all descendants?`)
+                        if (!ok) { setTagMenu(m => ({ ...m, visible: false, hoverPreview: null })); return }
+                        await window.ipcRenderer.invoke('gamedocs:delete-object-cascade', activeId)
+                        // After delete, go to parent or root
+                        if (parent) {
+                          selectObject(parent.id, parent.name)
+                        } else if (root) {
+                          selectObject(root.id, root.name)
+                        }
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        return
+                      }
+                      if (t.id === '__SETTINGS__') {
+                        setShowSettings(true)
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        return
+                      }
+                      if (t.id === '__ADDPICTURE__') {
+                        setAddPictureModal(true)
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        return
+                      }
+                      selectObject(t.id, t.name); setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                    }}
                   >{t.name}</div>
                 ))}
               </div>
@@ -604,6 +875,228 @@ export const Editor: React.FC = () => {
                   )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Add Picture modal */}
+          {addPictureModal && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 30 }}>
+              <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 16, width: 520 }}>
+                <h3 style={{ marginTop: 0 }}>Add Picture</h3>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <label>
+                    <div>Name (optional)</div>
+                    <input value={picName} onChange={e => setPicName(e.target.value)} style={{ width: '100%' }} />
+                  </label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <label><input type="radio" checked={picSource.type === 'file'} onChange={() => setPicSource(s => ({ type: 'file', value: '' }))} /> File</label>
+                    <button onClick={async () => {
+                      const res = await window.ipcRenderer.invoke('gamedocs:choose-image')
+                      if (res?.path) setPicSource({ type: 'file', value: res.path })
+                    }}>Browse…</button>
+                    <span style={{ color: '#888', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis' }}>{picSource.type === 'file' ? (picSource.value || 'No file selected') : ''}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <label><input type="radio" checked={picSource.type === 'url'} onChange={() => setPicSource(s => ({ type: 'url', value: '' }))} /> URL</label>
+                    <input placeholder="https://..." value={picSource.type === 'url' ? picSource.value : ''} onChange={e => setPicSource({ type: 'url', value: e.target.value })} style={{ flex: 1 }} />
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="checkbox" checked={picIsDefault} onChange={e => setPicIsDefault(e.target.checked)} /> Default image
+                  </label>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button onClick={() => setAddPictureModal(false)}>Cancel</button>
+                  <button onClick={async () => {
+                    const src = picSource
+                    if (!src.value) return
+                    const row = await window.ipcRenderer.invoke('gamedocs:add-image', activeId, { name: (picName || null), source: src, isDefault: picIsDefault })
+                    setAddPictureModal(false)
+                    setPicName(''); setPicIsDefault(false); setPicSource({ type: 'file', value: '' })
+                    // Refresh list
+                    const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId)
+                    setImages(imgs || [])
+                  }}>OK</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Images under description */}
+          {images.length > 0 && (
+            <div style={{ marginTop: 16, borderTop: '1px solid #333', paddingTop: 16 }}>
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>Images</div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {images.map(img => (
+                  <div key={img.id} style={{ border: '1px solid #333', borderRadius: 6, padding: 6, width: 220 }}>
+                    
+                    <img src={img.thumb_data_url || img.thumb_url || `file:///${img.thumb_path.replace(/\\/g, '/')}`} style={{ maxWidth: '100%', display: 'block', borderRadius: 4 }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12 }}>
+                      <span title={img.name || ''}>{img.name || '(unnamed)'}</span>
+                      {img.is_default ? <span title='Default'>⭐</span> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Command Palette */}
+          {showPalette && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 80, zIndex: 40 }} onClick={() => setShowPalette(false)}>
+              <div style={{ width: 'min(80vw, 800px)', minWidth: 300, maxWidth: '80vw' }} onClick={(e) => e.stopPropagation()}>
+                <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 12 }}>
+                  <input autoFocus placeholder="Search objects, tags, or type a command" value={paletteInput} onChange={e => setPaletteInput(e.target.value)} style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #444', background: '#111', color: '#eee' }} />
+                  <div style={{ maxHeight: 340, overflow: 'auto', marginTop: 8 }}>
+                    {(paletteResults.objects.length === 0 && paletteResults.tags.length === 0) ? (
+                      <div style={{ color: '#888', padding: 8 }}>No results</div>
+                    ) : (
+                      <>
+                        {paletteResults.objects.length > 0 && (
+                          <div style={{ padding: '4px 0' }}>
+                            <div style={{ color: '#aaa', fontSize: 12, padding: '2px 6px' }}>Objects</div>
+                            {paletteResults.objects.map(o => (
+                              <div key={o.id} style={{ padding: '6px 8px', cursor: 'pointer' }} onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
+                            ))}
+                          </div>
+                        )}
+                        {paletteResults.tags.length > 0 && (
+                          <div style={{ padding: '4px 0' }}>
+                            <div style={{ color: '#aaa', fontSize: 12, padding: '2px 6px' }}>Tags</div>
+                            {paletteResults.tags.map(t => (
+                              <div key={t.id} style={{ padding: '6px 8px', cursor: 'pointer' }} onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: '#666', fontSize: 12, marginTop: 8 }}>
+                    <span>Esc to close</span>
+                    <span>Ctrl+K</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Settings modal */}
+          {showSettings && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 60, zIndex: 50 }} onClick={() => setShowSettings(false)}>
+              <div style={{ width: '50%', minWidth: 760, maxWidth: '92vw' }} onClick={e => e.stopPropagation()}>
+                <div style={{ background: 'var(--pd-surface, #1e1e1e)', border: '1px solid #333', borderRadius: 10, padding: 16, color: 'var(--pd-text, #e5e5e5)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <h3 style={{ margin: 0 }}>Settings</h3>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => setShowSettings(false)}>Close</button>
+                      <button onClick={async () => {
+                        const payload = { key: paletteKey, colors: paletteKey === 'custom' ? customColors : null }
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.palette', payload)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', fonts)
+                        applyPalette(paletteKey, paletteKey === 'custom' ? customColors : null)
+                        applyFonts(fonts)
+                        setShowSettings(false)
+                      }}>Save</button>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 16 }}>
+                    {/* Left column: palette + fonts */}
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <label style={{ fontWeight: 600 }}>Color palette</label>
+                        <select value={paletteKey} onChange={e => { const k = e.target.value as any; setPaletteKey(k); applyPalette(k, null) }} style={{ padding: 8, borderRadius: 6, border: '1px solid #444', background: '#0f0f0f', color: 'var(--pd-text, #e5e5e5)' }}>
+                          <option value="dracula">Dracula</option>
+                          <option value="solarized-dark">Solarized (Dark)</option>
+                          <option value="solarized-light">Solarized (Light)</option>
+                          <option value="github-dark">GitHub (Dark)</option>
+                          <option value="github-light">GitHub (Light)</option>
+                          <option value="night-owl">Night Owl</option>
+                          <option value="monokai">Monokai</option>
+                          <option value="parchment">Parchment</option>
+                          <option value="primary-blue">Primary Blue</option>
+                          <option value="primary-green">Primary Green</option>
+                          <option value="custom">Custom…</option>
+                        </select>
+                        {paletteKey === 'custom' && (
+                          <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10, background: '#121212', display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                            <label>Primary <input type="color" value={customColors.primary} onChange={e => setCustomColors(c => ({ ...c, primary: e.target.value }))} /></label>
+                            <label>Surface <input type="color" value={customColors.surface} onChange={e => setCustomColors(c => ({ ...c, surface: e.target.value }))} /></label>
+                            <label>Text <input type="color" value={customColors.text} onChange={e => setCustomColors(c => ({ ...c, text: e.target.value }))} /></label>
+                            <label>Tag BG <input type="color" value={customColors.tagBg.startsWith('#') ? customColors.tagBg : '#6495ED'} onChange={e => setCustomColors(c => ({ ...c, tagBg: e.target.value }))} /></label>
+                            <label>Tag Border <input type="color" value={customColors.tagBorder} onChange={e => setCustomColors(c => ({ ...c, tagBorder: e.target.value }))} /></label>
+                            <button onClick={() => applyPalette('custom', customColors)}>Preview</button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <label style={{ fontWeight: 600 }}>Fonts</label>
+                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                          <label style={{ flex: '1 1 260px' }}>Family
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <select value={fonts.family} onChange={(e) => { const f = { ...fonts, family: e.target.value }; setFonts(f); applyFonts(f) }} style={{ flex: 1 }}>
+                                <option value="system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif">System UI</option>
+                                <option value="Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">Inter</option>
+                                <option value="Segoe UI, system-ui, -apple-system, Roboto, Inter, sans-serif">Segoe UI</option>
+                                <option value="Roboto, system-ui, -apple-system, Segoe UI, Inter, sans-serif">Roboto</option>
+                                <option value="Source Sans Pro, system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif">Source Sans Pro</option>
+                                <option value="Georgia, serif">Georgia</option>
+                                <option value="Garamond, serif">Garamond</option>
+                                <option value="Palatino Linotype, Book Antiqua, Palatino, serif">Palatino</option>
+                              </select>
+                              <button title="Choose font file" onClick={async () => {
+                                const pick = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
+                                if (pick?.path) {
+                                  const loaded = await window.ipcRenderer.invoke('gamedocs:read-font-as-dataurl', pick.path).catch(() => null)
+                                  if (loaded?.dataUrl) {
+                                    const fontName = loaded.suggestedFamily || 'CustomFont'
+                                    const styleTagId = `pd-font-${fontName}`
+                                    if (!document.getElementById(styleTagId)) {
+                                      const st = document.createElement('style')
+                                      st.id = styleTagId
+                                      st.innerHTML = `@font-face{ font-family: "${fontName}"; src: url(${loaded.dataUrl}) format("${(loaded.mime||'').includes('woff')?'woff2':'truetype'}"); font-weight: 100 900; font-style: normal; font-display: swap; }`
+                                      document.head.appendChild(st)
+                                    }
+                                    const f = { ...fonts, family: `${fontName}, ${fonts.family}` }
+                                    setFonts(f); applyFonts(f)
+                                  }
+                                }
+                              }}>Browse…</button>
+                            </div>
+                          </label>
+                          <label style={{ width: 110 }}>Size <input type="number" min={10} max={24}
+                            value={fonts.size}
+                            onChange={(e) => { const f = { ...fonts, size: parseInt(e.target.value || '14', 10) }; setFonts(f); applyFonts(f) }}
+                            style={{ width: '100%' }} /></label>
+                          <label style={{ width: 120 }}>Weight <input type="number" min={100} max={900} step={100}
+                            value={fonts.weight}
+                            onChange={(e) => { const f = { ...fonts, weight: parseInt(e.target.value || '400', 10) }; setFonts(f); applyFonts(f) }}
+                            style={{ width: '100%' }} /></label>
+                          <label>Text Color <input type="color"
+                            value={fonts.color}
+                            onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label>
+                          <button onClick={async () => {
+                            const res = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
+                            if (res?.path) {
+                              // Placeholder: user can install font system-wide; we simply store path for future
+                              await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.customFontPath', { path: res.path })
+                            }
+                          }}>Choose Font File…</button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right column: shortcuts */}
+                    <div style={{ width: 260, borderLeft: '1px solid #333', paddingLeft: 12 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard shortcuts</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
+                        <span>Command palette</span>
+                        <code>Ctrl + K</code>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -686,7 +1179,7 @@ export const Editor: React.FC = () => {
                           onClick={async () => {
                             let tid = linkerTagId
                             if (!tid) {
-                              const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id)
+      const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id, activeId || root!.id)
                               tid = res.tagId
                               setLinkerTagId(tid)
                             }
@@ -715,7 +1208,7 @@ export const Editor: React.FC = () => {
                               }
                               let tid = linkerTagId
                               if (!tid) {
-                                const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id)
+                                const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id, activeId || root!.id)
                                 tid = res.tagId
                                 setLinkerTagId(tid)
                               }
