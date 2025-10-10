@@ -143,7 +143,7 @@ function cleanupTagsForObject(db: any, objectId: string) {
       db.prepare('DELETE FROM link_tags WHERE id = ?').run(t.id)
     }
   }
-}
+  }
 
 async function createEditorWindow(title: string, routeHash: string) {
   if (editorWin) {
@@ -250,11 +250,11 @@ app.whenReady().then(async () => {
     const id = crypto.randomUUID()
     db.prepare('INSERT INTO games (id, name, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)').run(id, safeName, now, now)
 
-    // Create root folder object for this campaign
+    // Create root object for this campaign
     const rootId = generateObjectId(safeName)
     db.prepare(
       'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)'
-    ).run(rootId, id, safeName, 'Folder', '', now, now)
+    ).run(rootId, id, safeName, 'Other', '', now, now)
     db.close()
 
     // Open editor for the new campaign and hide main
@@ -295,8 +295,8 @@ app.whenReady().then(async () => {
       const rootId = generateObjectId(game?.name || 'Root')
       db.prepare(
         'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)'
-      ).run(rootId, gameId, game?.name || 'Root', 'Folder', '', now, now)
-      row = { id: rootId, name: game?.name || 'Root', type: 'Folder' }
+      ).run(rootId, gameId, game?.name || 'Root', 'Other', '', now, now)
+      row = { id: rootId, name: game?.name || 'Root', type: 'Other' }
     }
     db.close()
     return row as { id: string; name: string; type: string }
@@ -341,7 +341,7 @@ app.whenReady().then(async () => {
     return { objectId, tagId }
   })
 
-  ipcMain.handle('gamedocs:create-category', async (_evt, gameId: string, parentId: string, name: string) => {
+  ipcMain.handle('gamedocs:create-category', async (_evt, gameId: string, parentId: string, name: string, objType: string | null = null) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
@@ -351,8 +351,11 @@ app.whenReady().then(async () => {
     const exists = db.prepare('SELECT 1 FROM objects WHERE game_id = ? AND parent_id = ? AND LOWER(name) = LOWER(?) AND deleted_at IS NULL LIMIT 1').get(gameId, parentId, name)
     if (exists) { db.close(); throw new Error('A category with this name already exists here.') }
     const newId = generateObjectId(name)
+    const allowed = new Set(['Place', 'Person', 'Lore', 'Other'])
+    const t = (objType || 'Other')
+    const safeType = allowed.has(t) ? t : 'Other'
     db.prepare('INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)')
-      .run(newId, gameId, name, 'Folder', parentId, '', now, now)
+      .run(newId, gameId, name, safeType, parentId, '', now, now)
     db.close()
     return { id: newId, name }
   })
@@ -464,16 +467,22 @@ app.whenReady().then(async () => {
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     const rows = db.prepare('SELECT id, object_id, file_path, thumb_path, name, is_default FROM images WHERE object_id = ? AND deleted_at IS NULL ORDER BY created_at ASC').all(objectId) as Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number }>
     const withUrls = await Promise.all(rows.map(async (r) => {
-      const file_url = (() => { try { return pathToFileURL(r.file_path).href } catch { return null } })()
-      const thumb_url = (() => { try { return pathToFileURL(r.thumb_path).href } catch { return null } })()
       let thumb_data_url: string | null = null
       try {
         const buf = await fs.readFile(r.thumb_path)
         const ext = (path.extname(r.thumb_path) || '.png').toLowerCase()
         const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
-        thumb_data_url = `data:${mime};base64,${buf.toString('base64')}`
+        if (buf && buf.length > 0) thumb_data_url = `data:${mime};base64,${buf.toString('base64')}`
       } catch {}
-      return { ...r, file_url, thumb_url, thumb_data_url }
+      if (!thumb_data_url) {
+        try {
+          const buf = await fs.readFile(r.file_path)
+          const ext = (path.extname(r.file_path) || '.png').toLowerCase()
+          const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+          if (buf && buf.length > 0) thumb_data_url = `data:${mime};base64,${buf.toString('base64')}`
+        } catch {}
+      }
+      return { ...r, file_url: null, thumb_url: null, thumb_data_url }
     }))
     db.close()
     return withUrls
@@ -578,6 +587,111 @@ app.whenReady().then(async () => {
     const withPaths = links.map((r: any) => ({ id: r.id, name: r.name, path: getPathString(db, r.game_id, r.id) }))
     db.close()
     return withPaths as Array<{ id: string; name: string; path: string }>
+  })
+
+  // List link tags owned by an object
+  ipcMain.handle('gamedocs:list-owner-tags', async (_evt, ownerObjectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    const tags = db.prepare('SELECT id FROM link_tags WHERE object_id = ? AND deleted_at IS NULL').all(ownerObjectId)
+    db.close()
+    return tags as Array<{ id: string }>
+  })
+
+  // List incoming links pointing to this object
+  ipcMain.handle('gamedocs:list-incoming-links', async (_evt, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    const rows = db.prepare('SELECT lt.id as tag_id, lt.object_id as owner_id, o2.name as owner_name, o2.game_id as game_id FROM tag_links tl JOIN link_tags lt ON lt.id = tl.tag_id JOIN objects o2 ON o2.id = lt.object_id WHERE tl.object_id = ? AND lt.deleted_at IS NULL AND o2.deleted_at IS NULL').all(objectId) as Array<{ tag_id: string; owner_id: string; owner_name: string; game_id: string }>
+    const withPaths = rows.map(r => ({ tag_id: r.tag_id, owner_id: r.owner_id, owner_name: r.owner_name, owner_path: getPathString(db, r.game_id, r.owner_id) }))
+    db.close()
+    return withPaths as Array<{ tag_id: string; owner_id: string; owner_name: string; owner_path: string }>
+  })
+
+  ipcMain.handle('gamedocs:remove-link-target', async (_evt, tagId: string, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    db.prepare('DELETE FROM tag_links WHERE tag_id = ? AND object_id = ?').run(tagId, objectId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:delete-link-tag', async (_evt, tagId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(tagId)
+    db.prepare('DELETE FROM link_tags WHERE id = ?').run(tagId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:rename-object', async (_evt, objectId: string, newName: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    const name = (newName || '').trim()
+    if (!name) { db.close(); throw new Error('Invalid name') }
+    const now = new Date().toISOString()
+    db.prepare('UPDATE objects SET name = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(name, now, objectId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:update-object-type', async (_evt, objectId: string, newType: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    const t = (newType || 'Other').trim()
+    const allowed = new Set(['Place', 'Person', 'Lore', 'Other'])
+    if (!allowed.has(t)) { db.close(); throw new Error('Invalid type') }
+    const now = new Date().toISOString()
+    db.prepare('UPDATE objects SET type = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(t, now, objectId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:set-default-image', async (_evt, objectId: string, imageId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    db.prepare('UPDATE images SET is_default = 0 WHERE object_id = ? AND deleted_at IS NULL').run(objectId)
+    db.prepare('UPDATE images SET is_default = 1 WHERE id = ? AND object_id = ? AND deleted_at IS NULL').run(imageId, objectId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:rename-image', async (_evt, imageId: string, newName: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    db.prepare('UPDATE images SET name = ? WHERE id = ? AND deleted_at IS NULL').run((newName || '').trim() || null, imageId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:delete-image', async (_evt, imageId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    const row = db.prepare('SELECT object_id, file_path, thumb_path FROM images WHERE id = ?').get(imageId) as { object_id: string; file_path: string; thumb_path: string } | undefined
+    db.prepare('DELETE FROM images WHERE id = ?').run(imageId)
+    db.close()
+    try { if (row?.file_path) await fs.unlink(row.file_path).catch(() => {}) } catch {}
+    try { if (row?.thumb_path) await fs.unlink(row.thumb_path).catch(() => {}) } catch {}
+    return true
   })
 
   ipcMain.handle('gamedocs:create-link-tag', async (_evt, gameId: string, ownerObjectId: string) => {

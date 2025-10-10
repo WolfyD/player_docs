@@ -11,6 +11,7 @@ export const Editor: React.FC = () => {
   const [parent, setParent] = useState<{ id: string; name: string } | null>(null)
   const [showCat, setShowCat] = useState(false)
   const [catName, setCatName] = useState('')
+  const [catType, setCatType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
   const [catErr, setCatErr] = useState<string | null>(null)
 
   useEffect(() => {
@@ -50,7 +51,7 @@ export const Editor: React.FC = () => {
   }>({ visible: false, x: 0, y: 0, selText: '' })
   const [showWizard, setShowWizard] = useState(false)
   const [wizardName, setWizardName] = useState('')
-  const [wizardType, setWizardType] = useState('')
+  const [wizardType, setWizardType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
   // Linker modal state
   const [showLinker, setShowLinker] = useState(false)
   const [linkerInput, setLinkerInput] = useState('')
@@ -73,6 +74,10 @@ export const Editor: React.FC = () => {
   const [picName, setPicName] = useState('')
   const [picIsDefault, setPicIsDefault] = useState(true)
   const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
+  const [showEditObject, setShowEditObject] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [ownerTags, setOwnerTags] = useState<Array<{ id: string }>>([])
+  const [incomingLinks, setIncomingLinks] = useState<Array<{ tag_id: string; owner_id: string; owner_name: string; owner_path: string }>>([])
   const [showPalette, setShowPalette] = useState(false)
   const [paletteInput, setPaletteInput] = useState('')
   const [paletteResults, setPaletteResults] = useState<{ objects: Array<{ id: string; name: string }>; tags: Array<{ id: string; object_id: string }> }>({ objects: [], tags: [] })
@@ -80,6 +85,7 @@ export const Editor: React.FC = () => {
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
+  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; newChild: string; addImage: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
@@ -110,6 +116,15 @@ export const Editor: React.FC = () => {
       } else {
         applyFonts(fonts)
       }
+
+      const savedShortcuts = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.shortcuts').catch(() => null)
+      if (savedShortcuts) setShortcuts({
+        settings: savedShortcuts.settings || 'F1',
+        editObject: savedShortcuts.editObject || 'F2',
+        command: savedShortcuts.command || 'Ctrl+K',
+        newChild: savedShortcuts.newChild || 'Ctrl+N',
+        addImage: savedShortcuts.addImage || 'Ctrl+I'
+      })
     })()
   }, [])
 
@@ -192,21 +207,51 @@ span[data-tag] {
     rootEl.style.setProperty('--pd-text', f.color)
   }
 
-  // Global shortcut: Ctrl+K opens command palette
+  function safeThumbSrc(img: { thumb_data_url?: string | null; thumb_url?: string | null; thumb_path: string }) {
+    const data = (img.thumb_data_url || '').trim()
+    if (data.startsWith('data:') && data.length > 30) return data
+    const url = (img.thumb_url || '').trim()
+    if (url) return url
+    return `file:///${img.thumb_path.replace(/\\/g, '/')}`
+  }
+
+  function matchShortcut(e: KeyboardEvent, combo: string): boolean {
+    const parts = combo.split('+').map(s => s.trim().toLowerCase())
+    const key = parts[parts.length - 1]
+    const wantCtrl = parts.includes('ctrl') || parts.includes('control')
+    const wantShift = parts.includes('shift')
+    const wantAlt = parts.includes('alt')
+    if (wantCtrl !== (!!e.ctrlKey || !!e.metaKey)) return false
+    if (wantShift !== !!e.shiftKey) return false
+    if (wantAlt !== !!e.altKey) return false
+    return e.key.toLowerCase() === key
+  }
+
+  // Global shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      if (matchShortcut(e, shortcuts.command)) {
         e.preventDefault()
         setShowPalette(true)
         setPaletteInput('')
         setPaletteResults({ objects: [], tags: [] })
       } else if (e.key === 'Escape') {
         setShowPalette(false)
+        setShowSettings(false)
+        setShowEditObject(false)
+      } else if (matchShortcut(e, shortcuts.settings)) {
+        e.preventDefault(); setShowSettings(true)
+      } else if (matchShortcut(e, shortcuts.editObject)) {
+        e.preventDefault(); setTagMenu(m => ({ ...m, visible: false })); setEditName(activeName); setShowEditObject(true)
+      } else if (matchShortcut(e, shortcuts.newChild)) {
+        e.preventDefault(); setCatErr(null); setCatName(''); setShowCat(true)
+      } else if (matchShortcut(e, shortcuts.addImage)) {
+        e.preventDefault(); setAddPictureModal(true)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [shortcuts, activeName])
 
   useEffect(() => {
     const run = setTimeout(async () => {
@@ -305,7 +350,7 @@ span[data-tag] {
   const handleEditOpen = useCallback(() => {
     setCtxMenu(m => ({ ...m, visible: false }))
     setWizardName(ctxMenu.selText.trim())
-    setWizardType('')
+    setWizardType('Other')
     setShowWizard(true)
   }, [ctxMenu.selText])
 
@@ -472,7 +517,7 @@ span[data-tag] {
     const name = (catName || '').trim()
     if (!name) { setCatErr('Name is required'); return }
     try {
-      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name)
+      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name, catType)
       // Reload children
       const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
       setChildren(kids)
@@ -481,7 +526,7 @@ span[data-tag] {
       setCatErr(e?.message || 'Failed to create category')
     }
 
-  }, [catName, campaign, activeId, root])
+  }, [catName, catType, campaign, activeId, root])
 
   function insertAtSelection(text: string) {
     // For contentEditable, prefer replacing current Range; fallback to append
@@ -635,6 +680,7 @@ span[data-tag] {
               { id: '__DELETE__', name: 'Delete…', path: '' },
               { id: '__ADDPICTURE__', name: 'Add picture…', path: '' },
               { id: '__SETTINGS__', name: 'Settings…', path: '' },
+              { id: '__EDITOBJECT__', name: 'Edit object…', path: '' },
             ], hoverPreview: null, source: 'dropdown' }
             })
           }}
@@ -854,6 +900,21 @@ span[data-tag] {
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         return
                       }
+                      if (t.id === '__EDITOBJECT__') {
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        setEditName(activeName)
+                        // preload relations
+                        const obj = await window.ipcRenderer.invoke('gamedocs:get-object', activeId)
+                        setWizardType((obj?.type as any) || 'Other')
+                        const [ot, inc] = await Promise.all([
+                          window.ipcRenderer.invoke('gamedocs:list-owner-tags', activeId).catch(() => []),
+                          window.ipcRenderer.invoke('gamedocs:list-incoming-links', activeId).catch(() => []),
+                        ])
+                        setOwnerTags(ot || [])
+                        setIncomingLinks(inc || [])
+                        setShowEditObject(true)
+                        return
+                      }
                       if (t.id === '__ADDPICTURE__') {
                         setAddPictureModal(true)
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
@@ -929,13 +990,97 @@ span[data-tag] {
                 {images.map(img => (
                   <div key={img.id} style={{ border: '1px solid #333', borderRadius: 6, padding: 6, width: 220 }}>
                     
-                    <img src={img.thumb_data_url || img.thumb_url || `file:///${img.thumb_path.replace(/\\/g, '/')}`} style={{ maxWidth: '100%', display: 'block', borderRadius: 4 }} />
+                    <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4 }} />
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12 }}>
                       <span title={img.name || ''}>{img.name || '(unnamed)'}</span>
                       {img.is_default ? <span title='Default'>⭐</span> : null}
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Edit Object modal */}
+          {showEditObject && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 60, zIndex: 60 }} onClick={() => setShowEditObject(false)}>
+              <div style={{ width: '70%', minWidth: 860, maxWidth: '92vw' }} onClick={e => e.stopPropagation()}>
+                <div style={{ background: 'var(--pd-surface, #1e1e1e)', border: '1px solid #333', borderRadius: 10, padding: 16, color: 'var(--pd-text, #e5e5e5)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <h3 style={{ margin: 0 }}>Edit object</h3>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => setShowEditObject(false)}>Close</button>
+                      <button onClick={async () => {
+                        await window.ipcRenderer.invoke('gamedocs:rename-object', activeId, editName)
+                        await window.ipcRenderer.invoke('gamedocs:update-object-type', activeId, wizardType)
+                        setShowEditObject(false)
+                        selectObject(activeId, editName)
+                      }}>Save</button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <label style={{ flex: 1 }}>Name <input value={editName} onChange={e => setEditName(e.target.value)} style={{ width: '100%' }} /></label>
+                        <label style={{ width: 160 }}>Type
+                          <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} style={{ width: '100%' }}>
+                            <option value='Other'>Other</option>
+                            <option value='Place'>Place</option>
+                            <option value='Person'>Person</option>
+                            <option value='Lore'>Lore</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Tags owned by this object</div>
+                        {ownerTags.length === 0 ? <div style={{ color: '#888' }}>No tags</div> : (
+                          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                            {ownerTags.map(t => (
+                              <li key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', gap: 8 }}>
+                                <code>{t.id}</code>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <button title='Delete tag and its links' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-link-tag', t.id); const ot = await window.ipcRenderer.invoke('gamedocs:list-owner-tags', activeId).catch(() => []); setOwnerTags(ot || []) }}>Delete</button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Objects linking to this</div>
+                        {incomingLinks.length === 0 ? <div style={{ color: '#888' }}>No incoming links</div> : (
+                          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                            {incomingLinks.map(l => (
+                              <li key={l.tag_id + l.owner_id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', gap: 8 }}>
+                                <span title={l.owner_path}>{l.owner_name}</span>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <button title='Remove link' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:remove-link-target', l.tag_id, activeId); const inc = await window.ipcRenderer.invoke('gamedocs:list-incoming-links', activeId).catch(() => []); setIncomingLinks(inc || []) }}>Remove</button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 6 }}>Images</div>
+                      {images.length === 0 ? <div style={{ color: '#888' }}>No images</div> : (
+                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                          {images.map(img => (
+                            <div key={img.id} style={{ border: '1px solid #333', borderRadius: 6, padding: 6, width: 200 }}>
+                              <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4 }} />
+                              <input defaultValue={img.name || ''} placeholder='Name' style={{ width: '100%', marginTop: 6 }} onBlur={async (e) => { const v = e.target.value; await window.ipcRenderer.invoke('gamedocs:rename-image', img.id, v) }} />
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, alignItems: 'center' }}>
+                                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}><input type='radio' checked={!!img.is_default} onChange={async () => { await window.ipcRenderer.invoke('gamedocs:set-default-image', activeId, img.id); const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId); setImages(imgs || []) }} /> Default</label>
+                                <button onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-image', img.id); const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId); setImages(imgs || []) }}>Delete</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -1089,9 +1234,13 @@ span[data-tag] {
                     {/* Right column: shortcuts */}
                     <div style={{ width: 260, borderLeft: '1px solid #333', paddingLeft: 12 }}>
                       <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard shortcuts</div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
-                        <span>Command palette</span>
-                        <code>Ctrl + K</code>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <label>Settings <input value={shortcuts.settings} onChange={e => setShortcuts(s => ({ ...s, settings: e.target.value }))} placeholder='F1' /></label>
+                        <label>Edit object <input value={shortcuts.editObject} onChange={e => setShortcuts(s => ({ ...s, editObject: e.target.value }))} placeholder='F2' /></label>
+                        <label>Command palette <input value={shortcuts.command} onChange={e => setShortcuts(s => ({ ...s, command: e.target.value }))} placeholder='Ctrl+K' /></label>
+                        <label>New child <input value={shortcuts.newChild} onChange={e => setShortcuts(s => ({ ...s, newChild: e.target.value }))} placeholder='Ctrl+N' /></label>
+                        <label>Add image <input value={shortcuts.addImage} onChange={e => setShortcuts(s => ({ ...s, addImage: e.target.value }))} placeholder='Ctrl+I' /></label>
+                        <button style={{ gridColumn: '1 / -1' }} onClick={async () => { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts) }}>Save shortcuts</button>
                       </div>
                     </div>
                   </div>
@@ -1109,6 +1258,15 @@ span[data-tag] {
                   <label>
                     <div>Name</div>
                     <input autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { handleCreateChild() } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} style={{ width: '100%' }} />
+                  </label>
+                  <label>
+                    <div>Type</div>
+                    <select value={catType} onChange={e => setCatType(e.target.value as any)} style={{ width: '100%' }}>
+                      <option value='Other'>Other</option>
+                      <option value='Place'>Place</option>
+                      <option value='Person'>Person</option>
+                      <option value='Lore'>Lore</option>
+                    </select>
                   </label>
                   {catErr && <div style={{ color: 'tomato' }}>{catErr}</div>}
                 </div>
@@ -1131,8 +1289,13 @@ span[data-tag] {
                     <input value={wizardName} onChange={e => setWizardName(e.target.value)} style={{ width: '100%' }} />
                   </label>
                   <label>
-                    <div>Type (optional)</div>
-                    <input value={wizardType} onChange={e => setWizardType(e.target.value)} style={{ width: '100%' }} />
+                    <div>Type</div>
+                    <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} style={{ width: '100%' }}>
+                      <option value='Other'>Other</option>
+                      <option value='Place'>Place</option>
+                      <option value='Person'>Person</option>
+                      <option value='Lore'>Lore</option>
+                    </select>
                   </label>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
@@ -1141,7 +1304,7 @@ span[data-tag] {
                   const label = (wizardName || '').trim()
                     if (!label) return
                     const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
-                  const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, label, (wizardType || null))
+                  const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, label, (wizardType as string))
                     setShowWizard(false)
                   replaceSelectionWithSpan(label, res.tagId)
                   }}>Create</button>

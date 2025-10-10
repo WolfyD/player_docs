@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS objects (
   id TEXT PRIMARY KEY,
   game_id TEXT NOT NULL REFERENCES games(id),
   name TEXT NOT NULL,
-  type TEXT,
+  type TEXT NOT NULL DEFAULT 'Other' CHECK(type IN ('Place', 'Person', 'Lore', 'Other')),
   parent_id TEXT REFERENCES objects(id),
   description TEXT,
   created_at TEXT NOT NULL,
