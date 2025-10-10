@@ -8,7 +8,7 @@ function App() {
     <div className='App'>
       {isEditor ? <Editor /> : (
         <>
-          <h1 style={{ margin: '-30px 0 30px' }}>PlayerDocs</h1>
+          
           <ProjectSetup />
         </>
       )}

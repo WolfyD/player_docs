@@ -271,3 +271,58 @@
 .misc-item { padding: 6px 10px; cursor: pointer; border: 1px solid #333; border-radius: 6px; background: #202020; }
 .misc-item:hover { background: #262626; }
 
+/* Animated gradient title for Project Setup */
+.project-setup-title {
+  background: linear-gradient(
+    -45deg,
+    #a8c5ff,
+    #b6f0d0,
+    #ffe3a8,
+    #f4c2f3,
+    #c9b9ff,
+    #ffd1cc,
+    #c7f0ff,
+    #fbe0a1,
+    #d7ffd6,
+    #e3d5ff,
+    #ffdfe0,
+    #d0f0f8
+  );
+  background-size: 400% 400%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: pd-title-gradient 28s ease-in-out infinite;
+}
+
+@keyframes pd-title-gradient {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-setup-title {
+    animation: none;
+    background: none;
+    color: var(--pd-text, #e5e5e5);
+  }
+}
+
+.main-campaign-listing { 
+    text-align: left; 
+    background: transparent; 
+    border: none; 
+    color: inherit; 
+    cursor: pointer; 
+}
+
+.main-campaign-listing:hover { color: #c781ccc5; text-decoration: underline; }
+.main-button-edit:hover { color: #faff6ac5; }
+.main-button-delete:hover { color: #f06262c5; }
+.main-button-more:hover { color: #6495EDc5; }
+
+.project-setup { padding: 24px; position: relative; min-height: 400px; user-select: none; }
+.project-setup-list { border: 1px solid #3a3a3a; border-radius: 6px; overflow: auto; }
+.project-setup-list-header { display: grid; grid-template-columns: 1fr 360px; padding: 8px 12px; background: #202020; font-weight: 600; }
+.project-setup-title { font-size: 80px; margin: -30px 0 30px; }

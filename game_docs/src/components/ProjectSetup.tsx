@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { createCampaign } from '../utils/ipc'
+import '../components/editor.css'
 
 export const ProjectSetup: React.FC = () => {
   const [name, setName] = useState('My Campaign')
@@ -7,6 +8,9 @@ export const ProjectSetup: React.FC = () => {
   const [result, setResult] = useState<{ gameDir: string; dbFile: string; gameId: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [campaigns, setCampaigns] = useState<Array<{ id: string; name: string }>>([])
+  const [showRename, setShowRename] = useState(false)
+  const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
+  const [renameName, setRenameName] = useState('')
 
   async function loadCampaigns(): Promise<Array<{ id: string; name: string }>> {
     try {
@@ -56,9 +60,10 @@ export const ProjectSetup: React.FC = () => {
   }
 
   return (
-    <div style={{ padding: 24, position: 'relative', minHeight: 400 }}>
-      <div style={{ border: '1px solid #3a3a3a', borderRadius: 6, overflow: 'auto' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', padding: '8px 12px', background: '#202020', fontWeight: 600 }}>
+    <div className="project-setup">
+      <h1 className="project-setup-title">PlayerDocs</h1>
+      <div className="project-setup-list">
+        <div className="project-setup-list-header">
           <div>Existing Campaigns</div>
         </div>
         {campaigns.length === 0 ? (
@@ -66,22 +71,16 @@ export const ProjectSetup: React.FC = () => {
         ) : (
           campaigns.map(c => (
             <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '1fr 360px', padding: '10px 12px', borderTop: '1px solid #2a2a2a', alignItems: 'center' }}>
-              <button onClick={() => onOpen(c.id)} style={{ textAlign: 'left', background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>{c.name}</button>
+              <button className="main-campaign-listing" onClick={() => onOpen(c.id)}>{c.name}</button>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button onClick={async () => {
-                  const newName = prompt('Rename campaign', c.name)
-                  if (!newName) return
-                  // @ts-expect-error injected by preload
-                  await window.ipcRenderer.invoke('gamedocs:rename-campaign', c.id, newName)
-                  loadCampaigns()
-                }}>E</button>
-                <button onClick={async () => {
+                <button className="main-button-edit" onClick={() => { setShowRename(true); setRenameTarget(c); setRenameName(c.name) }}><i className="ri-pencil-fill"></i></button>
+                <button className="main-button-delete" onClick={async () => {
                   if (!confirm('Delete this campaign? (soft delete)')) return
                   // @ts-expect-error injected by preload
                   await window.ipcRenderer.invoke('gamedocs:delete-campaign', c.id)
                   loadCampaigns()
-                }}>D</button>
-                <button title="More">⋯</button>
+                }}><i className="ri-delete-bin-fill"></i></button>
+                <button className="main-button-more" title="More"><i className="ri-more-fill"></i></button>
               </div>
             </div>
           ))
@@ -116,6 +115,32 @@ export const ProjectSetup: React.FC = () => {
         </div>
       )}
       {error && <div style={{ color: 'red', marginTop: 12 }}>{error}</div>}
+
+      {/* Rename Campaign modal */}
+      {showRename && renameTarget && (
+        <div className="modal-overlay" onClick={() => setShowRename(false)}>
+          <div className="dialog-card w-360" onClick={e => e.stopPropagation()}>
+            <h3 className="mt-0">Rename campaign</h3>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label>
+                <div>Name</div>
+                <input value={renameName} onChange={e => setRenameName(e.target.value)} className="input-100" autoFocus />
+              </label>
+            </div>
+            <div className="actions" style={{ marginTop: 12 }}>
+              <button onClick={() => setShowRename(false)}>Cancel</button>
+              <button onClick={async () => {
+                const nn = (renameName || '').trim()
+                if (!nn || !renameTarget) { setShowRename(false); return }
+                // @ts-expect-error injected by preload
+                await window.ipcRenderer.invoke('gamedocs:rename-campaign', renameTarget.id, nn)
+                await loadCampaigns()
+                setShowRename(false)
+              }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
