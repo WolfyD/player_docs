@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
+import './editor.css'
 import Fuse from 'fuse.js'
 
 type Campaign = { id: string; name: string }
@@ -650,15 +651,15 @@ span[data-tag] {
     return result
   }
 
-  if (error) return <div style={{ padding: 16, color: 'red' }}>{error}</div>
-  if (!campaign) return <div style={{ padding: 16 }}>Loading…</div>
+  if (error) return <div className="pad-16 text-red">{error}</div>
+  if (!campaign) return <div className="pad-16">Loading…</div>
 
   return (
-    <div style={{ display: 'grid', gridTemplateRows: '30px 1fr', gridTemplateColumns: '1fr', height: '90vh', width: '98%', position: 'absolute', left: '1%', top: 40 }}>
-      <div className="main_header" style={{ display: 'grid', gridTemplateColumns: '1fr', position: 'absolute', left: 10, width: '90%' }}>
-        <h2 style={{ userSelect: 'none', position: 'absolute', marginTop: -40, left: '0px' }}>
+    <div className="editor-grid">
+      <div className="main_header">
+        <h2 className="header-title">
           {root ? (
-            <a style={{ cursor: 'pointer', userSelect: 'none' }} onClick={(e) => { e.preventDefault(); selectObject(root.id, root.name) }}>
+            <a className="home-link" onClick={(e) => { e.preventDefault(); selectObject(root.id, root.name) }}>
               <i className={root.id === activeId ? 'ri-home-2-line' : 'ri-home-2-fill'}></i>
             </a>
           ) : (
@@ -666,7 +667,7 @@ span[data-tag] {
           )}
           {' '} {campaign.name}
         </h2>
-        <button ref={menuButtonRef} className="menu_button" style={{ zIndex: 16, userSelect: 'none', marginTop: -30, position: 'fixed', right: '2%' }}
+        <button ref={menuButtonRef} className="menu_button"
           onClick={(e) => {
             e.preventDefault()
             setCtxMenu(m => ({ ...m, visible: false }))
@@ -693,7 +694,7 @@ span[data-tag] {
           }}
         >...</button>
       </div>
-      <div style={{ width: '100%', height: '94%', margin: 0, position: 'absolute', left: 0, top: 30, display: 'grid', gridTemplateColumns: '200px 1fr' }} onClick={(e) => {
+      <div className="content-grid" onClick={(e) => {
         // Close menus when clicking outside
         const target = e.target as Node
         if (ctxMenu.visible && ctxMenuRef.current && !ctxMenuRef.current.contains(target)) {
@@ -704,19 +705,19 @@ span[data-tag] {
         }
       }}>
         {/* Sidebar */}
-        <div style={{ borderRight: '1px solid #333', padding: 12 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}></div>
+        <div className="sidebar">
+          <div className="sidebar-title"></div>
           {root && (
             <div>
               {parent && parent.id && parent.id !== activeId && (
-                <a className="jump_to_parent" style={{ cursor: 'pointer', userSelect: 'none', position: 'absolute', width: '200px', whiteSpace: 'nowrap', marginTop: -30, marginLeft: -10, display: 'flex', flexDirection: 'column', alignItems: 'center'}} onClick={(e) => { e.preventDefault(); selectObject(parent.id, parent.name) }}><span style={{ whiteSpace: 'nowrap' }}>parent <i className="ri-arrow-up-circle-line"></i></span></a>
+                <a className="jump-to-parent" onClick={(e) => { e.preventDefault(); selectObject(parent.id, parent.name) }}><span className="nowrap">parent <i className="ri-arrow-up-circle-line"></i></span></a>
               )}
-              <div className="header_line" style={{ userSelect: 'none', fontWeight: 600, paddingBottom: 10}}>{activeName || root.name}</div>
-              <a style={{ userSelect: 'none', cursor: 'pointer' }} className="add_child" onClick={() => { setCatErr(null); setCatName(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
-              <div  style={{ userSelect: 'none', height: '10px', borderBottom: '1px solid #333' }}></div>
-              <div className="menu_items_container" style={{ userSelect: 'none', display: 'flex', flexDirection: 'column', height: getHeight(), width: '100%', flexGrow: 1 }}>
+              <div className="header_line">{activeName || root.name}</div>
+              <a className="add-child" onClick={() => { setCatErr(null); setCatName(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
+              <div className="divider-line"></div>
+              <div className="menu_items_container" style={{ height: getHeight() }}>
                 {children.map(c => (
-                  <div key={c.id} onClick={() => selectObject(c.id, c.name)} style={{ paddingBottom: 10, borderBottom: '1px solid #333', cursor: 'pointer' }}>{c.name}</div>
+                  <div key={c.id} onClick={() => selectObject(c.id, c.name)} className="child-item">{c.name}</div>
                 ))}
               </div>
             </div>
@@ -724,7 +725,7 @@ span[data-tag] {
         </div>
 
         {/* Main panel: interactive editor (root description for now) */}
-        <div className="editor_container" style={{ padding: 16 }}>
+        <div className="editor_container">
           <div
             ref={editorRef}
             contentEditable
@@ -870,51 +871,38 @@ span[data-tag] {
                 setDesc(htmlToDesc(editorRef.current))
               }
             }}
-            style={{ width: '100%', height: '70vh', outline: 'none', whiteSpace: 'pre-wrap', textAlign: 'left' }}
+            className="editor_content"
           />
           {/* Hover preview card for single-target tags */}
           {hoverCard.visible && (
-            <div style={{ position: 'fixed', left: hoverCard.x, top: hoverCard.y, background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 8, width: 300, maxWidth: 460, zIndex: 15, boxShadow: '0 2px 8px rgba(0,0,0,0.45)' }}>
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>{hoverCard.name}</div>
+            <div className="hover-card" style={{ left: hoverCard.x, top: hoverCard.y }}>
+              <div className="hover-card-title">{hoverCard.name}</div>
               {hoverCard.imageUrl && (
-                <img src={hoverCard.imageUrl} style={{ maxWidth: 400, maxHeight: 400, borderRadius: 4, display: 'block', marginBottom: 6 }} />
+                <img src={hoverCard.imageUrl} className="hover-card-image" />
               )}
               {hoverCard.snippet && (
-                <div style={{ color: '#bbb', fontSize: 12 }}>{hoverCard.snippet}</div>
+                <div className="hover-card-snippet">{hoverCard.snippet}</div>
               )}
             </div>
           )}
           {ctxMenu.visible && (
-            <div
-              style={{
-                position: 'fixed',
-                left: ctxMenu.x,
-                top: ctxMenu.y,
-                background: '#202020',
-                border: '1px solid #333',
-                borderRadius: 6,
-                padding: 6,
-                zIndex: 10,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.35)'
-              }}
-              ref={ctxMenuRef}
-            >
-              <div style={{ padding: '2px 10px 0px 10px', color: '#aaa', cursor: 'default', userSelect: 'none', fontWeight: 600 }}>Add</div>
-              <div style={{ borderTop: '1px solid #333', margin: '6px 0' }} />
-              <div style={{ padding: '6px 10px', cursor: 'pointer' }}  onClick={handleAddLinkOpen}>Add link</div>
-              <div style={{ padding: '6px 10px', cursor: 'pointer' }}
+            <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} ref={ctxMenuRef}>
+              <div className="ctx-menu-section-title">Add</div>
+              <div className="separator" />
+              <div className="ctx-menu-item"  onClick={handleAddLinkOpen}>Add link</div>
+              <div className="ctx-menu-item"
                 onClick={handleEditOpen}
               >Edit…</div>
-              <div style={{ padding: '6px 10px', cursor: 'pointer' }}
+              <div className="ctx-menu-item"
                 onClick={handleClearLink}
               >Clear</div>
-              <div style={{ borderTop: '1px solid #333', margin: '6px 0' }} />
+              <div className="separator" />
               {ctxLinkedTargets.length === 0 ? (
-                <div style={{ padding: '6px 10px', color: '#777' }}>No objects linked</div>
+                <div className="ctx-menu-item muted">No objects linked</div>
               ) : (
-                <div style={{ maxHeight: 200, overflow: 'auto' }}>
+                <div className="ctx-menu-scroll">
                   {ctxLinkedTargets.map(t => (
-                    <div key={t.id} style={{ padding: '6px 10px' }}>{t.path}</div>
+                    <div key={t.id} className="ctx-menu-item">{t.path}</div>
                   ))}
                 </div>
               )}
@@ -923,12 +911,12 @@ span[data-tag] {
 
           {/* Left-click tag menu for multi-target links */}
           {tagMenu.visible && (
-            <div style={{ position: 'fixed', left: tagMenu.x, top: tagMenu.y, background: '#202020', border: '1px solid #333', borderRadius: 6, padding: 6, zIndex: 16, boxShadow: '0 2px 8px rgba(0,0,0,0.35)', display: 'flex', gap: 8 }}
+            <div className="tag-menu" style={{ left: tagMenu.x, top: tagMenu.y }}
               ref={tagMenuRef}
             >
-              <div style={{ maxHeight: 260, overflow: 'auto', minWidth: 220 }}>
+              <div className="tag-menu-list">
                 {tagMenu.items.map(t => (
-                  <div key={t.id} style={{ padding: '6px 10px', cursor: 'pointer' }}
+                  <div key={t.id} className="tag-menu-item"
                     onMouseEnter={async () => {
                       if (t.id === '__DELETE__') return
                       const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
@@ -1011,13 +999,13 @@ span[data-tag] {
                 ))}
               </div>
               {tagMenu.hoverPreview && (
-                <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 6, padding: 8, maxWidth: 420 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6 }}>{tagMenu.hoverPreview.name}</div>
+                <div className="preview-card">
+                  <div className="preview-card-title">{tagMenu.hoverPreview.name}</div>
                   {tagMenu.hoverPreview.imageUrl && (
-                    <img src={tagMenu.hoverPreview.imageUrl} style={{ maxWidth: 400, maxHeight: 400, borderRadius: 4, display: 'block', marginBottom: 6 }} />
+                    <img src={tagMenu.hoverPreview.imageUrl} className="preview-card-image" />
                   )}
                   {tagMenu.hoverPreview.snippet && (
-                    <div style={{ color: '#bbb', fontSize: 12 }}>{tagMenu.hoverPreview.snippet}</div>
+                    <div className="preview-card-snippet">{tagMenu.hoverPreview.snippet}</div>
                   )}
                 </div>
               )}
@@ -1026,31 +1014,31 @@ span[data-tag] {
 
           {/* Add Picture modal */}
           {addPictureModal && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 30 }}>
-              <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 16, width: 520 }}>
-                <h3 style={{ marginTop: 0 }}>Add Picture</h3>
-                <div style={{ display: 'grid', gap: 10 }}>
+            <div className="modal-overlay">
+              <div className="dialog-card w-520">
+                <h3 className="dialog-title">Add Picture</h3>
+                <div className="grid-gap-10">
                   <label>
                     <div>Name (optional)</div>
-                    <input value={picName} onChange={e => setPicName(e.target.value)} style={{ width: '100%' }} />
+                    <input value={picName} onChange={e => setPicName(e.target.value)} className="input-100" />
                   </label>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div className="flex-row">
                     <label><input type="radio" checked={picSource.type === 'file'} onChange={() => setPicSource(s => ({ type: 'file', value: '' }))} /> File</label>
                     <button onClick={async () => {
                       const res = await window.ipcRenderer.invoke('gamedocs:choose-image')
                       if (res?.path) setPicSource({ type: 'file', value: res.path })
                     }}>Browse…</button>
-                    <span style={{ color: '#888', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis' }}>{picSource.type === 'file' ? (picSource.value || 'No file selected') : ''}</span>
+                    <span className="muted-ellipsis">{picSource.type === 'file' ? (picSource.value || 'No file selected') : ''}</span>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div className="flex-row">
                     <label><input type="radio" checked={picSource.type === 'url'} onChange={() => setPicSource(s => ({ type: 'url', value: '' }))} /> URL</label>
-                    <input placeholder="https://..." value={picSource.type === 'url' ? picSource.value : ''} onChange={e => setPicSource({ type: 'url', value: e.target.value })} style={{ flex: 1 }} />
+                    <input placeholder="https://..." value={picSource.type === 'url' ? picSource.value : ''} onChange={e => setPicSource({ type: 'url', value: e.target.value })} className="flex-1" />
                   </div>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <label className="items-center flex-gap-8">
                     <input type="checkbox" checked={picIsDefault} onChange={e => setPicIsDefault(e.target.checked)} /> Default image
                   </label>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                <div className="actions">
                   <button onClick={() => setAddPictureModal(false)}>Cancel</button>
                   <button onClick={async () => {
                     const src = picSource
@@ -1069,13 +1057,13 @@ span[data-tag] {
 
           {/* Images under description */}
           {images.length > 0 && (
-            <div style={{ marginTop: 16, borderTop: '1px solid #333', paddingTop: 16 }}>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>Images</div>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <div className="images-section">
+              <div className="images-title">Images</div>
+              <div className="thumb-list">
                 {images.map(img => (
-                  <div key={img.id} style={{ border: '1px solid #333', borderRadius: 6, padding: 6, width: 220 }}>
+                  <div key={img.id} className="thumb-card">
                     
-                    <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4, cursor: 'zoom-in' }} onClick={async (e) => {
+                    <img src={safeThumbSrc(img)} className="thumb-img" onClick={async (e) => {
                       if ((e as any).shiftKey) {
                         await window.ipcRenderer.invoke('gamedocs:open-image-external', img.file_path)
                       } else {
@@ -1083,7 +1071,7 @@ span[data-tag] {
                         if (res?.ok) setImageModal({ visible: true, dataUrl: res.dataUrl })
                       }
                     }} />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12 }}>
+                    <div className="thumb-row">
                       <span title={img.name || ''}>{img.name || '(unnamed)'}</span>
                       {img.is_default ? <span title='Default'>⭐</span> : null}
                     </div>
@@ -1095,12 +1083,12 @@ span[data-tag] {
 
           {/* Edit Object modal */}
           {showEditObject && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 60, zIndex: 60 }} onClick={() => setShowEditObject(false)}>
-              <div style={{ width: '70%', minWidth: 860, maxWidth: '92vw' }} onClick={e => e.stopPropagation()}>
-                <div style={{ background: 'var(--pd-surface, #1e1e1e)', border: '1px solid #333', borderRadius: 10, padding: 16, color: 'var(--pd-text, #e5e5e5)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <h3 style={{ margin: 0 }}>Edit object</h3>
-                    <div style={{ display: 'flex', gap: 8 }}>
+            <div className="edit-modal-overlay" onClick={() => setShowEditObject(false)}>
+              <div className="edit-modal-width" onClick={e => e.stopPropagation()}>
+                <div className="edit-modal">
+                  <div className="edit-modal-header">
+                    <h3 className="m-0">Edit object</h3>
+                    <div className="flex-gap-8">
                       <button onClick={() => setShowEditObject(false)}>Close</button>
                       <button onClick={async () => {
                         await window.ipcRenderer.invoke('gamedocs:rename-object', activeId, editName)
@@ -1110,12 +1098,12 @@ span[data-tag] {
                       }}>Save</button>
                     </div>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                    <div style={{ display: 'grid', gap: 10 }}>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <label style={{ flex: 1 }}>Name <input value={editName} onChange={e => setEditName(e.target.value)} style={{ width: '100%' }} /></label>
-                        <label style={{ width: 160 }}>Type
-                          <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} style={{ width: '100%' }}>
+                  <div className="edit-modal-grid">
+                    <div className="grid-gap-10-only">
+                      <div className="flex-gap-8">
+                        <label className="flex-1">Name <input value={editName} onChange={e => setEditName(e.target.value)} className="input-100" /></label>
+                        <label className="w-160">Type
+                          <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} className="input-100">
                             <option value='Other'>Other</option>
                             <option value='Place'>Place</option>
                             <option value='Person'>Person</option>
@@ -1123,14 +1111,14 @@ span[data-tag] {
                           </select>
                         </label>
                       </div>
-                      <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10 }}>
-                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Tags owned by this object</div>
-                        {ownerTags.length === 0 ? <div style={{ color: '#888' }}>No tags</div> : (
-                          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                      <div className="boxed">
+                        <div className="box-title">Tags owned by this object</div>
+                        {ownerTags.length === 0 ? <div className="muted">No tags</div> : (
+                          <ul className="list-reset">
                             {ownerTags.map(t => (
-                              <li key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', gap: 8 }}>
+                              <li key={t.id} className="list-item-row">
                                 <code>{t.id}</code>
-                                <div style={{ display: 'flex', gap: 6 }}>
+                                <div className="flex-gap-6">
                                   <button title='Delete tag and its links' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-link-tag', t.id); const ot = await window.ipcRenderer.invoke('gamedocs:list-owner-tags', activeId).catch(() => []); setOwnerTags(ot || []) }}>Delete</button>
                                 </div>
                               </li>
@@ -1138,14 +1126,14 @@ span[data-tag] {
                           </ul>
                         )}
                       </div>
-                      <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10 }}>
-                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Objects linking to this</div>
-                        {incomingLinks.length === 0 ? <div style={{ color: '#888' }}>No incoming links</div> : (
-                          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                      <div className="boxed">
+                        <div className="box-title">Objects linking to this</div>
+                        {incomingLinks.length === 0 ? <div className="muted">No incoming links</div> : (
+                          <ul className="list-reset">
                             {incomingLinks.map(l => (
-                              <li key={l.tag_id + l.owner_id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', gap: 8 }}>
+                              <li key={l.tag_id + l.owner_id} className="list-item-row">
                                 <span title={l.owner_path}>{l.owner_name}</span>
-                                <div style={{ display: 'flex', gap: 6 }}>
+                                <div className="flex-gap-6">
                                   <button title='Remove link' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:remove-link-target', l.tag_id, activeId); const inc = await window.ipcRenderer.invoke('gamedocs:list-incoming-links', activeId).catch(() => []); setIncomingLinks(inc || []) }}>Remove</button>
                                 </div>
                               </li>
@@ -1154,13 +1142,13 @@ span[data-tag] {
                         )}
                       </div>
                     </div>
-                    <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10 }}>
-                      <div style={{ fontWeight: 600, marginBottom: 6 }}>Images</div>
-                      {images.length === 0 ? <div style={{ color: '#888' }}>No images</div> : (
-                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                    <div className="boxed">
+                      <div className="box-title">Images</div>
+                      {images.length === 0 ? <div className="muted">No images</div> : (
+                        <div className="thumb-list">
                           {images.map(img => (
-                            <div key={img.id} style={{ border: '1px solid #333', borderRadius: 6, padding: 6, width: 200 }}>
-                              <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4, cursor: 'zoom-in' }} onClick={async (e) => {
+                            <div key={img.id} className="thumb-card w-200">
+                              <img src={safeThumbSrc(img)} className="thumb-img" onClick={async (e) => {
                                 if ((e as any).shiftKey) {
                                   await window.ipcRenderer.invoke('gamedocs:open-image-external', img.file_path)
                                 } else {
@@ -1168,9 +1156,9 @@ span[data-tag] {
                                   if (res?.ok) setImageModal({ visible: true, dataUrl: res.dataUrl })
                                 }
                               }} />
-                              <input defaultValue={img.name || ''} placeholder='Name' style={{ width: '100%', marginTop: 6 }} onBlur={async (e) => { const v = e.target.value; await window.ipcRenderer.invoke('gamedocs:rename-image', img.id, v) }} />
-                              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, alignItems: 'center' }}>
-                                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}><input type='radio' checked={!!img.is_default} onChange={async () => { await window.ipcRenderer.invoke('gamedocs:set-default-image', activeId, img.id); const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId); setImages(imgs || []) }} /> Default</label>
+                              <input defaultValue={img.name || ''} placeholder='Name' className="input-100 mt-6" onBlur={async (e) => { const v = e.target.value; await window.ipcRenderer.invoke('gamedocs:rename-image', img.id, v) }} />
+                              <div className="justify-between mt-6 items-center">
+                                <label className="items-center flex-gap-6"><input type='radio' checked={!!img.is_default} onChange={async () => { await window.ipcRenderer.invoke('gamedocs:set-default-image', activeId, img.id); const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId); setImages(imgs || []) }} /> Default</label>
                                 <button onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-image', img.id); const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId); setImages(imgs || []) }}>Delete</button>
                               </div>
                             </div>
@@ -1186,38 +1174,35 @@ span[data-tag] {
 
           {/* Command Palette */}
           {showPalette && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 80, zIndex: 40 }} onClick={() => setShowPalette(false)}>
-              <div style={{ width: 'min(80vw, 800px)', minWidth: 300, maxWidth: '80vw' }} onClick={(e) => e.stopPropagation()}>
-                <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 12 }}>
-                  <input autoFocus placeholder="Search objects, tags, or type a command" value={paletteInput} onChange={e => setPaletteInput(e.target.value)} style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #444', background: '#111', color: '#eee' }} />
-                  <div style={{ maxHeight: 340, overflow: 'auto', marginTop: 8 }}>
+            <div className="palette-overlay" onClick={() => setShowPalette(false)}>
+              <div className="palette-container" onClick={(e) => e.stopPropagation()}>
+                <div className="palette-card">
+                  <input autoFocus placeholder="Search objects, tags, or type a command" value={paletteInput} onChange={e => setPaletteInput(e.target.value)} className="palette-input" />
+                  <div className="palette-results">
                     {(paletteResults.objects.length === 0 && paletteResults.tags.length === 0) ? (
-                      <div style={{ color: '#888', padding: 8 }}>No results</div>
+                      <div className="muted pad-8">No results</div>
                     ) : (
                       <>
                         {paletteResults.objects.length > 0 && (
-                          <div style={{ padding: '4px 0' }}>
-                            <div style={{ color: '#aaa', fontSize: 12, padding: '2px 6px' }}>Objects</div>
+                          <div className="pad-8">
+                            <div className="palette-section-title">Objects</div>
                             {paletteResults.objects.map(o => (
-                              <div key={o.id} style={{ padding: '6px 8px', cursor: 'pointer' }} onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
+                              <div key={o.id} className="palette-item" onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
                             ))}
                           </div>
                         )}
                         {paletteResults.tags.length > 0 && (
-                          <div style={{ padding: '4px 0' }}>
-                            <div style={{ color: '#aaa', fontSize: 12, padding: '2px 6px' }}>Tags</div>
+                          <div className="pad-8">
+                            <div className="palette-section-title">Tags</div>
                             {paletteResults.tags.map(t => (
-                              <div key={t.id} style={{ padding: '6px 8px', cursor: 'pointer' }} onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
+                              <div key={t.id} className="palette-item" onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
                             ))}
                           </div>
                         )}
                       </>
                     )}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', color: '#666', fontSize: 12, marginTop: 8 }}>
-                    <span>Esc to close</span>
-                    <span>Ctrl+K</span>
-                  </div>
+                  <div className="palette-footer"><span>Esc to close</span><span>Ctrl+K</span></div>
                 </div>
               </div>
             </div>
@@ -1225,21 +1210,21 @@ span[data-tag] {
 
           {/* Fullscreen image modal */}
           {imageModal.visible && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }} onClick={() => setImageModal({ visible: false, dataUrl: null })}>
-              <div style={{ maxWidth: '95vw', maxHeight: '95vh' }}>
-                {imageModal.dataUrl && <img src={imageModal.dataUrl} style={{ maxWidth: '95vw', maxHeight: '95vh', objectFit: 'contain', borderRadius: 8, display: 'block' }} />}
+            <div className="image-modal-overlay" onClick={() => setImageModal({ visible: false, dataUrl: null })}>
+              <div className="image-modal-content">
+                {imageModal.dataUrl && <img src={imageModal.dataUrl} className="image-modal-img" />}
               </div>
             </div>
           )}
 
           {/* Settings modal */}
           {showSettings && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 60, zIndex: 50 }} onClick={() => setShowSettings(false)}>
-              <div style={{ width: '50%', minWidth: 760, maxWidth: '92vw' }} onClick={e => e.stopPropagation()}>
-                <div style={{ background: 'var(--pd-surface, #1e1e1e)', border: '1px solid #333', borderRadius: 10, padding: 16, color: 'var(--pd-text, #e5e5e5)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <h3 style={{ margin: 0 }}>Settings</h3>
-                    <div style={{ display: 'flex', gap: 8 }}>
+            <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+              <div className="settings-width" onClick={e => e.stopPropagation()}>
+                <div className="settings-card">
+                  <div className="settings-header">
+                    <h3 className="m-0">Settings</h3>
+                    <div className="flex-gap-8">
                       <button onClick={() => setShowSettings(false)}>Close</button>
                       <button onClick={async () => {
                         const payload = { key: paletteKey, colors: paletteKey === 'custom' ? customColors : null }
@@ -1252,12 +1237,12 @@ span[data-tag] {
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 16 }}>
+                  <div className="settings-columns">
                     {/* Left column: palette + fonts */}
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <label style={{ fontWeight: 600 }}>Color palette</label>
-                        <select value={paletteKey} onChange={e => { const k = e.target.value as any; setPaletteKey(k); applyPalette(k, null) }} style={{ padding: 8, borderRadius: 6, border: '1px solid #444', background: '#0f0f0f', color: 'var(--pd-text, #e5e5e5)' }}>
+                    <div className="settings-col">
+                      <div className="settings-group">
+                        <label className="box-title">Color palette</label>
+                        <select value={paletteKey} onChange={e => { const k = e.target.value as any; setPaletteKey(k); applyPalette(k, null) }} className="settings-select">
                           <option value="dracula">Dracula</option>
                           <option value="solarized-dark">Solarized (Dark)</option>
                           <option value="solarized-light">Solarized (Light)</option>
@@ -1271,7 +1256,7 @@ span[data-tag] {
                           <option value="custom">Custom…</option>
                         </select>
                         {paletteKey === 'custom' && (
-                          <div style={{ border: '1px solid #333', borderRadius: 8, padding: 10, background: '#121212', display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                          <div className="settings-custom-palette">
                             <label>Primary <input type="color" value={customColors.primary} onChange={e => setCustomColors(c => ({ ...c, primary: e.target.value }))} /></label>
                             <label>Surface <input type="color" value={customColors.surface} onChange={e => setCustomColors(c => ({ ...c, surface: e.target.value }))} /></label>
                             <label>Text <input type="color" value={customColors.text} onChange={e => setCustomColors(c => ({ ...c, text: e.target.value }))} /></label>
@@ -1282,12 +1267,12 @@ span[data-tag] {
                         )}
                       </div>
 
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <label style={{ fontWeight: 600 }}>Fonts</label>
-                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                          <label style={{ flex: '1 1 260px' }}>Family
-                            <div style={{ display: 'flex', gap: 6 }}>
-                              <select value={fonts.family} onChange={(e) => { const f = { ...fonts, family: e.target.value }; setFonts(f); applyFonts(f) }} style={{ flex: 1 }}>
+                      <div className="settings-group">
+                        <label className="box-title">Fonts</label>
+                        <div className="settings-flex-wrap">
+                          <label className="w-260" style={{ flex: '1 1 260px' }}>Family
+                            <div className="settings-flex">
+                              <select value={fonts.family} onChange={(e) => { const f = { ...fonts, family: e.target.value }; setFonts(f); applyFonts(f) }} className="flex-1">
                                 <option value="system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif">System UI</option>
                                 <option value="Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">Inter</option>
                                 <option value="Segoe UI, system-ui, -apple-system, Roboto, Inter, sans-serif">Segoe UI</option>
@@ -1317,14 +1302,14 @@ span[data-tag] {
                               }}>Browse…</button>
                             </div>
                           </label>
-                          <label style={{ width: 110 }}>Size <input type="number" min={10} max={24}
+                          <label className="w-110">Size <input type="number" min={10} max={24}
                             value={fonts.size}
                             onChange={(e) => { const f = { ...fonts, size: parseInt(e.target.value || '14', 10) }; setFonts(f); applyFonts(f) }}
-                            style={{ width: '100%' }} /></label>
-                          <label style={{ width: 120 }}>Weight <input type="number" min={100} max={900} step={100}
+                            className="settings-number" /></label>
+                          <label className="w-120">Weight <input type="number" min={100} max={900} step={100}
                             value={fonts.weight}
                             onChange={(e) => { const f = { ...fonts, weight: parseInt(e.target.value || '400', 10) }; setFonts(f); applyFonts(f) }}
-                            style={{ width: '100%' }} /></label>
+                            className="settings-number" /></label>
                           <label>Text Color <input type="color"
                             value={fonts.color}
                             onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label>
@@ -1340,15 +1325,15 @@ span[data-tag] {
                     </div>
 
                     {/* Right column: shortcuts */}
-                    <div style={{ width: 260, borderLeft: '1px solid #333', paddingLeft: 12 }}>
-                      <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard shortcuts</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <div className="settings-right">
+                      <div className="settings-title">Keyboard shortcuts</div>
+                      <div className="settings-grid-2">
                         <label>Settings <input value={shortcuts.settings} onChange={e => setShortcuts(s => ({ ...s, settings: e.target.value }))} placeholder='F1' /></label>
                         <label>Edit object <input value={shortcuts.editObject} onChange={e => setShortcuts(s => ({ ...s, editObject: e.target.value }))} placeholder='F2' /></label>
                         <label>Command palette <input value={shortcuts.command} onChange={e => setShortcuts(s => ({ ...s, command: e.target.value }))} placeholder='Ctrl+K' /></label>
                         <label>New child <input value={shortcuts.newChild} onChange={e => setShortcuts(s => ({ ...s, newChild: e.target.value }))} placeholder='Ctrl+N' /></label>
                         <label>Add image <input value={shortcuts.addImage} onChange={e => setShortcuts(s => ({ ...s, addImage: e.target.value }))} placeholder='Ctrl+I' /></label>
-                        <button style={{ gridColumn: '1 / -1' }} onClick={async () => { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts) }}>Save shortcuts</button>
+                        <button className="settings-save-row" onClick={async () => { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts) }}>Save shortcuts</button>
                       </div>
                     </div>
                   </div>
@@ -1359,26 +1344,26 @@ span[data-tag] {
 
           {/* Add Child modal */}
           {showCat && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}>
-              <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 16, width: 360 }}>
-                <h3 style={{ marginTop: 0 }}>Add Child</h3>
-                <div style={{ display: 'grid', gap: 8 }}>
+            <div className="modal-overlay">
+              <div className="dialog-card w-360">
+                <h3 className="mt-0">Add Child</h3>
+                <div className="grid-gap-8">
                   <label>
                     <div>Name</div>
-                    <input autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { handleCreateChild() } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} style={{ width: '100%' }} />
+                    <input autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { handleCreateChild() } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} className="input-100" />
                   </label>
                   <label>
                     <div>Type</div>
-                    <select value={catType} onChange={e => setCatType(e.target.value as any)} style={{ width: '100%' }}>
+                    <select value={catType} onChange={e => setCatType(e.target.value as any)} className="input-100">
                       <option value='Other'>Other</option>
                       <option value='Place'>Place</option>
                       <option value='Person'>Person</option>
                       <option value='Lore'>Lore</option>
                     </select>
                   </label>
-                  {catErr && <div style={{ color: 'tomato' }}>{catErr}</div>}
+                  {catErr && <div className="text-tomato">{catErr}</div>}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                <div className="actions">
                   <button onClick={() => setShowCat(false)}>Cancel</button>
                   <button onClick={async () => { handleCreateChild() }}>Create</button>
                 </div>
@@ -1388,17 +1373,17 @@ span[data-tag] {
 
           {/* Create linked object modal */}
           {showWizard && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}>
-              <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 16, width: 420 }}>
-                <h3 style={{ marginTop: 0 }}>Create linked object</h3>
-                <div style={{ display: 'grid', gap: 8 }}>
+            <div className="modal-overlay">
+              <div className="dialog-card w-420">
+                <h3 className="mt-0">Create linked object</h3>
+                <div className="grid-gap-8">
                   <label>
                     <div>Name</div>
-                    <input value={wizardName} onChange={e => setWizardName(e.target.value)} style={{ width: '100%' }} />
+                    <input value={wizardName} onChange={e => setWizardName(e.target.value)} className="input-100" />
                   </label>
                   <label>
                     <div>Type</div>
-                    <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} style={{ width: '100%' }}>
+                    <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} className="input-100">
                       <option value='Other'>Other</option>
                       <option value='Place'>Place</option>
                       <option value='Person'>Person</option>
@@ -1406,7 +1391,7 @@ span[data-tag] {
                     </select>
                   </label>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                <div className="actions">
                   <button onClick={() => setShowWizard(false)}>Cancel</button>
                   <button onClick={async () => {
                   const label = (wizardName || '').trim()
@@ -1423,10 +1408,10 @@ span[data-tag] {
 
           {/* Link to object modal */}
           {showLinker && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20 }}>
-              <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 16, width: 520 }}>
-                <h3 style={{ marginTop: 0 }}>Link to object</h3>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div className="modal-overlay">
+              <div className="dialog-card w-520">
+                <h3 className="mt-0">Link to object</h3>
+                <div className="flex-row">
                   <input value={linkerInput} autoFocus onChange={async e => {
                     const v = e.target.value
                     setLinkerInput(v)
@@ -1437,16 +1422,16 @@ span[data-tag] {
                       const res = fuse.search(v).map(r => r.item).slice(0, 10)
                       setLinkerMatches(res)
                     }
-                  }} style={{ flex: 1 }} placeholder={'Search or type new name'} />
+                  }} className="flex-1" placeholder={'Search or type new name'} />
                   {linkerTagId ? <span title='Existing link'>🔗</span> : <span title='New item'>⎇</span>}
                 </div>
 
                 {/* Path choices */}
                 {pathChoices.length > 0 ? (
-                  <div style={{ marginTop: 10, maxHeight: 260, overflow: 'auto', borderTop: '1px solid #333' }}>
-                    <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                  <div className="mt-10 maxh-260 border-top">
+                    <ul className="list-reset">
                       {pathChoices.map(pc => (
-                        <li key={pc.id} style={{ padding: '6px 4px', borderBottom: '1px solid #2a2a2a', cursor: 'pointer' }}
+                        <li key={pc.id} className="list-item-click"
                           onClick={async () => {
                             let tid = linkerTagId
                             if (!tid) {
@@ -1463,13 +1448,13 @@ span[data-tag] {
                     </ul>
                   </div>
                 ) : (
-                  <div style={{ marginTop: 10, maxHeight: 260, overflow: 'auto', borderTop: '1px solid #333' }}>
+                  <div className="mt-10 maxh-260 border-top">
                     {linkerMatches.length === 0 ? (
-                      <div style={{ padding: 8, color: '#888' }}>No objects</div>
+                      <div className="muted pad-8">No objects</div>
                     ) : (
-                      <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                      <ul className="list-reset">
                         {linkerMatches.map(m => (
-                          <li key={m.id} style={{ padding: '6px 4px', borderBottom: '1px solid #2a2a2a', cursor: 'pointer' }}
+                          <li key={m.id} className="list-item-click"
                             onClick={async () => {
                               // Check if multiple with same name
                               const same = await window.ipcRenderer.invoke('gamedocs:get-objects-by-name-with-paths', campaign!.id, m.name)
@@ -1495,7 +1480,7 @@ span[data-tag] {
                 )}
 
                 {/* Close button */}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                <div className="actions">
                   <button onClick={() => setShowLinker(false)}>Close</button>
                 </div>
               </div>
