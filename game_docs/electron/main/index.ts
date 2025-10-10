@@ -10,6 +10,8 @@ import fs from 'node:fs/promises'
 // duplicate import removed
 import crypto from 'node:crypto'
 import sharp from 'sharp'
+import { exec } from 'child_process';
+import { platform } from 'os';
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -530,7 +532,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('gamedocs:open-image-external', async (_evt, filePath: string) => {
     try {
       const url = pathToFileURL(filePath).href
-      await shell.openExternal(url)
+      //await shell.openExternal(url)
+      
+      if (platform() === 'win32') {
+        await exec(`start Firefox "${url}"`)
+      } else {
+        await exec(`open "${url}"`)
+      }
       return true
     } catch {
       return false

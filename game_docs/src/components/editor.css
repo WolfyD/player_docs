@@ -333,7 +333,6 @@
 .main-campaign-listing:hover { color: #c781ccc5; text-decoration: underline; }
 .main-button-edit:hover { color: #faff6ac5; }
 .main-button-delete:hover { color: #f06262c5; }
-.main-button-more:hover { color: #6495EDc5; }
 
 .project-setup { padding: 24px; position: relative; min-height: 400px; user-select: none; }
 .project-setup-list { border: 1px solid #3a3a3a; border-radius: 6px; overflow: auto; }

@@ -77,6 +77,49 @@ export const Editor: React.FC = () => {
   const [picIsDefault, setPicIsDefault] = useState(true)
   const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
   const [showMisc, setShowMisc] = useState(false)
+
+  // Build a recursive tree of children for the current object and append as a nicely
+  // formatted listing three lines below the existing description
+  const handleListAllItems = useCallback(async () => {
+    if (!activeId || !campaign) { setShowMisc(false); return }
+    async function fetchChildrenRec(parentId: string): Promise<Array<{ id: string; name: string; children: any[] }>> {
+      const rows = await window.ipcRenderer.invoke('gamedocs:list-children', campaign.id, parentId).catch(() => []) as Array<{ id: string; name: string; type: string }>
+      const result: Array<{ id: string; name: string; children: any[] }> = []
+      for (const r of rows) {
+        const kids = await fetchChildrenRec(r.id)
+        result.push({ id: r.id, name: r.name, children: kids })
+      }
+      return result
+    }
+    function renderTree(nodes: Array<{ id: string; name: string; children: any[] }>, depth = 0): string {
+      const indent = '\t'.repeat(depth)
+      const branchNodes = nodes.filter(n => n.children && n.children.length)
+      const leafNodes = nodes.filter(n => !n.children || n.children.length === 0)
+      const lines: string[] = []
+      // Render branches first (each on its own line with nested block)
+      for (const n of branchNodes) {
+        lines.push(`${indent}- ${n.name}`)
+        lines.push(renderTree(n.children, depth + 1))
+      }
+      // Group leaves into a single line
+      if (leafNodes.length > 0) {
+        lines.push(`${indent}- ${leafNodes.map(n => n.name).join(', ')}`)
+      }
+      return lines.join('\n')
+    }
+    const top = await fetchChildrenRec(activeId)
+    const header = ['Contents:', '-----------'].join('\n')
+    const body = [header, renderTree(top)].join('\n')
+    const base = desc || ''
+    const needsGap = base.length > 0
+    const spacer = needsGap ? (base.endsWith('\n\n\n') ? '' : base.endsWith('\n\n') ? '\n' : base.endsWith('\n') ? '\n\n' : '\n\n\n') : ''
+    const next = `${base}${spacer}${body}`
+    setDesc(next)
+    if (editorRef.current) {
+      editorRef.current.innerHTML = descToHtml(next)
+    }
+    setShowMisc(false)
+  }, [activeId, campaign, desc])
   const [showEditObject, setShowEditObject] = useState(false)
   const [editName, setEditName] = useState('')
   const [ownerTags, setOwnerTags] = useState<Array<{ id: string }>>([])
@@ -1019,6 +1062,7 @@ span[data-tag] {
                   <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to HTML */ }}>Export to HTML</div>
                   <div className="misc-item" onClick={() => { /* TODO: Generate Map */ }}>Generate map</div>
+                  <div className="misc-item" onClick={handleListAllItems}>List all items</div>
                   <div className="misc-item" onClick={() => { /* TODO: Create Backup */ }}>Create backup</div>
                 </div>
                 <div className="actions mt-12">

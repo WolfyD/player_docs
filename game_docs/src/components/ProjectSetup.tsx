@@ -80,7 +80,6 @@ export const ProjectSetup: React.FC = () => {
                   await window.ipcRenderer.invoke('gamedocs:delete-campaign', c.id)
                   loadCampaigns()
                 }}><i className="ri-delete-bin-fill"></i></button>
-                <button className="main-button-more" title="More"><i className="ri-more-fill"></i></button>
               </div>
             </div>
           ))
