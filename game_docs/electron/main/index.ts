@@ -72,15 +72,27 @@ function generateTagId(): string {
   return 'tag_' + crypto.randomUUID().replace(/-/g, '').slice(0, 8)
 }
 
+function escapeHtml(text: string): string {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
   function getPathString(db: any, gameId: string, startId: string): string {
     const parts: string[] = []
     let cur: { id: string; name: string; parent_id: string | null } | undefined = db.prepare('SELECT id, name, parent_id FROM objects WHERE id = ? AND game_id = ?').get(startId, gameId)
     while (cur) {
-      parts.push(cur.name)
+      parts.push(escapeHtml(cur.name))
       if (!cur.parent_id) break
       cur = db.prepare('SELECT id, name, parent_id FROM objects WHERE id = ? AND game_id = ?').get(cur.parent_id, gameId)
     }
-    return parts.reverse().join('->')
+    let new_paths =  parts.reverse().join("<span class='path-separator'>" + '→' + "</span>")
+    //let new_paths =  parts.reverse().join("[" + '→' + "]")
+    // console.log('[getPathString] New paths:', new_paths)
+    return new_paths
   }
 
 // Ensure runtime migrations for existing databases

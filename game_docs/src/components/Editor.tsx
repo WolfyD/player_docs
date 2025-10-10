@@ -92,7 +92,7 @@ export const Editor: React.FC = () => {
       return result
     }
     function renderTree(nodes: Array<{ id: string; name: string; children: any[] }>, depth = 0): string {
-      const indent = '\t'.repeat(depth)
+      const indent = '\t'.repeat(depth * 2)
       const branchNodes = nodes.filter(n => n.children && n.children.length)
       const leafNodes = nodes.filter(n => !n.children || n.children.length === 0)
       const lines: string[] = []
@@ -879,6 +879,25 @@ span[data-tag] {
               }
             }}
             onKeyDown={(e) => {
+              // Insert literal tab characters in the content
+              if (e.key === 'Tab') {
+                e.preventDefault()
+                const sel = window.getSelection()
+                if (sel && sel.rangeCount > 0) {
+                  const range = sel.getRangeAt(0)
+                  const tabNode = document.createTextNode('\t')
+                  range.deleteContents()
+                  range.insertNode(tabNode)
+                  // Move caret after the inserted tab
+                  const newRange = document.createRange()
+                  newRange.setStartAfter(tabNode)
+                  newRange.collapse(true)
+                  sel.removeAllRanges()
+                  sel.addRange(newRange)
+                  setDesc(htmlToDesc(editorRef.current!))
+                }
+                return
+              }
               if (e.key !== ' ') return
               const sel = window.getSelection()
               if (!sel || sel.rangeCount === 0) return
@@ -942,16 +961,17 @@ span[data-tag] {
               <div className="ctx-menu-item"
                 onClick={handleEditOpen}
               >Edit…</div>
-              <div className="ctx-menu-item"
-                onClick={handleClearLink}
+              {ctxLinkedTargets.length > 0 ? (
+              <div className="ctx-menu-item" onClick={handleClearLink}
               >Clear</div>
+              ):( "" )}
               <div className="separator" />
               {ctxLinkedTargets.length === 0 ? (
                 <div className="ctx-menu-item muted">No objects linked</div>
               ) : (
                 <div className="ctx-menu-scroll">
                   {ctxLinkedTargets.map(t => (
-                    <div key={t.id} className="ctx-menu-item">{t.path}</div>
+                    <div key={t.id} className="ctx-menu-item" dangerouslySetInnerHTML={{ __html: t.path }} />
                   ))}
                 </div>
               )}
@@ -1388,11 +1408,11 @@ span[data-tag] {
                     <div className="settings-right">
                       <div className="settings-title">Keyboard shortcuts</div>
                       <div className="settings-grid-2">
-                        <label>Settings <input value={shortcuts.settings} onChange={e => setShortcuts(s => ({ ...s, settings: e.target.value }))} placeholder='F1' /></label>
-                        <label>Edit object <input value={shortcuts.editObject} onChange={e => setShortcuts(s => ({ ...s, editObject: e.target.value }))} placeholder='F2' /></label>
-                        <label>Command palette <input value={shortcuts.command} onChange={e => setShortcuts(s => ({ ...s, command: e.target.value }))} placeholder='Ctrl+K' /></label>
-                        <label>New child <input value={shortcuts.newChild} onChange={e => setShortcuts(s => ({ ...s, newChild: e.target.value }))} placeholder='Ctrl+N' /></label>
-                        <label>Add image <input value={shortcuts.addImage} onChange={e => setShortcuts(s => ({ ...s, addImage: e.target.value }))} placeholder='Ctrl+I' /></label>
+                        <div className="settings-shortcut-row"><label>Settings </label><input value={shortcuts.settings} onChange={e => setShortcuts(s => ({ ...s, settings: e.target.value }))} placeholder='F1' /></div>
+                        <div className="settings-shortcut-row"><label>Edit object </label><input value={shortcuts.editObject} onChange={e => setShortcuts(s => ({ ...s, editObject: e.target.value }))} placeholder='F2' /></div>
+                        <div className="settings-shortcut-row"><label>Command palette </label><input value={shortcuts.command} onChange={e => setShortcuts(s => ({ ...s, command: e.target.value }))} placeholder='Ctrl+K' /></div>
+                        <div className="settings-shortcut-row"><label>New child </label><input value={shortcuts.newChild} onChange={e => setShortcuts(s => ({ ...s, newChild: e.target.value }))} placeholder='Ctrl+N' /></div>
+                        <div className="settings-shortcut-row"><label>Add image </label><input value={shortcuts.addImage} onChange={e => setShortcuts(s => ({ ...s, addImage: e.target.value }))} placeholder='Ctrl+I' /></div>
                         <button className="settings-save-row" onClick={async () => { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts) }}>Save shortcuts</button>
                       </div>
                     </div>
