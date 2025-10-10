@@ -564,7 +564,10 @@ span[data-tag] {
     const selRange = selectionRangeRef.current
     const el = editorRef.current
     const span = document.createElement('span')
-    span.textContent = label
+    // Preserve the user's selected text if available; otherwise use the provided label
+    const selectedText = selRange && !selRange.collapsed ? selRange.toString() : ''
+    const displayLabel = selectedText && selectedText.length > 0 ? selectedText : label
+    span.textContent = displayLabel
     span.setAttribute('data-tag', tagId)
     span.style.background = 'var(--pd-tag-bg, rgba(100, 149, 237, 0.2))'
     span.style.borderBottom = '1px dotted var(--pd-tag-border, #6495ED)'
@@ -828,7 +831,7 @@ span[data-tag] {
                 selectObject(t0.id, t0.name)
                 setHoverCard(h => ({ ...h, visible: false }))
               } else {
-                setTagMenu({ visible: true, x: (e as any).clientX, y: (e as any).clientY, items: targets, hoverPreview: null })
+                setTagMenu({ visible: true, x: (e as any).clientX, y: (e as any).clientY, items: targets, hoverPreview: null, source: 'tag' })
                 setHoverCard(h => ({ ...h, visible: false }))
               }
             }}
@@ -924,6 +927,25 @@ span[data-tag] {
                   }
                   return (
                   <div key={t.id} className="tag-menu-item"
+                    onMouseEnter={async () => {
+                      if (tagMenu.source !== 'tag') return
+                      // fetch preview for object menu items
+                      const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
+                      let imgUrl = (preview as any)?.thumbDataUrl || null
+                      if (!imgUrl) {
+                        const primary = (preview as any)?.thumbPath as (string | undefined)
+                        const secondary = (preview as any)?.imagePath as (string | undefined)
+                        if (primary) {
+                          const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
+                          if (resA?.ok) imgUrl = resA.dataUrl
+                        }
+                        if (!imgUrl && secondary) {
+                          const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
+                          if (resB?.ok) imgUrl = resB.dataUrl
+                        }
+                      }
+                      if (preview) setTagMenu(m => ({ ...m, hoverPreview: { id: t.id, name: preview.name || t.name, snippet: preview.snippet || '', imageUrl: imgUrl } }))
+                    }}
                     onClick={async () => {
                       if (/^__SEPARATOR/.test(t.id)) return
                       if (t.id === '__DELETE__') {
