@@ -63,6 +63,7 @@ export const Editor: React.FC = () => {
   const [ctxLinkedTargets, setCtxLinkedTargets] = useState<Array<{ id: string; name: string; path: string }>>([])
   // Hover preview for single-target tags
   const [hoverCard, setHoverCard] = useState<{ visible: boolean; x: number; y: number; name: string; snippet: string; imageUrl: string | null }>({ visible: false, x: 0, y: 0, name: '', snippet: '', imageUrl: null })
+  const [imageModal, setImageModal] = useState<{ visible: boolean; dataUrl: string | null }>({ visible: false, dataUrl: null })
   const lastHoverTagRef = useRef<string | null>(null)
   // Left-click menu for multi-target tags
   const [tagMenu, setTagMenu] = useState<{ visible: boolean; x: number; y: number; items: Array<{ id: string; name: string; path: string }>; hoverPreview: { id: string; name: string; snippet: string; imageUrl: string | null } | null; source?: 'dropdown' | 'tag' }>({ visible: false, x: 0, y: 0, items: [], hoverPreview: null, source: undefined })
@@ -580,14 +581,17 @@ span[data-tag] {
 
   function descToHtml(text: string): string {
     // Convert [[label|tag_xxx]] tokens to span elements
-    return text.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label, tag) => {
+    const withSpans = text.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label, tag) => {
       const safeLabel = String(label)
       const safeTag = String(tag)
       return `<span data-tag="${safeTag}" style="background: var(--pd-tag-bg, rgba(100,149,237,0.2)); border-bottom: 1px dotted var(--pd-tag-border, #6495ED); cursor: pointer;">${safeLabel}</span>`
     })
+    // Preserve explicit newlines using <br>
+    return withSpans.replace(/\n/g, '<br>')
   }
 
   function htmlToDesc(container: HTMLElement): string {
+    console.log('htmlToDesc', container)
     // Convert spans back to token syntax and preserve line breaks
     const clone = container.cloneNode(true) as HTMLElement
     clone.querySelectorAll('span[data-tag]').forEach((el) => {
@@ -596,27 +600,29 @@ span[data-tag] {
       const token = document.createTextNode(`[[${label}|${tag}]]`)
       el.replaceWith(token)
     })
-    // Replace <div>, <p> with \n boundaries and <br> with \n
-    // Insert newline markers after block elements to preserve intentional breaks
-    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT, null)
+    // Convert <br> to \n and treat block boundaries as newlines
+    // First, BRs become newlines
+    clone.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode('\n')))
+    // Then add newline separators for block boundaries
     const blocks = new Set(['DIV', 'P'])
-    const brs: HTMLElement[] = []
-    // Collect <br> separately to avoid live tree issues
-    clone.querySelectorAll('br').forEach(br => brs.push(br as any))
-    for (const br of brs) {
-      br.replaceWith(document.createTextNode('\n'))
-    }
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT, null)
     const toAppendNewline: HTMLElement[] = []
+    const toInsertBefore: HTMLElement[] = []
     let node: Element | null = walker.nextNode() as Element | null
     while (node) {
-      if (blocks.has(node.nodeName)) toAppendNewline.push(node as HTMLElement)
+      if (blocks.has(node.nodeName)) {
+        toAppendNewline.push(node as HTMLElement)
+        if ((node as HTMLElement).previousSibling) toInsertBefore.push(node as HTMLElement)
+      }
       node = walker.nextNode() as Element | null
     }
-    for (const el of toAppendNewline) {
-      el.appendChild(document.createTextNode('\n'))
+    for (const el of toInsertBefore) {
+      el.parentNode?.insertBefore(document.createTextNode('\n'), el)
     }
+    for (const el of toAppendNewline) el.appendChild(document.createTextNode('\n'))
+    // Extract text; collapse triple+ newlines to double to avoid runaway breaks
     const text = clone.textContent || ''
-    return text.replace(/\n{3,}/g, '\n\n')
+    return text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n')
   }
 
   async function removeMissingTags(text: string): Promise<string> {
@@ -661,7 +667,7 @@ span[data-tag] {
           )}
           {' '} {campaign.name}
         </h2>
-        <button ref={menuButtonRef} className="menu_button" style={{ userSelect: 'none', marginTop: -30, position: 'fixed', right: '2%' }}
+        <button ref={menuButtonRef} className="menu_button" style={{ zIndex: 16, userSelect: 'none', marginTop: -30, position: 'fixed', right: '2%' }}
           onClick={(e) => {
             e.preventDefault()
             setCtxMenu(m => ({ ...m, visible: false }))
@@ -732,12 +738,25 @@ span[data-tag] {
                 if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
                 return
               }
+              // Capture pointer and anchor positions up-front (avoid stale React event after awaits)
+              const clientX = (e as any).clientX as number
+              const clientY = (e as any).clientY as number
+              const rect = span.getBoundingClientRect()
+              const anchorX = Math.max(0, Math.min(window.innerWidth, rect.left + Math.min(16, Math.max(0, rect.width / 2))))
+              const anchorY = Math.max(0, Math.min(window.innerHeight, rect.bottom))
               const tagId = span.getAttribute('data-tag') || ''
               if (!tagId) return
               // Only show hover card for single-target tags
               if (lastHoverTagRef.current === tagId && hoverCard.visible) {
-                // Just reposition
-                setHoverCard(h => ({ ...h, x: e.clientX + 10, y: e.clientY + 10 }))
+                // Reposition: center horizontally on pointer X; clamp to viewport
+                const pad = 10
+                const CARD_W = 300
+                const baseX = anchorX // Number.isFinite(clientX) ? clientX : anchorX
+                const baseY = anchorY + 10 + 30 // Number.isFinite(clientY) ? clientY : anchorY
+                const targetX = baseX - (CARD_W / 2)
+                const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
+                const ny = baseY
+                setHoverCard(h => ({ ...h, x: nx, y: ny }))
                 return
               }
               lastHoverTagRef.current = tagId
@@ -747,9 +766,41 @@ span[data-tag] {
                 return
               }
               const only = targets[0]
-              const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null } | null
+              const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
               if (!preview) return
-              setHoverCard({ visible: true, x: e.clientX + 10, y: e.clientY + 10, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: (preview as any).thumbDataUrl || (preview as any).fileUrl || null })
+              let imgUrl = (preview as any).thumbDataUrl || null
+              if (!imgUrl || imgUrl == 'data:image/png;base64,' || /^data:[^;]+;base64,?$/i.test(imgUrl as any) || (typeof imgUrl === 'string' && (imgUrl as string).length < 32)) {
+                const primary = (preview as any).thumbPath as (string | undefined)
+                const secondary = (preview as any).imagePath as (string | undefined)
+                if (primary) {
+                  const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
+                  if (resA?.ok) imgUrl = resA.dataUrl
+                }
+                if (!imgUrl && secondary) {
+                  const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
+                  if (resB?.ok) imgUrl = resB.dataUrl
+                }
+                if (!imgUrl && (preview as any).fileUrl) {
+                  try {
+                    const u = new URL((preview as any).fileUrl)
+                    let p = decodeURIComponent(u.pathname)
+                    if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
+                    const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
+                    if (res2?.ok) imgUrl = res2.dataUrl
+                  } catch {}
+                }
+              }
+              // Debug dump for hover preview resolution
+              {
+                const pad = 10
+                const CARD_W = 300
+                const baseX = anchorX // Number.isFinite(clientX) ? clientX : anchorX
+                const baseY = anchorY + 10 + 30 // Number.isFinite(clientY) ? clientY : anchorY
+                const targetX = baseX - (CARD_W / 2)
+                const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
+                const ny = baseY
+                setHoverCard({ visible: true, x: nx, y: ny, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: imgUrl })
+              }
             }}
             onMouseLeave={() => { if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false })) }}
             onClick={async (e) => {
@@ -822,7 +873,7 @@ span[data-tag] {
           />
           {/* Hover preview card for single-target tags */}
           {hoverCard.visible && (
-            <div style={{ position: 'fixed', left: hoverCard.x, top: hoverCard.y, background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 8, maxWidth: 460, zIndex: 15, boxShadow: '0 2px 8px rgba(0,0,0,0.45)' }}>
+            <div style={{ position: 'fixed', left: hoverCard.x, top: hoverCard.y, background: '#1e1e1e', border: '1px solid #333', borderRadius: 8, padding: 8, width: 300, maxWidth: 460, zIndex: 15, boxShadow: '0 2px 8px rgba(0,0,0,0.45)' }}>
               <div style={{ fontWeight: 700, marginBottom: 6 }}>{hoverCard.name}</div>
               {hoverCard.imageUrl && (
                 <img src={hoverCard.imageUrl} style={{ maxWidth: 400, maxHeight: 400, borderRadius: 4, display: 'block', marginBottom: 6 }} />
@@ -878,8 +929,40 @@ span[data-tag] {
                   <div key={t.id} style={{ padding: '6px 10px', cursor: 'pointer' }}
                     onMouseEnter={async () => {
                       if (t.id === '__DELETE__') return
-                      const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null } | null
-                      if (preview) setTagMenu(m => ({ ...m, hoverPreview: { id: t.id, name: t.name, snippet: preview.snippet || '', imageUrl: (preview as any).thumbDataUrl || (preview as any).fileUrl || null } }))
+                      const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
+                      let imgUrl = (preview as any)?.thumbDataUrl || null
+                      if (!imgUrl) {
+                        const primary = (preview as any)?.imagePath as (string | undefined)
+                        const secondary = (preview as any)?.thumbPath as (string | undefined)
+                        if (primary) {
+                          const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
+                          if (resA?.ok) imgUrl = resA.dataUrl
+                        }
+                        if (!imgUrl && secondary) {
+                          const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
+                          if (resB?.ok) imgUrl = resB.dataUrl
+                        }
+                        if (!imgUrl && (preview as any)?.fileUrl) {
+                          try {
+                            const u = new URL((preview as any).fileUrl)
+                            let p = decodeURIComponent(u.pathname)
+                            if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
+                            const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
+                            if (res2?.ok) imgUrl = res2.dataUrl
+                          } catch {}
+                        }
+                      }
+                      try {
+                        // eslint-disable-next-line no-console
+                        console.log('[HoverPreview:Menu] objectId:', t.id, {
+                          preview,
+                          thumbPath: (preview as any)?.thumbPath,
+                          imagePath: (preview as any)?.imagePath,
+                          fileUrl: (preview as any)?.fileUrl,
+                          imgUrlSample: imgUrl ? (imgUrl as string).slice(0, 64) + '...' : null,
+                        })
+                      } catch {}
+                      if (preview) setTagMenu(m => ({ ...m, hoverPreview: { id: t.id, name: t.name, snippet: preview.snippet || '', imageUrl: imgUrl } }))
                     }}
                     onClick={async () => {
                       if (t.id === '__DELETE__') {
@@ -990,7 +1073,14 @@ span[data-tag] {
                 {images.map(img => (
                   <div key={img.id} style={{ border: '1px solid #333', borderRadius: 6, padding: 6, width: 220 }}>
                     
-                    <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4 }} />
+                    <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4, cursor: 'zoom-in' }} onClick={async (e) => {
+                      if ((e as any).shiftKey) {
+                        await window.ipcRenderer.invoke('gamedocs:open-image-external', img.file_path)
+                      } else {
+                        const res = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', img.file_path)
+                        if (res?.ok) setImageModal({ visible: true, dataUrl: res.dataUrl })
+                      }
+                    }} />
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12 }}>
                       <span title={img.name || ''}>{img.name || '(unnamed)'}</span>
                       {img.is_default ? <span title='Default'>⭐</span> : null}
@@ -1068,7 +1158,14 @@ span[data-tag] {
                         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                           {images.map(img => (
                             <div key={img.id} style={{ border: '1px solid #333', borderRadius: 6, padding: 6, width: 200 }}>
-                              <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4 }} />
+                              <img src={safeThumbSrc(img)} style={{ maxWidth: '100%', display: 'block', borderRadius: 4, cursor: 'zoom-in' }} onClick={async (e) => {
+                                if ((e as any).shiftKey) {
+                                  await window.ipcRenderer.invoke('gamedocs:open-image-external', img.file_path)
+                                } else {
+                                  const res = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', img.file_path)
+                                  if (res?.ok) setImageModal({ visible: true, dataUrl: res.dataUrl })
+                                }
+                              }} />
                               <input defaultValue={img.name || ''} placeholder='Name' style={{ width: '100%', marginTop: 6 }} onBlur={async (e) => { const v = e.target.value; await window.ipcRenderer.invoke('gamedocs:rename-image', img.id, v) }} />
                               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, alignItems: 'center' }}>
                                 <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}><input type='radio' checked={!!img.is_default} onChange={async () => { await window.ipcRenderer.invoke('gamedocs:set-default-image', activeId, img.id); const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId); setImages(imgs || []) }} /> Default</label>
@@ -1120,6 +1217,15 @@ span[data-tag] {
                     <span>Ctrl+K</span>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Fullscreen image modal */}
+          {imageModal.visible && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }} onClick={() => setImageModal({ visible: false, dataUrl: null })}>
+              <div style={{ maxWidth: '95vw', maxHeight: '95vh' }}>
+                {imageModal.dataUrl && <img src={imageModal.dataUrl} style={{ maxWidth: '95vw', maxHeight: '95vh', objectFit: 'contain', borderRadius: 8, display: 'block' }} />}
               </div>
             </div>
           )}

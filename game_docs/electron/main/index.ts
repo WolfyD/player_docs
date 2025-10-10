@@ -9,6 +9,7 @@ import { initGameDatabase } from './db'
 import fs from 'node:fs/promises'
 // duplicate import removed
 import crypto from 'node:crypto'
+import sharp from 'sharp'
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -175,6 +176,61 @@ async function listCampaigns(dbFile: string) {
   const rows = db.prepare('SELECT id, name FROM games WHERE deleted_at IS NULL ORDER BY created_at DESC').all()
   db.close()
   return rows as Array<{ id: string; name: string }>
+}
+
+async function generateThumbnailWithBrowser(buffer: Buffer, mime: string): Promise<Buffer | null> {
+  try {
+    const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`
+    const viewer = new BrowserWindow({
+      width: 300,
+      height: 300,
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      webPreferences: { sandbox: false, contextIsolation: true }
+    })
+    const html = `<!doctype html><meta charset="utf-8"><style>
+      html,body{margin:0;width:300px;height:300px;background:transparent;display:flex;align-items:center;justify-content:center}
+      img{max-width:300px;max-height:300px;object-fit:contain}
+    </style><img src="${dataUrl}" />`
+    await viewer.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+    // small delay to ensure image decode
+    await new Promise(r => setTimeout(r, 80))
+    const img = await viewer.webContents.capturePage()
+    const out = img.toPNG()
+    viewer.destroy()
+    if (out && out.length > 0) return out
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function transcodeToPngDataUrl(buffer: Buffer, mime: string): Promise<string | null> {
+  try {
+    const img = nativeImage.createFromBuffer(buffer)
+    const out = img.toPNG()
+    if (out && out.length > 0) return `data:image/png;base64,${out.toString('base64')}`
+  } catch {}
+  try {
+    const thumb = await generateThumbnailWithBrowser(buffer, mime)
+    if (thumb && thumb.length > 0) return `data:image/png;base64,${thumb.toString('base64')}`
+  } catch {}
+  return null
+}
+
+function tryTranscodeBufferToPNG(buffer: Buffer): Buffer | null {
+  try {
+    const img = nativeImage.createFromBuffer(buffer)
+    const out = img.toPNG()
+    console.log('[tryTranscodeBufferToPNG] Out:', out.length)
+    console.log('[tryTranscodeBufferToPNG] Out:', out.toString('base64'))
+    if (out && out.length > 0) return out
+  } catch { 
+    console.log('[tryTranscodeBufferToPNG] Error')
+  }
+  return null
 }
 
 async function createWindow() {
@@ -459,6 +515,50 @@ app.whenReady().then(async () => {
     }
   })
 
+  ipcMain.handle('gamedocs:get-file-dataurl', async (_evt, filePath: string) => {
+    try {
+      const buf = await fs.readFile(filePath)
+      const ext = (path.extname(filePath) || '').toLowerCase()
+      const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : ext === '.png' ? 'image/png' : 'application/octet-stream'
+      return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}` }
+    } catch (e) {
+      return { ok: false, dataUrl: null }
+    }
+  })
+
+  // Open image externally (default browser) or in a simple viewer window
+  ipcMain.handle('gamedocs:open-image-external', async (_evt, filePath: string) => {
+    try {
+      const url = pathToFileURL(filePath).href
+      await shell.openExternal(url)
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('gamedocs:open-image-window', async (_evt, filePath: string) => {
+    // Read file and embed via minimal HTML (data:text/html) to ensure rendering in window
+    try {
+      const buf = await fs.readFile(filePath)
+      const ext = (path.extname(filePath) || '.png').toLowerCase()
+      const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+      const imgDataUrl = `data:${mime};base64,${buf.toString('base64')}`
+      const viewer = new BrowserWindow({
+        title: 'Image',
+        width: 900,
+        height: 700,
+        backgroundColor: '#111111',
+        webPreferences: { sandbox: false, contextIsolation: true }
+      })
+      const html = `<!doctype html><meta charset="utf-8"><title>Image</title><style>html,body{margin:0;height:100%;background:#111;display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px}</style><img src="${imgDataUrl}" alt="image">`
+      await viewer.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      return true
+    } catch {
+      return false
+    }
+  })
+
   // List images for an object
   ipcMain.handle('gamedocs:list-images', async (_evt, objectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
@@ -525,31 +625,56 @@ app.whenReady().then(async () => {
       ext = urlExt && ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(urlExt) ? urlExt : '.png'
     }
 
+    console.log('[gamedocs:add-image] Source:', opts.source.type, opts.source.value, 'Ext:', ext)
+
+    // If source is webp, transcode buffer to PNG with sharp for downstream processing
+    if (ext === '.webp') {
+      try {
+        buffer = await sharp(buffer).rotate().png({ compressionLevel: 6 }).toBuffer()
+        ext = '.png'
+      } catch {
+        const dataUrl = await transcodeToPngDataUrl(buffer, 'image/webp')
+        if (dataUrl) {
+          const b64 = dataUrl.replace(/^data:image\/png;base64,/, '')
+          buffer = Buffer.from(b64, 'base64')
+          ext = '.png'
+        }
+      }
+    }
+
     // Write original
     const uuid = crypto.randomUUID().replace(/-/g, '')
     const fileName = uuid + ext
     const filePath = path.join(imagesDir, fileName)
     await fs.writeFile(filePath, buffer)
 
-    // Create thumb (max 300x300) using nativeImage
-    let thumbBuffer: Buffer
+    // Create thumb (max 300x300) using sharp; ensure non-empty buffer
+    let thumbBuffer: Buffer | null = null
+    let thumbExt = '.png'
     try {
-      const img = nativeImage.createFromBuffer(buffer)
-      const size = img.getSize()
-      let targetW = size.width
-      let targetH = size.height
-      if (targetW > 300 || targetH > 300) {
-        const ratio = Math.min(300 / Math.max(1, targetW), 300 / Math.max(1, targetH))
-        targetW = Math.max(1, Math.round(targetW * ratio))
-        targetH = Math.max(1, Math.round(targetH * ratio))
-      }
-      const resized = img.resize({ width: targetW, height: targetH })
-      thumbBuffer = resized.toPNG()
-    } catch {
-      // Fallback: use original
-      thumbBuffer = buffer
+      thumbBuffer = await sharp(buffer)
+        .rotate()
+        .resize({ width: 300, height: 300, fit: 'inside', withoutEnlargement: true })
+        .png({ compressionLevel: 6 })
+        .toBuffer()
+    } catch {}
+    if (!thumbBuffer || thumbBuffer.length === 0) {
+      try {
+        const mime = (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+        const browserThumb = await generateThumbnailWithBrowser(buffer, mime)
+        if (browserThumb && browserThumb.length > 0) {
+          thumbBuffer = browserThumb
+          thumbExt = '.png'
+        }
+      } catch {}
     }
-    const thumbName = uuid + '.png'
+    if (!thumbBuffer || thumbBuffer.length === 0) {
+      // Final fallback: 1x1 transparent PNG placeholder (never copy full-size)
+      const oneByOne = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2nH3EAAAAASUVORK5CYII='
+      thumbBuffer = Buffer.from(oneByOne, 'base64')
+      thumbExt = '.png'
+    }
+    const thumbName = uuid + thumbExt
     const thumbPath = path.join(thumbsDir, thumbName)
     await fs.writeFile(thumbPath, thumbBuffer)
 
@@ -767,7 +892,8 @@ app.whenReady().then(async () => {
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     const obj = db.prepare('SELECT id, game_id, name, description FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { id: string; game_id: string; name: string; description: string | null } | undefined
     if (!obj) { db.close(); throw new Error('Object not found') }
-    const img = db.prepare('SELECT thumb_path FROM images WHERE object_id = ? AND deleted_at IS NULL AND is_default = 1 LIMIT 1').get(objectId) as { thumb_path?: string } | undefined
+    // Prefer default image; if none, take the first available image
+    const img = db.prepare('SELECT thumb_path, file_path FROM images WHERE object_id = ? AND deleted_at IS NULL ORDER BY is_default DESC, created_at ASC LIMIT 1').get(objectId) as { thumb_path?: string; file_path?: string } | undefined
     db.close()
     const raw = obj.description || ''
     // Preserve tag labels in snippet: [[Label|tag_xxx]] -> Label
@@ -776,18 +902,25 @@ app.whenReady().then(async () => {
       .replace(/\[\[([^\]]+)\]\]/g, '$1')
     const snippet = withLabels.slice(0, 240)
     const thumbPath = img?.thumb_path || null
+    const imagePath = img?.file_path || null
     let fileUrl: string | null = null
     let thumbDataUrl: string | null = null
     try {
       if (thumbPath) {
-        fileUrl = pathToFileURL(thumbPath).href
         const buf = await fs.readFile(thumbPath)
         const ext = (path.extname(thumbPath) || '.png').toLowerCase()
         const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
-        thumbDataUrl = `data:${mime};base64,${buf.toString('base64')}`
+        thumbDataUrl = await transcodeToPngDataUrl(buf, mime) || `data:${mime};base64,${buf.toString('base64')}`
+      } else if (imagePath) {
+        const buf = await fs.readFile(imagePath)
+        const ext = (path.extname(imagePath) || '.png').toLowerCase()
+        const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+        thumbDataUrl = await transcodeToPngDataUrl(buf, mime) || `data:${mime};base64,${buf.toString('base64')}`
       }
     } catch {}
-    return { id: obj.id, name: obj.name, snippet, thumbPath, fileUrl, thumbDataUrl }
+    // fileUrl retained for legacy fallback; computed from thumbPath if present
+    try { if (thumbPath) fileUrl = pathToFileURL(thumbPath).href } catch {}
+    return { id: obj.id, name: obj.name, snippet, thumbPath, imagePath, fileUrl, thumbDataUrl }
   })
 
   ipcMain.handle('gamedocs:update-object-description', async (_evt, objectId: string, description: string) => {
