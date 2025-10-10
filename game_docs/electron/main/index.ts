@@ -62,6 +62,39 @@ function toSlug(input: string): string {
     .slice(0, 64)
 }
 
+// Settings helpers (reuse DB access without IPC)
+async function readSetting<T = any>(key: string): Promise<T | null> {
+  if (!projectDirCache) return null
+  const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+  const schemaSql = await fs.readFile(schemaPath, 'utf8')
+  const { db } = await initGameDatabase(projectDirCache, schemaSql)
+  try { ensureMigrations(db) } catch {}
+  const row = db.prepare('SELECT setting_value FROM settings WHERE setting_name = ? AND deleted_at IS NULL').get(key) as { setting_value?: string } | undefined
+  db.close()
+  if (!row?.setting_value) return null
+  try { return JSON.parse(row.setting_value) as T } catch { return null }
+}
+
+async function writeSetting(key: string, value: any): Promise<boolean> {
+  if (!projectDirCache) return false
+  const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+  const schemaSql = await fs.readFile(schemaPath, 'utf8')
+  const { db } = await initGameDatabase(projectDirCache, schemaSql)
+  try { ensureMigrations(db) } catch {}
+  const now = new Date().toISOString()
+  const text = JSON.stringify(value ?? null)
+  const exists = db.prepare('SELECT 1 FROM settings WHERE setting_name = ? AND deleted_at IS NULL').get(key)
+  if (exists) {
+    db.prepare('UPDATE settings SET setting_value = ?, updated_at = ? WHERE setting_name = ? AND deleted_at IS NULL').run(text, now, key)
+  } else {
+    const id = crypto.randomUUID()
+    db.prepare('INSERT INTO settings (id, setting_name, setting_value, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
+      .run(id, key, text, now, now)
+  }
+  db.close()
+  return true
+}
+
 function generateObjectId(name: string): string {
   const uuid = crypto.randomUUID().replace(/-/g, '')
   const short = uuid.slice(0, 8)
@@ -165,13 +198,30 @@ async function createEditorWindow(title: string, routeHash: string) {
     editorWin.focus()
     return editorWin
   }
-  editorWin = new BrowserWindow({
+  // Restore previous window bounds and state
+  const saved = await readSetting<any>('ui.editorWindow').catch(() => null)
+  const baseOptions: Electron.BrowserWindowConstructorOptions = {
     title,
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
-    webPreferences: {
-      preload,
-    },
-  })
+    webPreferences: { preload },
+  }
+  if (saved && saved.bounds && typeof saved.bounds.width === 'number' && typeof saved.bounds.height === 'number') {
+    baseOptions.width = Math.max(400, saved.bounds.width)
+    baseOptions.height = Math.max(300, saved.bounds.height)
+    if (typeof saved.bounds.x === 'number' && typeof saved.bounds.y === 'number') {
+      baseOptions.x = saved.bounds.x
+      baseOptions.y = saved.bounds.y
+    }
+  }
+  editorWin = new BrowserWindow(baseOptions)
+  // Apply saved state (maximized/fullscreen) after creation
+  if (saved) {
+    if (saved.isFullScreen) {
+      editorWin.setFullScreen(true)
+    } else if (saved.isMaximized) {
+      editorWin.maximize()
+    }
+  }
   if (VITE_DEV_SERVER_URL) {
     editorWin.loadURL(`${VITE_DEV_SERVER_URL}#${routeHash}`)
   } else {
@@ -181,6 +231,21 @@ async function createEditorWindow(title: string, routeHash: string) {
     editorWin = null
     win?.show()
   })
+  // Persist state on changes
+  const saveBounds = async () => {
+    if (!editorWin) return
+    const isMaximized = editorWin.isMaximized()
+    const isFullScreen = editorWin.isFullScreen()
+    const bounds = isMaximized || isFullScreen ? editorWin.getNormalBounds() : editorWin.getBounds()
+    await writeSetting('ui.editorWindow', { bounds, isMaximized, isFullScreen })
+  }
+  editorWin.on('resize', () => { saveBounds() })
+  editorWin.on('move', () => { saveBounds() })
+  editorWin.on('maximize', () => { saveBounds() })
+  editorWin.on('unmaximize', () => { saveBounds() })
+  editorWin.on('enter-full-screen', () => { saveBounds() })
+  editorWin.on('leave-full-screen', () => { saveBounds() })
+  editorWin.on('close', () => { saveBounds() })
   return editorWin
 }
 
@@ -248,13 +313,26 @@ function tryTranscodeBufferToPNG(buffer: Buffer): Buffer | null {
 }
 
 async function createWindow() {
-  win = new BrowserWindow({
+  // Restore main window state
+  const savedMain = await readSetting<any>('ui.mainWindow').catch(() => null)
+  const mainOpts: Electron.BrowserWindowConstructorOptions = {
     title: 'PlayerDocs',
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
-    webPreferences: {
-      preload,
-    },
-  })
+    webPreferences: { preload },
+  }
+  if (savedMain && savedMain.bounds && typeof savedMain.bounds.width === 'number' && typeof savedMain.bounds.height === 'number') {
+    mainOpts.width = Math.max(600, savedMain.bounds.width)
+    mainOpts.height = Math.max(400, savedMain.bounds.height)
+    if (typeof savedMain.bounds.x === 'number' && typeof savedMain.bounds.y === 'number') {
+      mainOpts.x = savedMain.bounds.x
+      mainOpts.y = savedMain.bounds.y
+    }
+  }
+  win = new BrowserWindow(mainOpts)
+  if (savedMain) {
+    if (savedMain.isFullScreen) win.setFullScreen(true)
+    else if (savedMain.isMaximized) win.maximize()
+  }
 
   if (VITE_DEV_SERVER_URL) { // #298
     win.loadURL(VITE_DEV_SERVER_URL)
@@ -273,6 +351,22 @@ async function createWindow() {
   })
 
   update(win)
+
+  // Persist main window state
+  const saveMain = async () => {
+    if (!win) return
+    const isMaximized = win.isMaximized()
+    const isFullScreen = win.isFullScreen()
+    const bounds = isMaximized || isFullScreen ? win.getNormalBounds() : win.getBounds()
+    await writeSetting('ui.mainWindow', { bounds, isMaximized, isFullScreen })
+  }
+  win.on('resize', () => { saveMain() })
+  win.on('move', () => { saveMain() })
+  win.on('maximize', () => { saveMain() })
+  win.on('unmaximize', () => { saveMain() })
+  win.on('enter-full-screen', () => { saveMain() })
+  win.on('leave-full-screen', () => { saveMain() })
+  win.on('close', () => { saveMain() })
 }
 
 app.whenReady().then(async () => {
