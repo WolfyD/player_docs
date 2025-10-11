@@ -85,6 +85,14 @@ export const Editor: React.FC = () => {
   const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
   const [showMisc, setShowMisc] = useState(false)
 
+  // Command palette: commands and parameter flow
+  const [isCommandMode, setIsCommandMode] = useState(false)
+  const [filteredCommands, setFilteredCommands] = useState<any[]>([])
+  const [cmdParamMode, setCmdParamMode] = useState(false)
+  const [selectedCommand, setSelectedCommand] = useState<any | null>(null)
+  const [paletteSelIndex, setPaletteSelIndex] = useState(0)
+  const paletteResultsRef = useRef<HTMLDivElement | null>(null)
+
   // Build a recursive tree of children for the current object and append as a nicely
   // formatted listing three lines below the existing description
   const handleListAllItems = useCallback(async () => {
@@ -217,7 +225,8 @@ export const Editor: React.FC = () => {
         command: savedShortcuts.command || 'Ctrl+K',
         newChild: savedShortcuts.newChild || 'Ctrl+N',
         addImage: savedShortcuts.addImage || 'Ctrl+I',
-        miscStuff: savedShortcuts.miscStuff || ''
+        miscStuff: savedShortcuts.miscStuff || 'Ctrl+M',
+        exportShare: savedShortcuts.exportShare || 'Ctrl+E'
       })
     })()
   }, [])
@@ -351,12 +360,157 @@ span[data-tag] {
     const run = setTimeout(async () => {
       if (!showPalette || !campaign) return
       const q = paletteInput.trim()
+      // If we are in parameter mode, keep command mode active and (optionally) filter choices by text
+      if (cmdParamMode && selectedCommand) {
+        setIsCommandMode(true)
+        return
+      }
+      // Command mode: when input starts with '>'
+      if (q.startsWith('>')) {
+        const term = q.slice(1).trim().toLowerCase()
+        setIsCommandMode(true)
+        // do not reset cmdParamMode/selectedCommand here; handled explicitly on Enter/click
+        if (!term) { setFilteredCommands(listOfCommands); return }
+        const lc = listOfCommands.filter(c => c.name.toLowerCase().includes(term) || c.description.toLowerCase().includes(term) || c.id.toLowerCase().includes(term))
+        setFilteredCommands(lc)
+        return
+      }
+      setIsCommandMode(false)
       if (!q) { setPaletteResults({ objects: [], tags: [] }); return }
       const res = await window.ipcRenderer.invoke('gamedocs:quick-search', campaign.id, q).catch(() => ({ objects: [], tags: [] }))
       setPaletteResults(res || { objects: [], tags: [] })
     }, 150)
     return () => clearTimeout(run)
   }, [showPalette, paletteInput, campaign?.id])
+
+  useEffect(() => { setPaletteSelIndex(0) }, [isCommandMode, cmdParamMode, filteredCommands.length, paletteResults.objects.length, paletteResults.tags.length])
+  useEffect(() => {
+    if (cmdParamMode && selectedCommand) setPaletteSelIndex(0)
+  }, [paletteInput, cmdParamMode, selectedCommand])
+
+  // Keep the highlighted item in view
+  useEffect(() => {
+    if (!showPalette) return
+    const container = paletteResultsRef.current
+    if (!container) return
+    const items = Array.from(container.querySelectorAll<HTMLDivElement>('.palette-item'))
+    if (items.length === 0) return
+    const idx = Math.min(Math.max(0, paletteSelIndex), items.length - 1)
+    const el = items[idx]
+    if (el && typeof (el as any).scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' })
+    }
+  }, [showPalette, paletteSelIndex, isCommandMode, cmdParamMode, filteredCommands.length, paletteResults.objects.length, paletteResults.tags.length])
+
+  function runCommand(cmdId: string) {
+    switch (cmdId) {
+      case 'settings': setShowSettings(true); setShowPalette(false); return
+      case 'editObject': setEditName(activeName); setShowEditObject(true); setShowPalette(false); return
+      case 'newChild': setCatErr(null); setCatName(''); setShowCat(true); setShowPalette(false); return
+      case 'addImage': setAddPictureModal(true); setShowPalette(false); return
+      case 'miscStuff': setShowMisc(true); setShowPalette(false); return
+      case 'exportShare': handleExportToShare(); setShowPalette(false); return
+      case 'listAllItems': handleListAllItems(); setShowPalette(false); return
+      case 'command': setShowPalette(true); return
+      case 'chooseFontFile': (async () => {
+        const pick = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
+        if (pick?.path) {
+          const loaded = await window.ipcRenderer.invoke('gamedocs:read-font-as-dataurl', pick.path).catch(() => null)
+          if (loaded?.dataUrl) {
+            const fontName = loaded.suggestedFamily || 'CustomFont'
+            const styleTagId = `pd-font-${fontName}`
+            if (!document.getElementById(styleTagId)) {
+              const st = document.createElement('style')
+              st.id = styleTagId
+              st.innerHTML = `@font-face{ font-family: "${fontName}"; src: url(${loaded.dataUrl}) format("${(loaded.mime||'').includes('woff')?'woff2':'truetype'}"); font-weight: 100 900; font-style: normal; font-display: swap; }`
+              document.head.appendChild(st)
+            }
+            const f = { ...fonts, family: `${fontName}, ${fonts.family}` }
+            setFonts(f); applyFonts(f)
+            toast('Custom font loaded', 'success')
+          }
+        }
+        setShowPalette(false)
+      })(); return
+      default:
+        toast('Command not implemented', 'info')
+        return
+    }
+  }
+
+  function beginParamMode(cmd: any) {
+    setSelectedCommand(cmd)
+    setCmdParamMode(true)
+    // Keep command mode active and clear only the visible input text, preserving '>' handling in our update effect
+    setPaletteInput('')
+    setIsCommandMode(true)
+  }
+
+  function getParamMeta(cmd: any): { key: string; choices: any[] } {
+    const params: any = cmd?.parameters || {}
+    const keys = Object.keys(params).filter(k => k !== 'choices')
+    const key = keys[0] || ''
+    let choices: any[] = []
+    if (Array.isArray(params?.choices)) choices = params.choices
+    else if (key && params[key] && Array.isArray(params[key].choices)) choices = params[key].choices
+    return { key, choices }
+  }
+
+  function commitParam(value: string) {
+    if (!selectedCommand) return
+    if (selectedCommand.id === 'selectColorPalette') {
+      // normalize to a valid palette key using available choices
+      const { choices } = getParamMeta(selectedCommand)
+      const lower = String(value).trim().toLowerCase()
+      const picked = choices.find(c => String(c).toLowerCase() === lower)
+      if (!picked) { toast('Unknown palette', 'error'); return }
+      const key = picked as any
+      setPaletteKey(key)
+      applyPalette(key, key === 'custom' ? customColors : null)
+      setShowPalette(false)
+      toast('Palette updated', 'success')
+      setCmdParamMode(false); setSelectedCommand(null)
+      return
+    }
+    if (selectedCommand.id === 'setFontColor') {
+      const f = { ...fonts, color: value }
+      setFonts(f); applyFonts(f)
+      setShowPalette(false)
+      toast('Font color updated', 'success')
+      setCmdParamMode(false); setSelectedCommand(null)
+      return
+    }
+    if (selectedCommand.id === 'setFontFamily') {
+      const f = { ...fonts, family: value }
+      setFonts(f); applyFonts(f)
+      setShowPalette(false)
+      toast('Font family updated', 'success')
+      setCmdParamMode(false); setSelectedCommand(null)
+      return
+    }
+    if (selectedCommand.id === 'setFontSize') {
+      const size = parseInt(String(value), 10)
+      if (!isNaN(size)) {
+        const f = { ...fonts, size }
+        setFonts(f); applyFonts(f)
+        toast('Font size updated', 'success')
+      }
+      setShowPalette(false)
+      setCmdParamMode(false); setSelectedCommand(null)
+      return
+    }
+    if (selectedCommand.id === 'setFontWeight') {
+      const weight = parseInt(String(value), 10)
+      if (!isNaN(weight)) {
+        const f = { ...fonts, weight }
+        setFonts(f); applyFonts(f)
+        toast('Font weight updated', 'success')
+      }
+      setShowPalette(false)
+      setCmdParamMode(false); setSelectedCommand(null)
+      return
+    }
+  }
 
   useEffect(() => {
     if (!activeId) return
@@ -1354,29 +1508,123 @@ span[data-tag] {
             <div className="palette-overlay" onClick={() => setShowPalette(false)}>
               <div className="palette-container" onClick={(e) => e.stopPropagation()}>
                 <div className="palette-card">
-                  <input autoFocus placeholder="Search objects, tags, or type a command" value={paletteInput} onChange={e => setPaletteInput(e.target.value)} className="palette-input" />
-                  <div className="palette-results">
-                    {(paletteResults.objects.length === 0 && paletteResults.tags.length === 0) ? (
-                      <div className="muted pad-8">No results</div>
+                  {cmdParamMode && selectedCommand ? (
+                    <div className="muted pad-8" style={{ marginBottom: 6 }}>{selectedCommand.description || ''}</div>
+                  ) : null}
+                  <input
+                    autoFocus
+                    placeholder={isCommandMode ? (cmdParamMode && selectedCommand ? (
+                      (() => {
+                        const meta = getParamMeta(selectedCommand)
+                        if (meta.key === 'palette') return 'palette'
+                        if (meta.key === 'color') return "color eg: 'red', '(255, 0, 0)' or '#FF0000'"
+                        return 'Enter parameter'
+                      })()
+                    ) : 'Type > to run a command') : 'Search objects, tags, or type a command'}
+                    value={paletteInput}
+                    onChange={e => setPaletteInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape' && isCommandMode) {
+                        if (cmdParamMode) { setCmdParamMode(false); setSelectedCommand(null); setPaletteInput('>') }
+                        else { setIsCommandMode(false); setPaletteInput('') }
+                      }
+                      if (e.key === 'Enter' && isCommandMode && cmdParamMode && selectedCommand) {
+                        const meta = getParamMeta(selectedCommand)
+                        const key = meta.key
+                        const v = paletteInput.trim()
+                        if (!key) return
+                        // If choices exist, commit currently highlighted choice; otherwise commit free text
+                        const hasChoices = Array.isArray(meta.choices) && meta.choices.length > 0
+                        if (hasChoices) {
+                          const all: any[] = meta.choices
+                          const term = paletteInput.trim().toLowerCase()
+                          const filtered = all.filter(ch => String(ch).toLowerCase().includes(term))
+                          const idx = Math.min(Math.max(0, paletteSelIndex), Math.max(0, filtered.length - 1))
+                          const choice = filtered[idx]
+                          if (choice) commitParam(String(choice))
+                        } else {
+                          if (v) commitParam(v)
+                        }
+                      }
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        setPaletteSelIndex(i => i + 1)
+                      }
+                      if (e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        setPaletteSelIndex(i => Math.max(0, i - 1))
+                      }
+                      if (e.key === 'Enter' && isCommandMode && !cmdParamMode) {
+                        const list = filteredCommands
+                        const idx = Math.min(Math.max(0, paletteSelIndex), Math.max(0, list.length - 1))
+                        const cmd = list[idx]
+                        if (cmd) {
+                          const hasParam = !!(cmd as any).parameters
+                          if (!hasParam) runCommand(cmd.id)
+                          else beginParamMode(cmd)
+                        }
+                      }
+                    }}
+                    className="palette-input"
+                  />
+                  <div className="palette-results" ref={paletteResultsRef as any}>
+                    {isCommandMode ? (
+                      cmdParamMode && selectedCommand ? (
+                        (() => {
+                          const meta = getParamMeta(selectedCommand)
+                          const choices: any[] = meta.choices || []
+                          const term = paletteInput.trim().toLowerCase()
+                          const filtered = choices.filter(ch => String(ch).toLowerCase().includes(term))
+                          return filtered.length === 0 ? (
+                            <div className="muted pad-8">Type a value and press Enter</div>
+                          ) : (
+                            <div className="pad-8">
+                              <div className="palette-section-title">Choices</div>
+                              {filtered.map((ch, idx) => (
+                                <div key={String(ch)} className="palette-item" style={{ background: idx === paletteSelIndex ? '#333' : undefined }} onClick={() => { commitParam(String(ch)) }}>{String(ch)}</div>
+                              ))}
+                            </div>
+                          )
+                        })()
+                      ) : (
+                        filteredCommands.length === 0 ? (
+                          <div className="muted pad-8">No commands</div>
+                        ) : (
+                          <div className="pad-8">
+                            <div className="palette-section-title">Commands</div>
+                            {filteredCommands.map((cmd, idx) => (
+                              <div key={cmd.id} className="palette-item" style={{ background: idx === paletteSelIndex ? '#333' : undefined }} onClick={() => {
+                                const hasParam = !!(cmd as any).parameters
+                                if (!hasParam) runCommand(cmd.id)
+                                else beginParamMode(cmd)
+                              }}>{cmd.name}</div>
+                            ))}
+                          </div>
+                        )
+                      )
                     ) : (
-                      <>
-                        {paletteResults.objects.length > 0 && (
-                          <div className="pad-8">
-                            <div className="palette-section-title">Objects</div>
-                            {paletteResults.objects.map(o => (
-                              <div key={o.id} className="palette-item" onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
-                            ))}
-                          </div>
-                        )}
-                        {paletteResults.tags.length > 0 && (
-                          <div className="pad-8">
-                            <div className="palette-section-title">Tags</div>
-                            {paletteResults.tags.map(t => (
-                              <div key={t.id} className="palette-item" onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
-                            ))}
-                          </div>
-                        )}
-                      </>
+                      (paletteResults.objects.length === 0 && paletteResults.tags.length === 0) ? (
+                        <div className="muted pad-8">No results</div>
+                      ) : (
+                        <>
+                          {paletteResults.objects.length > 0 && (
+                            <div className="pad-8">
+                              <div className="palette-section-title">Objects</div>
+                              {paletteResults.objects.map(o => (
+                                <div key={o.id} className="palette-item" onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
+                              ))}
+                            </div>
+                          )}
+                          {paletteResults.tags.length > 0 && (
+                            <div className="pad-8">
+                              <div className="palette-section-title">Tags</div>
+                              {paletteResults.tags.map(t => (
+                                <div key={t.id} className="palette-item" onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )
                     )}
                   </div>
                   <div className="palette-footer"><span>Esc to close</span><span>Ctrl+K</span></div>
