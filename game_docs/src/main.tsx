@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
-import { ConfirmProvider } from './components/Confirm'
+import { ConfirmProvider, ToastProvider } from './components/Confirm'
 
 import './index.css'
 
@@ -11,9 +11,11 @@ import './demos/ipc'
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <ConfirmProvider>
-      <App />
-    </ConfirmProvider>
+    <ToastProvider>
+      <ConfirmProvider>
+        <App />
+      </ConfirmProvider>
+    </ToastProvider>
   </React.StrictMode>,
 )
 

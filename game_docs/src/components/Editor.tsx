@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import './editor.css'
 import Fuse from 'fuse.js'
-import { confirmDialog } from './Confirm'
+import { confirmDialog, toast } from './Confirm'
 
 type Campaign = { id: string; name: string }
 
@@ -128,6 +128,20 @@ export const Editor: React.FC = () => {
     }
     setShowMisc(false)
   }, [activeId, campaign, desc])
+
+  const handleExportToShare = useCallback(async () => {
+    try {
+      const res = await window.ipcRenderer.invoke('gamedocs:export-to-share', activeId)
+      if (res && res.ok) {
+        toast('Export completed successfully', 'success')
+      } else {
+        toast('Export cancelled', 'info')
+      }
+    } catch {
+      toast('Export failed', 'error')
+    }
+  }, [activeId])
+
   const [showEditObject, setShowEditObject] = useState(false)
   const [editName, setEditName] = useState('')
   const [ownerTags, setOwnerTags] = useState<Array<{ id: string }>>([])
@@ -1107,6 +1121,7 @@ span[data-tag] {
               <div className="dialog-card w-360" onClick={e => e.stopPropagation()}>
                 <h3 className="mt-0">Misc</h3>
                 <div className="misc-list">
+                  <div className="misc-item" onClick={handleExportToShare}>Export to Share</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to HTML */ }}>Export to HTML</div>
                   <div className="misc-item" onClick={() => { /* TODO: Generate Map */ }}>Generate map</div>

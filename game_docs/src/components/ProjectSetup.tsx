@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { confirmDialog } from './Confirm'
+import { confirmDialog, toast } from './Confirm'
 import { createCampaign } from '../utils/ipc'
 import '../components/editor.css'
 
@@ -54,6 +54,22 @@ export const ProjectSetup: React.FC = () => {
     setShowCreate(true)
   }
 
+  const onShowImport = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await (window as any).ipcRenderer.invoke('gamedocs:import-from-share')
+      if (!res || !res.ok) return
+      await loadCampaigns()
+      toast('Import completed successfully', 'success')
+    } catch (e: any) {
+      setError(e?.message || 'Import failed')
+      toast('Import failed', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onOpen = async (id: string) => {
     await (window as any).ipcRenderer.invoke('gamedocs:open-campaign', id)
   }
@@ -64,16 +80,17 @@ export const ProjectSetup: React.FC = () => {
       <div className="project-setup-list">
         <div className="project-setup-list-header">
           <div>Existing Campaigns</div>
+          <button className="main-button-import" onClick={onShowImport} title="Import campaign"><i className="ri-download-fill"></i></button>
         </div>
         {campaigns.length === 0 ? (
           <div style={{ padding: 12, color: '#aaa' }}>No campaigns yet.</div>
         ) : (
           campaigns.map(c => (
-            <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '1fr 360px', padding: '10px 12px', borderTop: '1px solid #2a2a2a', alignItems: 'center' }}>
-              <button className="main-campaign-listing" onClick={() => onOpen(c.id)}>{c.name}</button>
+            <div key={c.id} className="project-setup-list-item">
+              <button className="main-campaign-listing" onClick={() => onOpen(c.id)} title={`Open campaign [${c.name}]`}>{c.name}</button>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button className="main-button-edit" onClick={() => { setShowRename(true); setRenameTarget(c); setRenameName(c.name) }}><i className="ri-pencil-fill"></i></button>
-                <button className="main-button-delete" onClick={async () => {
+                <button className="main-button-edit" onClick={() => { setShowRename(true); setRenameTarget(c); setRenameName(c.name) }} title="Rename campaign"><i className="ri-pencil-fill"></i></button>
+                <button className="main-button-delete" title="Delete campaign" onClick={async () => {
                   const ok = await confirmDialog({ title: 'Delete campaign', message: 'Delete this campaign? (soft delete)', variant: 'yes-no' })
                   if (!ok) return
                   await (window as any).ipcRenderer.invoke('gamedocs:delete-campaign', c.id)
@@ -86,16 +103,16 @@ export const ProjectSetup: React.FC = () => {
       </div>
 
       {/* Floating create button */}
-      <div style={{ position: 'absolute', right: 24, bottom: 24 }}>
+      <div className="main-button-create-container">
         {!showCreate && 
-        <button onClick={onShowCreate} disabled={busy} title="Create new campaign" style={{ fontSize: 28, paddingTop: 0, paddingLeft: 10, paddingBottom: 5, paddingRight: 10 }}>
-          +
+        <button className="main-button-create" onClick={onShowCreate} disabled={busy} title="Create new campaign">
+          <i className="ri-add-fill"></i>
         </button>
         }
         {showCreate && 
         <div style={{ display: 'flex', alignItems: 'center', position: 'absolute', right: 0, bottom: 0 }}>
-          <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Campaign name" style={{ fontSize: 28, padding: 3, marginRight: 10 }}/>
-          <button onClick={onCreate} disabled={busy} title="Create new campaign" style={{ fontSize: 28, paddingTop: 0, paddingLeft: 10, paddingBottom: 5, paddingRight: 10 }}>Create</button>
+          <input type="text" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { onCreate() } else if (e.key === 'Escape') { setShowCreate(false) } }} placeholder="Campaign name" style={{ fontSize: 28, padding: 3, marginRight: 10 }}/>
+          <button className="main-button-create-2" onClick={onCreate} disabled={busy} title="Create new campaign">Create</button>
         </div>
         }
       </div>

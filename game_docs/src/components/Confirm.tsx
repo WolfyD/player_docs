@@ -81,4 +81,33 @@ export const ConfirmProvider: React.FC<{ children?: React.ReactNode }> = ({ chil
   )
 }
 
+// Simple global toast implementation
+type ToastItem = { id: number; message: string; kind?: 'info' | 'success' | 'error' };
+let toastImpl: (msg: string, kind?: 'info' | 'success' | 'error') => void = () => {}
+export function toast(message: string, kind: 'info' | 'success' | 'error' = 'info') {
+  toastImpl(message, kind)
+}
+
+export const ToastProvider: React.FC<{ children?: React.ReactNode }> = ({ children }) => {
+  const [items, setItems] = useState<ToastItem[]>([])
+  useEffect(() => {
+    toastImpl = (msg: string, kind: 'info' | 'success' | 'error' = 'info') => {
+      const id = Date.now() + Math.floor(Math.random() * 1000)
+      setItems(list => [...list, { id, message: msg, kind }])
+      setTimeout(() => setItems(list => list.filter(t => t.id !== id)), 3500)
+    }
+    return () => { toastImpl = () => {} }
+  }, [])
+  return (
+    <>
+      {children}
+      <div className="toast-container">
+        {items.map(t => (
+          <div key={t.id} className={`toast toast-${t.kind || 'info'}`}>{t.message}</div>
+        ))}
+      </div>
+    </>
+  )
+}
+
 

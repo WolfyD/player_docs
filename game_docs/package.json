@@ -26,6 +26,8 @@
     "@uiw/react-md-editor": "^4.0.8",
     "better-sqlite3": "^11.10.0",
     "electron-updater": "^6.3.9",
+    "archiver": "^6.0.2",
+    "yauzl": "^2.10.0",
     "fuse.js": "^7.0.0",
     "hotkeys-js": "^3.13.7",
     "remark-gfm": "^4.0.1",

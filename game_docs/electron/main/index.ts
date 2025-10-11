@@ -7,6 +7,7 @@ import { update } from './update'
 import { readConfig, writeConfig, ensureProjectScaffold } from './config'
 import { initGameDatabase } from './db'
 import fs from 'node:fs/promises'
+import fssync from 'node:fs'
 // duplicate import removed
 import crypto from 'node:crypto'
 import sharp from 'sharp'
@@ -1075,6 +1076,271 @@ app.whenReady().then(async () => {
     db.prepare('UPDATE games SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, gameId)
     db.close()
     return true
+  })
+
+  // Import from share zip: unzip -> parse manifest -> delete existing game -> remap ids -> insert -> copy images -> regenerate thumbs
+  ipcMain.handle('gamedocs:import-from-share', async () => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const pick = await dialog.showOpenDialog({ title: 'Import PlayerDocs Share', properties: ['openFile'], filters: [{ name: 'PlayerDocs Share (zip)', extensions: ['pdshare.zip','zip'] }] })
+    if (pick.canceled || pick.filePaths.length === 0) return { ok: false }
+    const zipPath = pick.filePaths[0]
+    // Extract to temp dir
+    const osTmp = await import('node:os')
+    const tmpDir = await fs.mkdtemp(path.join(osTmp.tmpdir(), 'pdshare-'))
+    const unzipper = await import('yauzl')
+    await new Promise<void>((resolve, reject) => {
+      unzipper.open(zipPath, { lazyEntries: true }, (err: any, zip: any) => {
+        if (err || !zip) return reject(err)
+        zip.readEntry()
+        zip.on('entry', (entry: any) => {
+          const dest = path.join(tmpDir, entry.fileName)
+          if (/\/$/.test(entry.fileName)) {
+            fssync.mkdirSync(dest, { recursive: true })
+            zip.readEntry()
+          } else {
+            fssync.mkdirSync(path.dirname(dest), { recursive: true })
+            zip.openReadStream(entry, (err2: any, stream: any) => {
+              if (err2) return reject(err2)
+              const out = fssync.createWriteStream(dest)
+              stream.pipe(out)
+              out.on('close', () => zip.readEntry())
+            })
+          }
+        })
+        zip.on('end', () => resolve())
+        zip.on('error', (e: any) => reject(e))
+      })
+    })
+    // Read manifest
+    const manifestPath = path.join(tmpDir, 'manifest.json')
+    const text = await fs.readFile(manifestPath, 'utf8')
+    const manifest = JSON.parse(text) as { version: number; game: { id: string; name: string }; objects: any[]; linkTags: any[]; tagLinks: any[]; images: Array<{ id: string; object_id: string; name: string | null; is_default: boolean; file: string }> }
+    // Open DB
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const gameId = manifest.game.id
+    // Confirm overwrite if game exists
+    const exists = db.prepare('SELECT 1 FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId)
+    if (exists) {
+      const res = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Overwrite campaign?',
+        message: `A campaign with id ${gameId} already exists. Overwrite it? This cannot be undone.`,
+        buttons: ['Overwrite', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      })
+      if (res.response !== 0) { db.close(); return { ok: false, cancelled: true } }
+    }
+    // Delete existing game data (hard delete) in FK-safe order inside a transaction
+    try { db.prepare('BEGIN IMMEDIATE').run() } catch {}
+    db.prepare('DELETE FROM images WHERE object_id IN (SELECT id FROM objects WHERE game_id = ?)').run(gameId)
+    db.prepare('DELETE FROM object_tags WHERE object_id IN (SELECT id FROM objects WHERE game_id = ?)').run(gameId)
+    db.prepare('DELETE FROM notes WHERE object_id IN (SELECT id FROM objects WHERE game_id = ?)').run(gameId)
+    db.prepare('DELETE FROM tag_links WHERE tag_id IN (SELECT id FROM link_tags WHERE game_id = ?)').run(gameId)
+    db.prepare('DELETE FROM link_tags WHERE game_id = ?').run(gameId)
+    db.prepare('DELETE FROM objects WHERE game_id = ?').run(gameId)
+    try { db.prepare('DELETE FROM fts_objects WHERE game_id = ?').run(gameId) } catch {}
+    try { db.prepare('COMMIT').run() } catch { try { db.prepare('ROLLBACK').run() } catch {} }
+    // Ensure game exists (insert if not exists) and set name
+    const now = new Date().toISOString()
+    try { db.prepare('BEGIN IMMEDIATE').run() } catch {}
+    db.prepare('INSERT OR IGNORE INTO games (id, name, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)')
+      .run(gameId, manifest.game.name || 'Imported', now, now)
+    db.prepare('UPDATE games SET name = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+      .run(manifest.game.name || 'Imported', now, gameId)
+    // Remap ids with random prefix (except game id)
+    const randPrefix = crypto.randomUUID().slice(0, 8)
+    const mapId = (id: string) => id.replace(/^(\w+_)/, `$1${randPrefix}_`)
+    const objectIdMap = new Map<string, string>()
+    for (const o of manifest.objects) objectIdMap.set(o.id, mapId(o.id))
+    const tagIdMap = new Map<string, string>()
+    for (const t of manifest.linkTags) tagIdMap.set(t.id, mapId(t.id))
+    const imageIdMap = new Map<string, string>()
+    for (const im of manifest.images) imageIdMap.set(im.id, mapId(im.id))
+    // Build tag owner map from descriptions as fallback (original ids)
+    const tokenRe = /\[\[[^\]|]+\|([^\]]+)\]\]/g
+    const tagOwnerOriginal = new Map<string, string>()
+    for (const o of manifest.objects) {
+      const text = String(o.description || '')
+      let m: RegExpExecArray | null
+      while ((m = tokenRe.exec(text))) {
+        const tagId = m[1]
+        if (!tagOwnerOriginal.has(tagId)) tagOwnerOriginal.set(tagId, o.id)
+      }
+    }
+    // Helper: remap description tag ids to new tag ids
+    const remapDescription = (text: string | null | undefined): string => {
+      if (!text) return ''
+      return String(text).replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label, tag) => {
+        const newTag = tagIdMap.get(String(tag)) || String(tag)
+        return `[[${String(label)}|${newTag}]]`
+      })
+    }
+    // Insert objects (parents first)
+    const stmtObj = db.prepare('INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)')
+    const byId = new Map<string, any>()
+    for (const o of manifest.objects) byId.set(o.id, o)
+    const depthMemo = new Map<string, number>()
+    const depthOf = (id: string): number => {
+      if (depthMemo.has(id)) return depthMemo.get(id)!
+      const o = byId.get(id)
+      if (!o || !o.parent_id) { depthMemo.set(id, 0); return 0 }
+      const d = 1 + depthOf(o.parent_id as string)
+      depthMemo.set(id, d)
+      return d
+    }
+    const ordered = manifest.objects
+      .map(o => ({ o, depth: depthOf(o.id), idNew: objectIdMap.get(o.id)!, parentNew: o.parent_id ? (objectIdMap.get(o.parent_id) || null) : null }))
+      .sort((a, b) => a.depth - b.depth)
+    for (const it of ordered) {
+      const desc = remapDescription(it.o.description)
+      stmtObj.run(it.idNew, gameId, it.o.name || '', it.o.type || 'Other', it.parentNew, desc, now, now)
+    }
+    // Insert link tags
+    const stmtTag = db.prepare('INSERT INTO link_tags (id, game_id, object_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
+    // Insert link tags from manifest or derived owners
+    const seenTag = new Set<string>()
+    for (const t of manifest.linkTags) {
+      const idNew = tagIdMap.get(t.id)
+      const ownerOrig = t.object_id || tagOwnerOriginal.get(t.id) || null
+      const ownerNew = ownerOrig ? (objectIdMap.get(ownerOrig) || null) : null
+      if (!idNew || !ownerNew) continue
+      stmtTag.run(idNew, gameId, ownerNew, now, now)
+      seenTag.add(t.id)
+    }
+    // Create missing link_tags derived solely from descriptions
+    for (const [tagOrig, ownerOrig] of tagOwnerOriginal) {
+      if (seenTag.has(tagOrig)) continue
+      const idNew = mapId(tagOrig)
+      tagIdMap.set(tagOrig, idNew)
+      const ownerNew = objectIdMap.get(ownerOrig) || null
+      if (!ownerNew) continue
+      stmtTag.run(idNew, gameId, ownerNew, now, now)
+    }
+    // Insert tag links
+    const stmtLink = db.prepare('INSERT INTO tag_links (tag_id, object_id, created_at, deleted_at) VALUES (?, ?, ?, NULL)')
+    for (const l of manifest.tagLinks) {
+      const tagNew = tagIdMap.get(l.tag_id) || mapId(l.tag_id)
+      const objNew = objectIdMap.get(l.object_id)
+      if (!tagNew || !objNew) continue
+      stmtLink.run(tagNew, objNew, now)
+    }
+    // Copy images and create DB rows; regenerate thumbs
+    const game = db.prepare('SELECT name FROM games WHERE id = ?').get(gameId) as { name?: string } | undefined
+    const campaignFolder = game?.name || 'Imported'
+    const baseDir = path.join(projectDirCache!, 'games', campaignFolder)
+    const imagesDir = path.join(baseDir, 'images')
+    const thumbsDir = path.join(baseDir, 'thumbs')
+    await fs.mkdir(imagesDir, { recursive: true })
+    await fs.mkdir(thumbsDir, { recursive: true })
+    for (const im of manifest.images) {
+      const oldId = im.id
+      const newId = imageIdMap.get(oldId)!
+      const src = path.join(tmpDir, im.file)
+      if (!fssync.existsSync(src)) continue
+      const ext = path.extname(src) || '.png'
+      const fileName = newId + ext
+      const dest = path.join(imagesDir, fileName)
+      await fs.copyFile(src, dest)
+      // Create DB row
+      const objectNew = objectIdMap.get(im.object_id) || im.object_id
+      db.prepare('INSERT INTO images (id, object_id, name, is_default, file_path, thumb_path, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)')
+        .run(newId, objectNew, im.name || null, im.is_default ? 1 : 0, dest, '', now, now)
+      // Generate thumbnail via existing pipeline
+      try {
+        const buf = await fs.readFile(dest)
+        let thumbBuffer: Buffer | null = null
+        try {
+          thumbBuffer = await sharp(buf).rotate().resize({ width: 300, height: 300, fit: 'inside', withoutEnlargement: true }).png({ compressionLevel: 6 }).toBuffer()
+        } catch {}
+        if (!thumbBuffer || thumbBuffer.length === 0) {
+          const extmime = (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png'
+          const browserThumb = await generateThumbnailWithBrowser(buf, extmime)
+          if (browserThumb && browserThumb.length > 0) thumbBuffer = browserThumb
+        }
+        if (!thumbBuffer || thumbBuffer.length === 0) {
+          const oneByOne = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2nH3EAAAAASUVORK5CYII='
+          thumbBuffer = Buffer.from(oneByOne, 'base64')
+        }
+        const thumbPath = path.join(thumbsDir, newId + '.png')
+        await fs.writeFile(thumbPath, thumbBuffer)
+        db.prepare('UPDATE images SET thumb_path = ? WHERE id = ?').run(thumbPath, newId)
+      } catch {}
+    }
+    try { db.prepare('COMMIT').run() } catch { try { db.prepare('ROLLBACK').run() } catch {} }
+    db.close()
+    return { ok: true }
+  })
+
+  // Export current game to shareable JSON (includes data and embedded images)
+  ipcMain.handle('gamedocs:export-to-share', async (_evt, rootObjectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    // Resolve game id from root object
+    const root = db.prepare('SELECT id, game_id FROM objects WHERE id = ? AND deleted_at IS NULL').get(rootObjectId) as { id: string; game_id: string } | undefined
+    if (!root) { db.close(); throw new Error('Root object not found') }
+    const gameId = root.game_id
+    const game = db.prepare('SELECT id, name, created_at, updated_at FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId) as { id: string; name: string; created_at: string; updated_at: string } | undefined
+    if (!game) { db.close(); throw new Error('Game not found') }
+    // Fetch all objects for the game
+    const objects = db.prepare('SELECT id, game_id, name, type, parent_id, description, created_at, updated_at FROM objects WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<any>
+    // Fetch link_tags and tag_links
+    const linkTags = db.prepare('SELECT id, game_id, object_id, created_at, updated_at FROM link_tags WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<any>
+    const tagLinks = db.prepare('SELECT tag_id, object_id, created_at FROM tag_links WHERE tag_id IN (SELECT id FROM link_tags WHERE game_id = ? AND deleted_at IS NULL)').all(gameId) as Array<any>
+    // Fetch images
+    const images = db.prepare('SELECT id, object_id, name, is_default, file_path, thumb_path, created_at FROM images WHERE object_id IN (SELECT id FROM objects WHERE game_id = ? AND deleted_at IS NULL) AND deleted_at IS NULL').all(gameId) as Array<any>
+    // Build manifest image entries (no base64); archive will include original files only.
+    // Use stable unique filenames based on image id to avoid collisions.
+    const manifestImages: Array<any> = []
+    for (const img of images) {
+      const ext = (img.file_path && path.extname(img.file_path)) || ''
+      const fileName = `${img.id}${ext || ''}`
+      const relPath = `images/${fileName}`
+      manifestImages.push({ id: img.id, object_id: img.object_id, name: img.name, is_default: !!img.is_default, file: relPath })
+    }
+    // Generate export metadata (prefix remap deferred to import)
+    const share = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      game: { id: game.id, name: game.name },
+      objects,
+      linkTags,
+      tagLinks,
+      images: manifestImages,
+    }
+    db.close()
+    // Save dialog for zip
+    const { canceled, filePath } = await dialog.showSaveDialog({ title: 'Export to Share', defaultPath: path.join(projectDirCache, `${game.name.replace(/[^a-z0-9_\-]+/ig,'_') || 'campaign'}.pdshare.zip`), filters: [{ name: 'PlayerDocs Share (zip)', extensions: ['pdshare.zip','zip'] }] })
+    if (canceled || !filePath) return { ok: false }
+    // Create zip archive with manifest.json and images
+    const archiver = (await import('archiver')).default
+    await new Promise<void>((resolve, reject) => {
+      const output = fssync.createWriteStream(filePath)
+      const archive = archiver('zip', { zlib: { level: 9 } })
+      output.on('close', () => resolve())
+      output.on('error', (e) => reject(e))
+      archive.on('error', (e: any) => reject(e))
+      archive.pipe(output)
+      const manifestBuffer = Buffer.from(JSON.stringify(share, null, 2), 'utf8')
+      archive.append(manifestBuffer, { name: 'manifest.json' })
+      // Add original images only (skip thumbs; regenerate on import)
+      for (const img of images) {
+        if (img.file_path && fssync.existsSync(img.file_path)) {
+          const ext = path.extname(img.file_path) || ''
+          const fileName = `${img.id}${ext || ''}`
+          archive.file(img.file_path, { name: `images/${fileName}` })
+        }
+      }
+      archive.finalize()
+    })
+    return { ok: true, filePath }
   })
 
   await createWindow()
