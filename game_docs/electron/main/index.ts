@@ -1045,6 +1045,45 @@ app.whenReady().then(async () => {
     return true
   })
 
+  ipcMain.handle('gamedocs:object-has-content', async (_evt, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const row = db.prepare(`
+      SELECT
+        CASE WHEN COALESCE(TRIM(description),'') <> '' THEN 1
+             WHEN EXISTS(SELECT 1 FROM images WHERE object_id = objects.id AND deleted_at IS NULL) THEN 1
+             ELSE 0 END AS has
+      FROM objects WHERE id = ? AND deleted_at IS NULL
+    `).get(objectId) as { has?: number } | undefined
+    db.close()
+    return !!(row && row.has)
+  })
+
+  ipcMain.handle('gamedocs:get-or-create-tag-for-target', async (_evt, gameId: string, ownerObjectId: string, targetObjectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    const existing = db.prepare(`
+      SELECT lt.id AS id
+      FROM link_tags lt
+      JOIN tag_links tl ON tl.tag_id = lt.id AND tl.deleted_at IS NULL
+      WHERE lt.game_id = ? AND lt.object_id = ? AND tl.object_id = ? AND lt.deleted_at IS NULL
+      LIMIT 1
+    `).get(gameId, ownerObjectId, targetObjectId) as { id?: string } | undefined
+    if (existing?.id) { db.close(); return { tagId: existing.id } }
+    const tagId = generateTagId()
+    db.prepare('INSERT INTO link_tags (id, game_id, object_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)').run(tagId, gameId, ownerObjectId, now, now)
+    db.prepare('INSERT INTO tag_links (tag_id, object_id, created_at, deleted_at) VALUES (?, ?, ?, NULL)').run(tagId, targetObjectId, now)
+    db.close()
+    return { tagId }
+  })
+
   ipcMain.handle('gamedocs:get-object', async (_evt, objectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')

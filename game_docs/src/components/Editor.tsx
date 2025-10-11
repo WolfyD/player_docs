@@ -100,42 +100,59 @@ export const Editor: React.FC = () => {
   const handleListAllItems = useCallback(async () => {
     if (!activeId || !campaign || activeLocked) { setShowMisc(false); return }
     const campaignId = campaign.id
-    async function fetchChildrenRec(parentId: string): Promise<Array<{ id: string; name: string; children: any[] }>> {
-      const rows = await window.ipcRenderer.invoke('gamedocs:list-children', campaignId, parentId).catch(() => []) as Array<{ id: string; name: string; type: string }>
-      const result: Array<{ id: string; name: string; children: any[] }> = []
+    type TNode = { id: string; name: string; children: TNode[] }
+    async function fetchTree(pid: string): Promise<TNode[]> {
+      const rows = await window.ipcRenderer.invoke('gamedocs:list-children', campaignId, pid).catch(() => []) as Array<{ id: string; name: string }>
+      const out: TNode[] = []
       for (const r of rows) {
-        const kids = await fetchChildrenRec(r.id)
-        result.push({ id: r.id, name: r.name, children: kids })
+        out.push({ id: r.id, name: r.name, children: await fetchTree(r.id) })
       }
-      return result
+      return out
     }
-    function renderTree(nodes: Array<{ id: string; name: string; children: any[] }>, depth = 0): string {
+    const tree = await fetchTree(activeId)
+    // Build tag map by ensuring links for contentful nodes
+    const tagMap = new Map<string, string>()
+    let created = 0
+    async function ensureTags(nodes: TNode[]) {
+      for (const n of nodes) {
+        const has = await window.ipcRenderer.invoke('gamedocs:object-has-content', n.id).catch(() => false)
+        if (has) {
+          const res = await window.ipcRenderer.invoke('gamedocs:get-or-create-tag-for-target', campaignId, activeId, n.id).catch(() => null)
+          if (res?.tagId) { tagMap.set(n.id, res.tagId); created++ }
+        }
+        if (n.children && n.children.length) await ensureTags(n.children)
+      }
+    }
+    await ensureTags(tree)
+    function renderTreeWithTokens(nodes: TNode[], depth = 0): string {
       const indent = '\t'.repeat(depth * 2)
       const branchNodes = nodes.filter(n => n.children && n.children.length)
       const leafNodes = nodes.filter(n => !n.children || n.children.length === 0)
       const lines: string[] = []
-      // Render branches first (each on its own line with nested block)
       for (const n of branchNodes) {
-        lines.push(`${indent}- ${n.name}`)
-        lines.push(renderTree(n.children, depth + 1))
+        const tag = tagMap.get(n.id)
+        const label = tag ? `[[${n.name}|${tag}]]` : n.name
+        lines.push(`${indent}- ${label}`)
+        lines.push(renderTreeWithTokens(n.children, depth + 1))
       }
-      // Group leaves into a single line
       if (leafNodes.length > 0) {
-        lines.push(`${indent}- ${leafNodes.map(n => n.name).join(', ')}`)
+        const row = leafNodes.map(n => {
+          const tag = tagMap.get(n.id)
+          return tag ? `[[${n.name}|${tag}]]` : n.name
+        }).join(', ')
+        lines.push(`${indent}- ${row}`)
       }
       return lines.join('\n')
     }
-    const top = await fetchChildrenRec(activeId)
     const header = ['Contents:', '-----------'].join('\n')
-    const body = [header, renderTree(top)].join('\n')
+    const body = [header, renderTreeWithTokens(tree)].join('\n')
     const base = desc || ''
     const needsGap = base.length > 0
     const spacer = needsGap ? (base.endsWith('\n\n\n') ? '' : base.endsWith('\n\n') ? '\n' : base.endsWith('\n') ? '\n\n' : '\n\n\n') : ''
     const next = `${base}${spacer}${body}`
     setDesc(next)
-    if (editorRef.current) {
-      editorRef.current.innerHTML = descToHtml(next)
-    }
+    if (editorRef.current) editorRef.current.innerHTML = descToHtml(next)
+    toast(created > 0 ? `Generated ${created} tags from listed items` : 'No eligible items to tag', created > 0 ? 'success' : 'info')
     setShowMisc(false)
   }, [activeId, campaign, desc])
 
