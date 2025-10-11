@@ -142,6 +142,31 @@ export const Editor: React.FC = () => {
     }
   }, [activeId])
 
+  const listOfCommands = [
+    { id: 'settings', name: 'Settings', description: 'Open settings modal' },
+    { id: 'editObject', name: 'Edit object', description: 'Edit the current object' },
+    { id: 'command', name: 'Command palette', description: 'Open command palette' },
+    { id: 'newChild', name: 'New child', description: 'Create a new child object' },
+    { id: 'addImage', name: 'Add image', description: 'Add a new image to the object' },
+    { id: 'miscStuff', name: 'Open Misc stuff', description: 'Open misc stuff modal' },
+    { id: 'exportShare', name: 'Export to Share', description: 'Export the current object to Share' },
+    { id: 'exportPdf', name: 'Export to PDF', description: 'Export the current object to PDF' },
+    { id: 'exportHtml', name: 'Export to HTML', description: 'Export the current object to HTML' },
+    { id: 'generateMap', name: 'Generate map', description: 'Generate a map of all the places' },
+    { id: 'chooseFontFile', name: 'Choose font file', description: 'Choose a font file for the custom font' },
+    { id: 'createBackup', name: 'Create backup', description: 'Create a backup of the current object' },
+    { id: 'listAllItems', name: 'List all items', description: 'List all the items in the current object' },
+    { id: 'selectColorPalette', name: 'Select color palette', parameters: { palette: 'string', choices: ['dracula', 'solarized-dark', 'solarized-light', 'github-dark', 'github-light', 'night-owl', 'monokai', 'parchment', 'primary-blue', 'primary-green', 'custom']}, description: 'Select a color palette for the editor' },
+    { id: 'setFontFamily', name: 'Set font family', parameters: { family: 'string', choices: ['Consolas', 'Times New Roman', 'Arial', 'Verdana', 'Courier New', 'Georgia', 'Garamond', 'Palatino', 'Lucida Console', 'Segoe UI', 'Inter', 'Roboto', 'Source Sans Pro', 'CustomFont']}, description: 'Set the font family for the editor' },
+    { id: 'setFontSize', name: 'Set font size', parameters: { size: 'number', choices: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]}, description: 'Set the font size for the editor' },
+    { id: 'setFontWeight', name: 'Set font weight', parameters: { weight: 'number', choices: [100, 200, 300, 400, 500, 600, 700, 800, 900]}, description: 'Set the font weight for the editor' },
+    { id: 'setFontColor', name: 'Set font color', parameters: { color: 'string'}, description: 'Set the font color for the editor' },
+    // { id: '', name: '' },
+    // { id: '', name: '' },
+    // { id: '', name: '' },
+    /* Add other commands here*/
+  ]
+
   const [showEditObject, setShowEditObject] = useState(false)
   const [editName, setEditName] = useState('')
   const [ownerTags, setOwnerTags] = useState<Array<{ id: string }>>([])
@@ -153,7 +178,7 @@ export const Editor: React.FC = () => {
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
-  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; newChild: string; addImage: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I' })
+  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; newChild: string; addImage: string, miscStuff: string, exportShare: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+M', exportShare: 'Ctrl+E' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
@@ -191,7 +216,8 @@ export const Editor: React.FC = () => {
         editObject: savedShortcuts.editObject || 'F2',
         command: savedShortcuts.command || 'Ctrl+K',
         newChild: savedShortcuts.newChild || 'Ctrl+N',
-        addImage: savedShortcuts.addImage || 'Ctrl+I'
+        addImage: savedShortcuts.addImage || 'Ctrl+I',
+        miscStuff: savedShortcuts.miscStuff || ''
       })
     })()
   }, [])
@@ -1479,11 +1505,13 @@ span[data-tag] {
                     <div className="settings-right">
                       <div className="settings-title">Keyboard shortcuts</div>
                       <div className="settings-grid-2">
-                        <div className="settings-shortcut-row"><label>Settings </label><input value={shortcuts.settings} onChange={e => setShortcuts(s => ({ ...s, settings: e.target.value }))} placeholder='F1' /></div>
-                        <div className="settings-shortcut-row"><label>Edit object </label><input value={shortcuts.editObject} onChange={e => setShortcuts(s => ({ ...s, editObject: e.target.value }))} placeholder='F2' /></div>
-                        <div className="settings-shortcut-row"><label>Command palette </label><input value={shortcuts.command} onChange={e => setShortcuts(s => ({ ...s, command: e.target.value }))} placeholder='Ctrl+K' /></div>
-                        <div className="settings-shortcut-row"><label>New child </label><input value={shortcuts.newChild} onChange={e => setShortcuts(s => ({ ...s, newChild: e.target.value }))} placeholder='Ctrl+N' /></div>
-                        <div className="settings-shortcut-row"><label>Add image </label><input value={shortcuts.addImage} onChange={e => setShortcuts(s => ({ ...s, addImage: e.target.value }))} placeholder='Ctrl+I' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="settings">Settings </label><input id="settings" value={shortcuts.settings} onChange={e => setShortcuts(s => ({ ...s, settings: e.target.value }))} placeholder='F1' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="editObject">Edit object </label><input id="editObject" value={shortcuts.editObject} onChange={e => setShortcuts(s => ({ ...s, editObject: e.target.value }))} placeholder='F2' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="command">Command palette </label><input id="command" value={shortcuts.command} onChange={e => setShortcuts(s => ({ ...s, command: e.target.value }))} placeholder='Ctrl+K' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="newChild">New child </label><input id="newChild" value={shortcuts.newChild} onChange={e => setShortcuts(s => ({ ...s, newChild: e.target.value }))} placeholder='Ctrl+N' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="addImage">Add image </label><input id="addImage" value={shortcuts.addImage} onChange={e => setShortcuts(s => ({ ...s, addImage: e.target.value }))} placeholder='Ctrl+I' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="miscStuff">Open Misc stuff </label><input id="miscStuff" value={shortcuts.miscStuff} onChange={e => setShortcuts(s => ({ ...s, miscStuff: e.target.value }))} placeholder='Ctrl+M' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="exportShare">Export to Share </label><input id="exportShare" value={shortcuts.exportShare} onChange={e => setShortcuts(s => ({ ...s, exportShare: e.target.value }))} placeholder='Ctrl+E' /></div>
                         <button className="settings-save-row" onClick={async () => { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts) }}>Save shortcuts</button>
                       </div>
                     </div>
