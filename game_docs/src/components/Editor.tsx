@@ -54,6 +54,11 @@ export const Editor: React.FC = () => {
   const [showWizard, setShowWizard] = useState(false)
   const [wizardName, setWizardName] = useState('')
   const [wizardType, setWizardType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
+  // Edit target picker when a tag links to multiple objects
+  const [showEditPicker, setShowEditPicker] = useState(false)
+  const [editPickerItems, setEditPickerItems] = useState<Array<{ id: string; name: string; path: string }>>([])
+  // Target being edited (can differ from active object)
+  const [editTargetId, setEditTargetId] = useState<string | null>(null)
   // Linker modal state
   const [showLinker, setShowLinker] = useState(false)
   const [linkerInput, setLinkerInput] = useState('')
@@ -73,6 +78,7 @@ export const Editor: React.FC = () => {
   const tagMenuRef = useRef<HTMLDivElement | null>(null)
   const menuButtonRef = useRef<HTMLButtonElement | null>(null)
   const [images, setImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
+  const [editImages, setEditImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
   const [addPictureModal, setAddPictureModal] = useState(false)
   const [picName, setPicName] = useState('')
   const [picIsDefault, setPicIsDefault] = useState(true)
@@ -395,12 +401,32 @@ span[data-tag] {
     setLinkerMatches((rows || []).slice(0, 10))
   }, [campaign, ctxMenu.selText])
 
-  const handleEditOpen = useCallback(() => {
+  const openEditForObject = useCallback(async (targetId: string, targetName: string) => {
+    // Do not change the currently visible object; populate edit modal directly
+    setEditTargetId(targetId)
+    setEditName(targetName)
+    const obj = await window.ipcRenderer.invoke('gamedocs:get-object', targetId)
+    setWizardType((obj?.type as any) || 'Other')
+    const [ot, inc] = await Promise.all([
+      window.ipcRenderer.invoke('gamedocs:list-owner-tags', targetId).catch(() => []),
+      window.ipcRenderer.invoke('gamedocs:list-incoming-links', targetId).catch(() => []),
+    ])
+    setOwnerTags(ot || [])
+    setIncomingLinks(inc || [])
+    setShowEditObject(true)
+  }, [])
+
+  const handleEditOpen = useCallback(async () => {
     setCtxMenu(m => ({ ...m, visible: false }))
-    setWizardName(ctxMenu.selText.trim())
-    setWizardType('Other')
-    setShowWizard(true)
-  }, [ctxMenu.selText])
+    if (!ctxLinkedTargets || ctxLinkedTargets.length === 0) return
+    if (ctxLinkedTargets.length === 1) {
+      const only = ctxLinkedTargets[0]
+      await openEditForObject(only.id, only.name)
+      return
+    }
+    setEditPickerItems(ctxLinkedTargets)
+    setShowEditPicker(true)
+  }, [ctxLinkedTargets, openEditForObject])
 
   const handleClearLink = useCallback(() => {
     const range = selectionRangeRef.current
@@ -1173,10 +1199,16 @@ span[data-tag] {
                     <div className="flex-gap-8">
                       <button onClick={() => setShowEditObject(false)}>Close</button>
                       <button onClick={async () => {
-                        await window.ipcRenderer.invoke('gamedocs:rename-object', activeId, editName)
-                        await window.ipcRenderer.invoke('gamedocs:update-object-type', activeId, wizardType)
+                        const target = editTargetId || activeId
+                        await window.ipcRenderer.invoke('gamedocs:rename-object', target, editName)
+                        await window.ipcRenderer.invoke('gamedocs:update-object-type', target, wizardType)
                         setShowEditObject(false)
-                        selectObject(activeId, editName)
+                        // Keep the current visible object unchanged
+                        if (!editTargetId) {
+                          // If editing active object, refresh it to reflect changes
+                          selectObject(activeId, editName)
+                        }
+                        setEditTargetId(null)
                       }}>Save</button>
                     </div>
                   </div>
@@ -1249,6 +1281,28 @@ span[data-tag] {
                       )}
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Edit picker when multiple objects linked in a tag */}
+          {showEditPicker && (
+            <div className="modal-overlay" onClick={() => setShowEditPicker(false)}>
+              <div className="dialog-card w-420" onClick={e => e.stopPropagation()}>
+                <h3 className="mt-0">Choose object to edit</h3>
+                <div className="mt-10 maxh-260 border-top">
+                  <ul className="list-reset">
+                    {editPickerItems.map(it => (
+                      <li key={it.id} className="list-item-click"
+                        onClick={async () => { setShowEditPicker(false); await openEditForObject(it.id, it.name) }}
+                        dangerouslySetInnerHTML={{ __html: it.path }}
+                      />
+                    ))}
+                  </ul>
+                </div>
+                <div className="actions mt-12">
+                  <button onClick={() => setShowEditPicker(false)}>Close</button>
                 </div>
               </div>
             </div>
