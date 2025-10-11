@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS objects (
   type TEXT NOT NULL DEFAULT 'Other' CHECK(type IN ('Place', 'Person', 'Lore', 'Other')),
   parent_id TEXT REFERENCES objects(id),
   description TEXT,
+  locked INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   deleted_at TEXT DEFAULT NULL

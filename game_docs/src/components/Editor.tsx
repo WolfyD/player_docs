@@ -43,6 +43,7 @@ export const Editor: React.FC = () => {
   const [desc, setDesc] = useState<string>('')
   const [activeId, setActiveId] = useState<string>('')
   const [activeName, setActiveName] = useState<string>('')
+  const [activeLocked, setActiveLocked] = useState<boolean>(false)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const selectionRangeRef = useRef<Range | null>(null)
   const [ctxMenu, setCtxMenu] = useState<{
@@ -96,7 +97,7 @@ export const Editor: React.FC = () => {
   // Build a recursive tree of children for the current object and append as a nicely
   // formatted listing three lines below the existing description
   const handleListAllItems = useCallback(async () => {
-    if (!activeId || !campaign) { setShowMisc(false); return }
+    if (!activeId || !campaign || activeLocked) { setShowMisc(false); return }
     const campaignId = campaign.id
     async function fetchChildrenRec(parentId: string): Promise<Array<{ id: string; name: string; children: any[] }>> {
       const rows = await window.ipcRenderer.invoke('gamedocs:list-children', campaignId, parentId).catch(() => []) as Array<{ id: string; name: string; type: string }>
@@ -164,6 +165,8 @@ export const Editor: React.FC = () => {
     { id: 'chooseFontFile', name: 'Choose font file', description: 'Choose a font file for the custom font', setting: true },
     { id: 'createBackup', name: 'Create backup', description: 'Create a backup of the current object' },
     { id: 'listAllItems', name: 'List all items', description: 'List all the items in the current object' },
+    { id: 'lockObject', name: 'Lock object', description: 'Make the current object read-only' },
+    { id: 'unlockObject', name: 'Unlock object', description: 'Allow editing the current object' },
     { id: 'selectColorPalette', name: 'Select color palette', parameters: { palette: 'string', setting: true, choices: ['dracula', 'solarized-dark', 'solarized-light', 'github-dark', 'github-light', 'night-owl', 'monokai', 'parchment', 'primary-blue', 'primary-green', 'custom']}, description: 'Select a color palette for the editor' },
     { id: 'setFontFamily', name: 'Set font family', parameters: { family: 'string', setting: true, choices: ['Consolas', 'Times New Roman', 'Arial', 'Verdana', 'Courier New', 'Georgia', 'Garamond', 'Palatino', 'Lucida Console', 'Segoe UI', 'Inter', 'Roboto', 'Source Sans Pro', 'CustomFont']}, description: 'Set the font family for the editor' },
     { id: 'setFontSize', name: 'Set font size', parameters: { size: 'number', setting: true, choices: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]}, description: 'Set the font size for the editor' },
@@ -405,13 +408,15 @@ span[data-tag] {
   function runCommand(cmdId: string) {
     switch (cmdId) {
       case 'settings': setShowSettings(true); setShowPalette(false); return
-      case 'editObject': setEditName(activeName); setShowEditObject(true); setShowPalette(false); return
+      case 'editObject': if (activeLocked) { toast('Object is locked', 'error'); return } setEditName(activeName); setShowEditObject(true); setShowPalette(false); return
       case 'newChild': setCatErr(null); setCatName(''); setShowCat(true); setShowPalette(false); return
       case 'addImage': setAddPictureModal(true); setShowPalette(false); return
       case 'miscStuff': setShowMisc(true); setShowPalette(false); return
       case 'exportShare': handleExportToShare(); setShowPalette(false); return
-      case 'listAllItems': handleListAllItems(); setShowPalette(false); return
+      case 'listAllItems': if (activeLocked) { toast('Object is locked', 'error'); return } handleListAllItems(); setShowPalette(false); return
       case 'command': setShowPalette(true); return
+      case 'lockObject': (async () => { if (!activeId) return; await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true); setActiveLocked(true); toast('Object locked', 'success'); setShowPalette(false) })(); return
+      case 'unlockObject': (async () => { if (!activeId) return; await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, false); setActiveLocked(false); toast('Object unlocked', 'success'); setShowPalette(false) })(); return
       case 'chooseFontFile': (async () => {
         const pick = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
         if (pick?.path) {
@@ -555,6 +560,8 @@ span[data-tag] {
 
   const handleEditorContextMenu = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
+    console.log('activeLocked', activeLocked)
+    if (activeLocked) { setCtxMenu(m => ({ ...m, visible: false })); return }
     const sel = window.getSelection()
     if (!sel) return
     if (sel.rangeCount === 0 || sel.isCollapsed) {
@@ -578,7 +585,7 @@ span[data-tag] {
       setCtxLinkedTargets([])
     }
     setCtxMenu({ visible: true, x: e.clientX, y: e.clientY, selText })
-  }, [expandSelectionToWord])
+  }, [expandSelectionToWord, activeLocked])
 
   const handleAddLinkOpen = useCallback(async () => {
     setCtxMenu(m => ({ ...m, visible: false }))
@@ -763,6 +770,7 @@ span[data-tag] {
     const obj = await window.ipcRenderer.invoke('gamedocs:get-object', id)
     const text = obj?.description || ''
     setDesc(text)
+    setActiveLocked(!!obj?.locked)
     // Render tokens as span tags with data-tag
     requestAnimationFrame(async () => {
       if (editorRef.current) {
@@ -959,16 +967,18 @@ span[data-tag] {
               if (prev.visible && prev.source === 'dropdown') {
                 return { ...prev, visible: false, hoverPreview: null }
               }
-              return { visible: true, x, y, items: [
+              const items: Array<{ id: string; name: string; path: string }> = [
                 { id: '__SETTINGS__', name: 'Settings', path: '' },
                 { id: '__SEPARATOR_TOP__', name: '', path: '' },
                 { id: '__ADDPICTURE__', name: 'Add picture', path: '' },
-                { id: '__EDITOBJECT__', name: 'Edit object', path: '' },
-                { id: '__SEPARATOR_MIDDLE__', name: '', path: '' },
-                { id: '__MISC_STUFF__', name: 'Misc stuff', path: '' },
-                { id: '__SEPARATOR_BOTTOM__', name: '', path: '' },
-                { id: '__DELETE__', name: 'Delete', path: '' },
-            ], hoverPreview: null, source: 'dropdown' }
+              ]
+              if (!activeLocked) items.push({ id: '__EDITOBJECT__', name: 'Edit object', path: '' })
+              items.push({ id: activeLocked ? '__UNLOCK__' : '__LOCK__', name: activeLocked ? 'Unlock object' : 'Lock object', path: '' })
+              items.push({ id: '__SEPARATOR_MIDDLE__', name: '', path: '' })
+              items.push({ id: '__MISC_STUFF__', name: 'Misc stuff', path: '' })
+              items.push({ id: '__SEPARATOR_BOTTOM__', name: '', path: '' })
+              if (!activeLocked) items.push({ id: '__DELETE__', name: 'Delete', path: '' })
+              return { visible: true, x, y, items, hoverPreview: null, source: 'dropdown' }
             })
           }}
         >...</button>
@@ -1004,10 +1014,11 @@ span[data-tag] {
         </div>
 
         {/* Main panel: interactive editor (root description for now) */}
-        <div className="editor_container">
+        <div className="editor_container" style={{ position: 'relative' }}>
+          {activeLocked && (<div className="lock-badge" title="Locked"><i className="ri-lock-2-fill"></i></div>)}
           <div
             ref={editorRef}
-            contentEditable
+            contentEditable={!activeLocked}
             suppressContentEditableWarning
             onInput={handleEditorInput}
             onContextMenu={handleEditorContextMenu}
@@ -1170,6 +1181,7 @@ span[data-tag] {
               }
             }}
             className="editor_content"
+            style={activeLocked ? { opacity: 0.85 } : undefined}
           />
           {/* Hover preview card for single-target tags */}
           {hoverCard.visible && (
@@ -1201,7 +1213,35 @@ span[data-tag] {
               ) : (
                 <div className="ctx-menu-scroll">
                   {ctxLinkedTargets.map(t => (
-                    <div key={t.id} className="ctx-menu-item" dangerouslySetInnerHTML={{ __html: t.path }} onClick={() => { selectObject(t.id, t.name); setCtxMenu(m => ({ ...m, visible: false })); }} />
+                    <div key={t.id} className="ctx-menu-item" dangerouslySetInnerHTML={{ __html: t.path }}
+                      onMouseEnter={async (e) => {
+                        const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as any
+                        if (!preview) return
+                        let imgUrl = preview.thumbDataUrl || null
+                        if (!imgUrl) {
+                          const primary = preview.thumbPath as (string | undefined)
+                          const secondary = preview.imagePath as (string | undefined)
+                          if (primary) {
+                            const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
+                            if (resA?.ok) imgUrl = resA.dataUrl
+                          }
+                          if (!imgUrl && secondary) {
+                            const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
+                            if (resB?.ok) imgUrl = resB.dataUrl
+                          }
+                        }
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        const pad = 10, CARD_W = 300
+                        const baseX = rect.left + Math.min(16, Math.max(0, rect.width / 2))
+                        const baseY = rect.bottom + 10
+                        const targetX = baseX - (CARD_W / 2)
+                        const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
+                        const ny = Math.max(0, Math.min(baseY, window.innerHeight - 40))
+                        setHoverCard({ visible: true, x: nx, y: ny, name: (preview.name || t.name), snippet: (preview.snippet || ''), imageUrl: imgUrl })
+                      }}
+                      onMouseLeave={() => { if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false })) }}
+                      onClick={() => { if (activeLocked) { setCtxMenu(m => ({ ...m, visible: false })); return } selectObject(t.id, t.name); setCtxMenu(m => ({ ...m, visible: false })); }}
+                    />
                   ))}
                 </div>
               )}
@@ -1272,6 +1312,18 @@ span[data-tag] {
                         setOwnerTags(ot || [])
                         setIncomingLinks(inc || [])
                         setShowEditObject(true)
+                        return
+                      }
+                      if (t.id === '__LOCK__') {
+                        await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true)
+                        setActiveLocked(true)
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        return
+                      }
+                      if (t.id === '__UNLOCK__') {
+                        await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, false)
+                        setActiveLocked(false)
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         return
                       }
                       if (t.id === '__ADDPICTURE__') {
@@ -1409,7 +1461,7 @@ span[data-tag] {
                         // Keep the current visible object unchanged
                         if (!editTargetId) {
                           // If editing active object, refresh it to reflect changes
-                          selectObject(activeId, editName)
+                        selectObject(activeId, editName)
                         }
                         setEditTargetId(null)
                       }}>Save</button>
@@ -1612,26 +1664,26 @@ span[data-tag] {
                       )
                     ) : (
                       (paletteResults.objects.length === 0 && paletteResults.tags.length === 0) ? (
-                        <div className="muted pad-8">No results</div>
-                      ) : (
-                        <>
-                          {paletteResults.objects.length > 0 && (
-                            <div className="pad-8">
-                              <div className="palette-section-title">Objects</div>
-                              {paletteResults.objects.map(o => (
-                                <div key={o.id} className="palette-item" onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
-                              ))}
-                            </div>
-                          )}
-                          {paletteResults.tags.length > 0 && (
-                            <div className="pad-8">
-                              <div className="palette-section-title">Tags</div>
-                              {paletteResults.tags.map(t => (
-                                <div key={t.id} className="palette-item" onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
-                              ))}
-                            </div>
-                          )}
-                        </>
+                      <div className="muted pad-8">No results</div>
+                    ) : (
+                      <>
+                        {paletteResults.objects.length > 0 && (
+                          <div className="pad-8">
+                            <div className="palette-section-title">Objects</div>
+                            {paletteResults.objects.map(o => (
+                              <div key={o.id} className="palette-item" onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
+                            ))}
+                          </div>
+                        )}
+                        {paletteResults.tags.length > 0 && (
+                          <div className="pad-8">
+                            <div className="palette-section-title">Tags</div>
+                            {paletteResults.tags.map(t => (
+                              <div key={t.id} className="palette-item" onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
+                            ))}
+                          </div>
+                        )}
+                      </>
                       )
                     )}
                   </div>

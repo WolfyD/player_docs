@@ -137,6 +137,13 @@ async function ensureMigrations(db: any) {
     if (!hasObjectId) {
       db.prepare('ALTER TABLE link_tags ADD COLUMN object_id TEXT').run()
     }
+    // Add locked column to objects if missing
+    const objCols = db.prepare('PRAGMA table_info(objects)').all() as Array<{ name: string }>
+    const hasLocked = objCols.some(c => c.name === 'locked')
+    if (!hasLocked) {
+      db.prepare('ALTER TABLE objects ADD COLUMN locked INTEGER NOT NULL DEFAULT 0').run()
+      // No backfill needed beyond default
+    }
     // Backfill owner object for legacy rows where missing
     const legacy = db.prepare('SELECT id FROM link_tags WHERE object_id IS NULL AND deleted_at IS NULL').all() as Array<{ id: string }>
     for (const t of legacy) {
@@ -964,10 +971,22 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
-    const row = db.prepare('SELECT id, game_id, name, type, parent_id, description FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId)
+    const row = db.prepare('SELECT id, game_id, name, type, parent_id, description, locked FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId)
     db.close()
     if (!row) throw new Error('Object not found')
-    return row as { id: string; game_id: string; name: string; type: string; parent_id: string | null; description: string | null }
+    return row as { id: string; game_id: string; name: string; type: string; parent_id: string | null; description: string | null; locked: number }
+  })
+
+  ipcMain.handle('gamedocs:set-object-locked', async (_evt, objectId: string, locked: boolean) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    db.prepare('UPDATE objects SET locked = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(locked ? 1 : 0, now, objectId)
+    db.close()
+    return true
   })
 
   // Delete an object and cascade: children, tag_links, orphan link_tags
