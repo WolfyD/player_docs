@@ -1197,15 +1197,19 @@ span[data-tag] {
           )}
           {ctxMenu.visible && (
             <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} ref={ctxMenuRef}>
-              <div className="ctx-menu-section-title">Add</div>
+              <div className="ctx-menu-section-title">Links</div>
               <div className="separator" />
               <div className="ctx-menu-item"  onClick={handleAddLinkOpen}>Add link</div>
+
+              {/* Only show edit and clear if there are linked targets */}
+              {ctxLinkedTargets.length > 0 ? (
+              <>
               <div className="ctx-menu-item"
                 onClick={handleEditOpen}
-              >Edit…</div>
-              {ctxLinkedTargets.length > 0 ? (
+              >Edit</div>
               <div className="ctx-menu-item" onClick={handleClearLink}
               >Clear</div>
+              </>
               ):( "" )}
               <div className="separator" />
               {ctxLinkedTargets.length === 0 ? (
@@ -1365,7 +1369,9 @@ span[data-tag] {
                   <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to HTML */ }}>Export to HTML</div>
                   <div className="misc-item" onClick={() => { /* TODO: Generate Map */ }}>Generate map</div>
-                  <div className="misc-item" onClick={handleListAllItems}>List all items</div>
+                  {activeLocked ? null : (
+                    <div className="misc-item" onClick={handleListAllItems}>List all items</div>
+                  )}
                   <div className="misc-item" onClick={() => { /* TODO: Create Backup */ }}>Create backup</div>
                 </div>
                 <div className="actions mt-12">
