@@ -1177,6 +1177,148 @@ app.whenReady().then(async () => {
     return { nodes, edges }
   })
 
+  ipcMain.handle('gamedocs:reveal-path', async (_evt, targetPath: string) => {
+    try { shell.showItemInFolder(targetPath) } catch {}
+    return true
+  })
+
+  ipcMain.handle('gamedocs:export-to-html', async (_evt, gameId: string, opts: { palette: any; zip?: boolean }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+
+    const game = db.prepare('SELECT id, name FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId) as { id: string; name: string } | undefined
+    if (!game) { db.close(); throw new Error('Campaign not found') }
+    const objects = db.prepare('SELECT id, name, type, parent_id, description FROM objects WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }>
+    const imgs = db.prepare('SELECT id, object_id, file_path, name, is_default FROM images WHERE object_id IN (SELECT id FROM objects WHERE game_id = ? AND deleted_at IS NULL) AND deleted_at IS NULL').all(gameId) as Array<{ id: string; object_id: string; file_path: string; name: string | null; is_default: number }>
+    const tagLinks = db.prepare('SELECT tl.tag_id AS tag_id, tl.object_id AS object_id FROM tag_links tl JOIN link_tags lt ON lt.id = tl.tag_id AND lt.deleted_at IS NULL WHERE lt.game_id = ? AND tl.deleted_at IS NULL').all(gameId) as Array<{ tag_id: string; object_id: string }>
+    db.close()
+
+    const idToObj = new Map(objects.map(o => [o.id, o]))
+    const children = new Map<string, string[]>()
+    for (const o of objects) { if (o.parent_id) { const a = children.get(o.parent_id) || []; a.push(o.id); children.set(o.parent_id, a) } }
+    const objImages = new Map<string, Array<{ id: string; file_path: string; name: string | null; is_default: number }>>()
+    for (const im of imgs) { const a = objImages.get(im.object_id) || []; a.push({ id: im.id, file_path: im.file_path, name: im.name, is_default: im.is_default }); objImages.set(im.object_id, a) }
+    const tagToTargets = new Map<string, string[]>()
+    for (const tl of tagLinks) { const a = tagToTargets.get(tl.tag_id) || []; a.push(tl.object_id); tagToTargets.set(tl.tag_id, a) }
+
+    const exportRoot = path.join(projectDirCache, 'export')
+    await fs.mkdir(exportRoot, { recursive: true })
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}`
+    const folderName = `${toSlug(game.name)}_${dateStr}_export`
+    const outDir = path.join(exportRoot, folderName)
+    const pagesDir = path.join(outDir, 'pages')
+    await fs.mkdir(pagesDir, { recursive: true })
+
+    const idToFile = new Map<string, string>()
+    const slugFile = (id: string, name: string) => `${id}_${toSlug(name)}.html`
+    for (const o of objects) idToFile.set(o.id, slugFile(o.id, o.name))
+
+    const palette = opts?.palette || { primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' }
+    const css = `:root{--pd-primary:${palette.primary};--pd-surface:${palette.surface};--pd-text:${palette.text};--pd-tag-bg:${palette.tagBg};--pd-tag-border:${palette.tagBorder}}
+body{background:var(--pd-surface);color:var(--pd-text);font-family:system-ui,Segoe UI,Roboto,Inter,sans-serif;margin:0;padding:24px;line-height:1.5}
+a{color:var(--pd-primary)}
+.header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.crumbs a{margin-right:6px}
+.title h1{margin:0 0 6px 0;font-size:22px}
+.title h3{margin:0 0 10px 0;font-weight:500;color:var(--pd-primary)}
+.icons{margin-left:auto;display:flex;gap:10px}
+.content{margin:10px 0;white-space:pre-wrap}
+.image-grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.thumb{width:180px;border:1px solid #444;border-radius:6px;overflow:hidden;cursor:pointer;background:#111}
+.thumb img{max-width:100%;display:block}
+.thumb .cap{font-size:12px;padding:4px 6px}
+.star{color:gold;margin-left:6px}
+.children{margin-top:20px}
+.children a{margin-right:10px}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center}
+.lightbox img{max-width:92vw;max-height:92vh}
+`
+    await fs.writeFile(path.join(pagesDir, 'index.css'), css, 'utf8')
+
+    const iconHome = () => `<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"${getFillColor()}\" stroke=\"${getStrokeColor()}\"><path d=\"M21 20C21 20.5523 20.5523 21 20 21H4C3.44772 21 3 20.5523 3 20V9.48907C3 9.18048 3.14247 8.88917 3.38606 8.69972L11.3861 2.47749C11.7472 2.19663 12.2528 2.19663 12.6139 2.47749L20.6139 8.69972C20.8575 8.88917 21 9.18048 21 9.48907V20ZM19 19V9.97815L12 4.53371L5 9.97815V19H19Z\"></path></svg>`
+    const iconUp = () => `<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"${getFillColor()}\" stroke=\"${getStrokeColor()}\"><path d=\"M10.0001 19.0001L19 19.0002L19 17.0002L12.0001 17.0001L12 6.8283L15.9497 10.778L17.364 9.36381L11 2.99985L4.63603 9.36381L6.05025 10.778L10 6.82825L10.0001 19.0001Z\"></path></svg>`
+
+    const getFillColor = () => palette.primary
+    const getStrokeColor = () => palette.primary
+
+    const tokenToHtml = (text: string): string => {
+      if (!text) return ''
+      return String(text).replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label: string, tagId: string) => {
+        const targets = tagToTargets.get(String(tagId)) || []
+        const first = targets.find(t => idToFile.has(t))
+        if (!first) return String(label)
+        return `<a href=\"${idToFile.get(first)}\">${label}</a>`
+      }).replace(/\n/g, '<br>')
+    }
+
+    const breadcrumb = (id: string): Array<{ name: string; href: string | null }> => {
+      const parts: Array<{ name: string; href: string | null }> = [{ name: 'Index', href: '../index.html' }]
+      let cur = idToObj.get(id) || null
+      const chain: Array<{ id: string; name: string }> = []
+      while (cur) { chain.push({ id: cur.id, name: cur.name }); cur = cur.parent_id ? (idToObj.get(cur.parent_id) || null) : null }
+      chain.reverse()
+      for (const c of chain.slice(0, -1)) parts.push({ name: c.name, href: idToFile.get(c.id) || null })
+      const last = chain[chain.length - 1]
+      if (last) parts.push({ name: last.name, href: null })
+      return parts
+    }
+
+    const readAsDataUrl = async (file: string): Promise<string | null> => {
+      try { const buf = await fs.readFile(file); const ext = (path.extname(file) || '.png').toLowerCase(); const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/png'; return `data:${mime};base64,${buf.toString('base64')}` } catch { return null }
+    }
+
+    for (const o of objects) {
+      const file = idToFile.get(o.id)!
+      const crumbs = breadcrumb(o.id).map(c => c.href ? `<a href=\"${c.href}\">${c.name}</a>` : `<span>${c.name}</span>`).join(' / ')
+      const parent = o.parent_id ? idToObj.get(o.parent_id) : null
+      const upHref = parent ? (idToFile.get(parent.id) || null) : null
+      const childIds = children.get(o.id) || []
+      const imgsFor = objImages.get(o.id) || []
+      const thumbs: string[] = []
+      let lb = 0
+      for (const im of imgsFor) { const data = await readAsDataUrl(im.file_path); if (!data) continue; const star = im.is_default ? '<span class=\"star\">★</span>' : ''; const cap = (im.name || '').replace(/"/g, '&quot;'); thumbs.push(`<div class=\"thumb\" onclick=\"openLightbox(${lb})\"><img src=\"${data}\" alt=\"${cap}\"/><div class=\"cap\">${cap}${star}</div></div>`); lb++ }
+      const fullImgs = (await Promise.all((imgsFor).map(async im => (await readAsDataUrl(im.file_path)) || ''))).filter(Boolean).map(u => `<img src=\"${u}\"/>`).join('')
+      const descHtml = tokenToHtml(o.description || '')
+      const childLinks = childIds.map(cid => `<a href=\"${idToFile.get(cid)}\">${(idToObj.get(cid)!.name)}</a>`).join(' ')
+      const html = `<!doctype html><meta charset=utf-8><link rel=\"stylesheet\" href=\"index.css\"><title>${game.name} - ${o.name}</title>
+<div class=\"header\"><div class=\"crumbs\">${crumbs}</div><div class=\"icons\">${upHref ? `<a href=\"${upHref}\" title=\"Parent\">` + iconUp() + `</a>` : ''}<a href=\"../index.html\" title=\"Index\">${iconHome()}</a></div></div>
+<div class=\"title\"><h1>${game.name}</h1><h3>${o.name}</h3></div>
+<div class=\"content\">${descHtml}</div>
+${thumbs.length ? `<div class=\"image-grid\">${thumbs.join('')}</div>` : ''}
+${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div>` : ''}
+<div class=\"lightbox\" id=\"lb\" onclick=\"this.style.display='none'\">${fullImgs}</div>
+<script>function openLightbox(i){var lb=document.getElementById('lb');if(!lb)return;var imgs=lb.querySelectorAll('img');imgs.forEach((el,idx)=>el.style.display=idx===i?'block':'none');lb.style.display='flex'}</script>`
+      await fs.writeFile(path.join(pagesDir, file), html, 'utf8')
+    }
+
+    const roots = objects.filter(o => !o.parent_id)
+    const root = roots[0] || objects[0]
+    const indexHtmlText = `<!doctype html><meta charset=utf-8><link rel=\"stylesheet\" href=\"pages/index.css\"><meta http-equiv=\"refresh\" content=\"0; url=pages/${idToFile.get(root.id)}\"><title>${game.name}</title><div style=\"padding:24px;color:var(--pd-text)\">Open <a href=\"pages/${idToFile.get(root.id)}\">${root.name}</a></div>`
+    await fs.writeFile(path.join(outDir, 'index.html'), indexHtmlText, 'utf8')
+
+    let zipPath: string | null = null
+    if (opts?.zip) {
+      const archiver = (await import('archiver')).default
+      const zipFile = path.join(exportRoot, `${folderName}.zip`)
+      await new Promise<void>((resolve, reject) => {
+        const output = fssync.createWriteStream(zipFile)
+        const archive = archiver('zip', { zlib: { level: 9 } })
+        output.on('close', () => resolve())
+        archive.on('error', (e: any) => reject(e))
+        archive.pipe(output)
+        archive.directory(outDir, false)
+        archive.finalize()
+      })
+      zipPath = zipFile
+    }
+    return { ok: true, outDir, zipPath }
+  })
+
   // Delete an object and cascade: children, tag_links, orphan link_tags
   ipcMain.handle('gamedocs:delete-object-cascade', async (_evt, objectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')

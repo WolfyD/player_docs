@@ -169,6 +169,31 @@ export const Editor: React.FC = () => {
     }
   }, [activeId])
 
+  const handleExportToHtml = useCallback(async () => {
+    if (!campaign) return
+    try {
+      const zip = await confirmDialog({ title: 'Zip export?', message: 'Create a zipped archive in addition to the folder?', variant: 'yes-no' })
+      const reveal = await confirmDialog({ title: 'Reveal after export?', message: 'Open the export folder in Explorer when done?', variant: 'yes-no' })
+      const cs = getComputedStyle(document.documentElement)
+      const palette = {
+        primary: (cs.getPropertyValue('--pd-primary') || '#6495ED').trim(),
+        surface: (cs.getPropertyValue('--pd-surface') || '#1e1e1e').trim(),
+        text: (cs.getPropertyValue('--pd-text') || '#e5e5e5').trim(),
+        tagBg: (cs.getPropertyValue('--pd-tag-bg') || 'rgba(100,149,237,0.2)').trim(),
+        tagBorder: (cs.getPropertyValue('--pd-tag-border') || '#6495ED').trim(),
+      }
+      const res = await window.ipcRenderer.invoke('gamedocs:export-to-html', campaign.id, { palette, zip })
+      if (res && res.ok) {
+        toast('HTML export completed', 'success')
+        if (reveal) await window.ipcRenderer.invoke('gamedocs:reveal-path', res.outDir)
+      } else {
+        toast('Export cancelled', 'info')
+      }
+    } catch (e) {
+      toast('Export to HTML failed', 'error')
+    }
+  }, [campaign])
+
   const listOfCommands = [
     { id: 'settings', name: 'Settings', description: 'Open settings modal' },
     { id: 'editObject', name: 'Edit object', description: 'Edit the current object' },
@@ -1429,7 +1454,7 @@ span[data-tag] {
                 <div className="misc-list">
                   <div className="misc-item" onClick={handleExportToShare}>Export to Share</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
-                  <div className="misc-item" onClick={() => { /* TODO: Export to HTML */ }}>Export to HTML</div>
+                  <div className="misc-item" onClick={handleExportToHtml}>Export to HTML</div>
                    {hasPlaces ? (
                      <div className="misc-item" onClick={async () => {
                        setShowMisc(false)
