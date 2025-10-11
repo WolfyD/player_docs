@@ -44,6 +44,7 @@ export const Editor: React.FC = () => {
   const [activeId, setActiveId] = useState<string>('')
   const [activeName, setActiveName] = useState<string>('')
   const [activeLocked, setActiveLocked] = useState<boolean>(false)
+  const [hasPlaces, setHasPlaces] = useState<boolean>(false)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const selectionRangeRef = useRef<Range | null>(null)
   const [ctxMenu, setCtxMenu] = useState<{
@@ -193,6 +194,12 @@ export const Editor: React.FC = () => {
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
+    ;(async () => {
+      try {
+        const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign.id).catch(() => false)
+        setHasPlaces(!!has)
+      } catch { setHasPlaces(false) }
+    })()
   }, [root?.id, campaign])
 
   // Load palette from settings on mount
@@ -709,6 +716,10 @@ span[data-tag] {
     const ownerId = activeId || rootObj.id
     const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, ownerId, label, (wizardType || null))
     setShowWizard(false)
+    try {
+      const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
+      setHasPlaces(!!has)
+    } catch {}
     replaceSelectionWithSpan(label, res.tagId)
   }, [wizardName, wizardType, campaign, activeId])
 
@@ -720,6 +731,10 @@ span[data-tag] {
       // Reload children
       const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
       setChildren(kids)
+      try {
+        const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
+        setHasPlaces(!!has)
+      } catch {}
       setShowCat(false)
     } catch (e: any) {
       setCatErr(e?.message || 'Failed to create category')
@@ -805,6 +820,10 @@ span[data-tag] {
       // Reload children
       const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
       setChildren(kids)
+      try {
+        const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
+        setHasPlaces(!!has)
+      } catch {}
       setShowCat(false)
     } catch (e: any) {
       setCatErr(e?.message || 'Failed to create category')
@@ -1295,6 +1314,10 @@ span[data-tag] {
                         } else if (root) {
                           selectObject(root.id, root.name)
                         }
+                        try {
+                          const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
+                          setHasPlaces(!!has)
+                        } catch {}
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         return
                       }
@@ -1368,7 +1391,9 @@ span[data-tag] {
                   <div className="misc-item" onClick={handleExportToShare}>Export to Share</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to HTML */ }}>Export to HTML</div>
-                  <div className="misc-item" onClick={() => { /* TODO: Generate Map */ }}>Generate map</div>
+                  {hasPlaces ? (
+                    <div className="misc-item" onClick={() => { /* TODO: Generate Map */ }}>Generate map</div>
+                  ) : null}
                   {activeLocked ? null : (
                     <div className="misc-item" onClick={handleListAllItems}>List all items</div>
                   )}

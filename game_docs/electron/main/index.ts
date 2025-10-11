@@ -989,6 +989,17 @@ app.whenReady().then(async () => {
     return true
   })
 
+  ipcMain.handle('gamedocs:has-places', async (_evt, gameId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const row = db.prepare('SELECT 1 AS has FROM objects WHERE game_id = ? AND type = ? AND deleted_at IS NULL LIMIT 1').get(gameId, 'Place') as any
+    db.close()
+    return !!row
+  })
+
   // Delete an object and cascade: children, tag_links, orphan link_tags
   ipcMain.handle('gamedocs:delete-object-cascade', async (_evt, objectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
