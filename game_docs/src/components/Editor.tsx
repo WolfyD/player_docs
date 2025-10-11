@@ -200,6 +200,8 @@ export const Editor: React.FC = () => {
         setHasPlaces(!!has)
       } catch { setHasPlaces(false) }
     })()
+    // announce editor readiness for this game to main
+    window.ipcRenderer.send('gamedocs:editor-ready', campaign.id)
   }, [root?.id, campaign])
 
   // Load palette from settings on mount
@@ -392,6 +394,24 @@ span[data-tag] {
     }, 150)
     return () => clearTimeout(run)
   }, [showPalette, paletteInput, campaign?.id])
+
+  // External request: select a specific object (from map window)
+  useEffect(() => {
+    const handler = (_e: any, objectId: string) => {
+      if (!objectId) return
+      ;(async () => {
+        try {
+          const obj = await window.ipcRenderer.invoke('gamedocs:get-object', objectId)
+          if (obj?.id) selectObject(obj.id, obj.name)
+        } catch {}
+      })()
+    }
+    window.ipcRenderer.on('gamedocs:select-object', handler)
+    return () => {
+      // Use .off exposed by preload
+      try { window.ipcRenderer.off('gamedocs:select-object', handler) } catch {}
+    }
+  }, [])
 
   useEffect(() => { setPaletteSelIndex(0) }, [isCommandMode, cmdParamMode, filteredCommands.length, paletteResults.objects.length, paletteResults.tags.length])
   useEffect(() => {
@@ -780,9 +800,11 @@ span[data-tag] {
   }, [handleSelectMatch])
 
   async function selectObject(id: string, name: string) {
-    setActiveId(id)
-    setActiveName(name)
-    const obj = await window.ipcRenderer.invoke('gamedocs:get-object', id)
+    if (!id) return
+    const obj = await window.ipcRenderer.invoke('gamedocs:get-object', id).catch(() => null)
+    if (!obj) return
+    setActiveId(obj.id)
+    setActiveName(obj.name || name)
     const text = obj?.description || ''
     setDesc(text)
     setActiveLocked(!!obj?.locked)
@@ -796,10 +818,10 @@ span[data-tag] {
       }
     })
     // Load children and parent
-    const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, id)
+    const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, obj.id).catch(() => [])
     setChildren(kids)
     try {
-      const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', id)
+      const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', obj.id)
       setImages(imgs || [])
     } catch { setImages([]) }
     const pId = obj?.parent_id as string | null
@@ -1391,9 +1413,12 @@ span[data-tag] {
                   <div className="misc-item" onClick={handleExportToShare}>Export to Share</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
                   <div className="misc-item" onClick={() => { /* TODO: Export to HTML */ }}>Export to HTML</div>
-                  {hasPlaces ? (
-                    <div className="misc-item" onClick={() => { /* TODO: Generate Map */ }}>Generate map</div>
-                  ) : null}
+                   {hasPlaces ? (
+                     <div className="misc-item" onClick={async () => {
+                       setShowMisc(false)
+                       await window.ipcRenderer.invoke('gamedocs:open-map', campaign!.id).catch(() => toast('Failed to open map', 'error'))
+                     }}>Generate map</div>
+                   ) : null}
                   {activeLocked ? null : (
                     <div className="misc-item" onClick={handleListAllItems}>List all items</div>
                   )}

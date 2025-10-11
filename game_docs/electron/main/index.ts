@@ -52,6 +52,8 @@ let win: BrowserWindow | null = null
 const preload = path.join(__dirname, '../preload/index.mjs')
 const indexHtml = path.join(RENDERER_DIST, 'index.html')
 let editorWin: BrowserWindow | null = null
+let mapWin: BrowserWindow | null = null
+let pendingSelect: { gameId: string; objectId: string } | null = null
 let projectDirCache: string | null = null
 
 function toSlug(input: string): string {
@@ -238,6 +240,11 @@ async function createEditorWindow(title: string, routeHash: string) {
   editorWin.on('closed', () => {
     editorWin = null
     win?.show()
+    // If map window is open, close it when editor closes
+    if (mapWin && !mapWin.isDestroyed()) {
+      try { mapWin.close() } catch {}
+      mapWin = null
+    }
   })
   // Persist state on changes
   const saveBounds = async () => {
@@ -404,6 +411,78 @@ app.whenReady().then(async () => {
     try { ensureMigrations(db); cleanupLinkData(db) } catch {}
     db.close()
     return listCampaigns(file)
+  })
+
+  ipcMain.handle('gamedocs:open-map', async (_evt, gameId: string) => {
+    const saved = await readSetting<any>('ui.mapWindow').catch(() => null)
+    const opts: Electron.BrowserWindowConstructorOptions = {
+      title: 'Places Map',
+      icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
+      webPreferences: { preload },
+      width: 1000,
+      height: 700,
+    }
+    if (saved && saved.bounds) {
+      opts.width = Math.max(600, saved.bounds.width)
+      opts.height = Math.max(400, saved.bounds.height)
+      if (typeof saved.bounds.x === 'number' && typeof saved.bounds.y === 'number') {
+        opts.x = saved.bounds.x
+        opts.y = saved.bounds.y
+      }
+    }
+    if (mapWin && !mapWin.isDestroyed()) {
+      mapWin.focus()
+      if (VITE_DEV_SERVER_URL) mapWin.loadURL(`${VITE_DEV_SERVER_URL}#/map?gameId=${encodeURIComponent(gameId)}`)
+      else mapWin.loadFile(indexHtml, { hash: `/map?gameId=${encodeURIComponent(gameId)}` })
+      return true
+    }
+    mapWin = new BrowserWindow(opts)
+    if (saved) {
+      if (saved.isFullScreen) mapWin.setFullScreen(true)
+      else if (saved.isMaximized) mapWin.maximize()
+    }
+    if (VITE_DEV_SERVER_URL) mapWin.loadURL(`${VITE_DEV_SERVER_URL}#/map?gameId=${encodeURIComponent(gameId)}`)
+    else mapWin.loadFile(indexHtml, { hash: `/map?gameId=${encodeURIComponent(gameId)}` })
+    const save = async () => {
+      if (!mapWin) return
+      const isMaximized = mapWin.isMaximized()
+      const isFullScreen = mapWin.isFullScreen()
+      const bounds = isMaximized || isFullScreen ? mapWin.getNormalBounds() : mapWin.getBounds()
+      await writeSetting('ui.mapWindow', { bounds, isMaximized, isFullScreen })
+    }
+    mapWin.on('resize', () => { save() })
+    mapWin.on('move', () => { save() })
+    mapWin.on('maximize', () => { save() })
+    mapWin.on('unmaximize', () => { save() })
+    mapWin.on('enter-full-screen', () => { save() })
+    mapWin.on('leave-full-screen', () => { save() })
+    mapWin.on('close', () => { save() })
+    return true
+  })
+
+  ipcMain.handle('gamedocs:focus-editor-select', async (_evt, gameId: string, objectId: string) => {
+    // Ensure editor window exists and is routed to this game, then send select message when ready
+    const routeHash = `/editor/${encodeURIComponent(gameId)}`
+    pendingSelect = { gameId, objectId }
+    if (!editorWin || editorWin.isDestroyed()) {
+      await createEditorWindow('Editor', routeHash)
+      // Selection will be sent upon editor-ready
+      return true
+    }
+    // If already open, navigate to the correct game and then send
+    if (VITE_DEV_SERVER_URL) editorWin.loadURL(`${VITE_DEV_SERVER_URL}#${routeHash}`)
+    else editorWin.loadFile(indexHtml, { hash: routeHash })
+    editorWin.focus()
+    return true
+  })
+
+  ipcMain.on('gamedocs:editor-ready', (_evt, gameId: string) => {
+    if (!editorWin || editorWin.isDestroyed()) return
+    if (pendingSelect && pendingSelect.gameId === gameId) {
+      const toSend = pendingSelect.objectId
+      pendingSelect = null
+      editorWin.webContents.send('gamedocs:select-object', toSend)
+    }
   })
 
   ipcMain.handle('gamedocs:create-campaign', async (_evt, name: string, dbName: 'player_docs.sql3' | 'player_docs.db' = 'player_docs.db') => {
@@ -998,6 +1077,65 @@ app.whenReady().then(async () => {
     const row = db.prepare('SELECT 1 AS has FROM objects WHERE game_id = ? AND type = ? AND deleted_at IS NULL LIMIT 1').get(gameId, 'Place') as any
     db.close()
     return !!row
+  })
+
+  ipcMain.handle('gamedocs:get-place-graph', async (_evt, gameId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+
+    const rows = db.prepare('SELECT id, name, type, parent_id FROM objects WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<{ id: string; name: string; type: string; parent_id: string | null }>
+    const idToNode = new Map<string, { id: string; name: string; type: string; parent_id: string | null; children: string[] }>()
+    for (const r of rows) idToNode.set(r.id, { ...r, children: [] })
+    for (const r of rows) if (r.parent_id && idToNode.has(r.parent_id)) idToNode.get(r.parent_id)!.children.push(r.id)
+
+    // Count descendants among Place-only nodes
+    const isPlace = (n: { type: string }) => n.type === 'Place'
+    function placeDescCount(id: string): number {
+      const n = idToNode.get(id)!; let count = 0
+      for (const cid of n.children) {
+        const c = idToNode.get(cid)!; if (isPlace(c)) count += 1
+        count += placeDescCount(cid)
+      }
+      return count
+    }
+
+    // Build nodes (only Place)
+    const placeIds = rows.filter(r => r.type === 'Place').map(r => r.id)
+    const nodes = placeIds.map(pid => {
+      const n = idToNode.get(pid)!
+      // depth among places: walk up until null, counting only transitions to nearest Place parent
+      let depth = 0
+      let cur = n.parent_id ? idToNode.get(n.parent_id) || null : null
+      while (cur) {
+        if (cur.type === 'Place') depth += 1
+        cur = cur.parent_id ? (idToNode.get(cur.parent_id) || null) : null
+      }
+      const size = 1 + placeDescCount(pid)
+      return { id: n.id, name: n.name, depth, size }
+    })
+
+    // Build edges between each Place and its nearest Place ancestor
+    const edges: Array<{ from: string; to: string; dashed: boolean }> = []
+    for (const pid of placeIds) {
+      const n = idToNode.get(pid)!
+      let curId = n.parent_id
+      let dashed = false
+      let to: string | null = null
+      while (curId) {
+        const p = idToNode.get(curId)
+        if (!p) break
+        if (p.type === 'Place') { to = p.id; break }
+        dashed = true
+        curId = p.parent_id
+      }
+      if (to) edges.push({ from: n.id, to, dashed })
+    }
+
+    db.close()
+    return { nodes, edges }
   })
 
   // Delete an object and cascade: children, tag_links, orphan link_tags
