@@ -161,14 +161,14 @@ export const Editor: React.FC = () => {
     { id: 'exportPdf', name: 'Export to PDF', description: 'Export the current object to PDF' },
     { id: 'exportHtml', name: 'Export to HTML', description: 'Export the current object to HTML' },
     { id: 'generateMap', name: 'Generate map', description: 'Generate a map of all the places' },
-    { id: 'chooseFontFile', name: 'Choose font file', description: 'Choose a font file for the custom font' },
+    { id: 'chooseFontFile', name: 'Choose font file', description: 'Choose a font file for the custom font', setting: true },
     { id: 'createBackup', name: 'Create backup', description: 'Create a backup of the current object' },
     { id: 'listAllItems', name: 'List all items', description: 'List all the items in the current object' },
-    { id: 'selectColorPalette', name: 'Select color palette', parameters: { palette: 'string', choices: ['dracula', 'solarized-dark', 'solarized-light', 'github-dark', 'github-light', 'night-owl', 'monokai', 'parchment', 'primary-blue', 'primary-green', 'custom']}, description: 'Select a color palette for the editor' },
-    { id: 'setFontFamily', name: 'Set font family', parameters: { family: 'string', choices: ['Consolas', 'Times New Roman', 'Arial', 'Verdana', 'Courier New', 'Georgia', 'Garamond', 'Palatino', 'Lucida Console', 'Segoe UI', 'Inter', 'Roboto', 'Source Sans Pro', 'CustomFont']}, description: 'Set the font family for the editor' },
-    { id: 'setFontSize', name: 'Set font size', parameters: { size: 'number', choices: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]}, description: 'Set the font size for the editor' },
-    { id: 'setFontWeight', name: 'Set font weight', parameters: { weight: 'number', choices: [100, 200, 300, 400, 500, 600, 700, 800, 900]}, description: 'Set the font weight for the editor' },
-    { id: 'setFontColor', name: 'Set font color', parameters: { color: 'string'}, description: 'Set the font color for the editor' },
+    { id: 'selectColorPalette', name: 'Select color palette', parameters: { palette: 'string', setting: true, choices: ['dracula', 'solarized-dark', 'solarized-light', 'github-dark', 'github-light', 'night-owl', 'monokai', 'parchment', 'primary-blue', 'primary-green', 'custom']}, description: 'Select a color palette for the editor' },
+    { id: 'setFontFamily', name: 'Set font family', parameters: { family: 'string', setting: true, choices: ['Consolas', 'Times New Roman', 'Arial', 'Verdana', 'Courier New', 'Georgia', 'Garamond', 'Palatino', 'Lucida Console', 'Segoe UI', 'Inter', 'Roboto', 'Source Sans Pro', 'CustomFont']}, description: 'Set the font family for the editor' },
+    { id: 'setFontSize', name: 'Set font size', parameters: { size: 'number', setting: true, choices: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]}, description: 'Set the font size for the editor' },
+    { id: 'setFontWeight', name: 'Set font weight', parameters: { weight: 'number', setting: true, choices: [100, 200, 300, 400, 500, 600, 700, 800, 900]}, description: 'Set the font weight for the editor' },
+    { id: 'setFontColor', name: 'Set font color', parameters: { color: 'string', setting: true}, description: 'Set the font color for the editor' },
     // { id: '', name: '' },
     // { id: '', name: '' },
     // { id: '', name: '' },
@@ -456,7 +456,7 @@ span[data-tag] {
     return { key, choices }
   }
 
-  function commitParam(value: string) {
+  async function commitParam(value: string) {
     if (!selectedCommand) return
     if (selectedCommand.id === 'selectColorPalette') {
       // normalize to a valid palette key using available choices
@@ -467,6 +467,10 @@ span[data-tag] {
       const key = picked as any
       setPaletteKey(key)
       applyPalette(key, key === 'custom' ? customColors : null)
+      try {
+        const payload = { key, colors: key === 'custom' ? customColors : null }
+        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.palette', payload)
+      } catch {}
       setShowPalette(false)
       toast('Palette updated', 'success')
       setCmdParamMode(false); setSelectedCommand(null)
@@ -475,6 +479,7 @@ span[data-tag] {
     if (selectedCommand.id === 'setFontColor') {
       const f = { ...fonts, color: value }
       setFonts(f); applyFonts(f)
+      try { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', f) } catch {}
       setShowPalette(false)
       toast('Font color updated', 'success')
       setCmdParamMode(false); setSelectedCommand(null)
@@ -483,6 +488,7 @@ span[data-tag] {
     if (selectedCommand.id === 'setFontFamily') {
       const f = { ...fonts, family: value }
       setFonts(f); applyFonts(f)
+      try { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', f) } catch {}
       setShowPalette(false)
       toast('Font family updated', 'success')
       setCmdParamMode(false); setSelectedCommand(null)
@@ -493,6 +499,7 @@ span[data-tag] {
       if (!isNaN(size)) {
         const f = { ...fonts, size }
         setFonts(f); applyFonts(f)
+        try { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', f) } catch {}
         toast('Font size updated', 'success')
       }
       setShowPalette(false)
@@ -504,6 +511,7 @@ span[data-tag] {
       if (!isNaN(weight)) {
         const f = { ...fonts, weight }
         setFonts(f); applyFonts(f)
+        try { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', f) } catch {}
         toast('Font weight updated', 'success')
       }
       setShowPalette(false)
