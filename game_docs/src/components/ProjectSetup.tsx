@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { confirmDialog } from './Confirm'
 import { createCampaign } from '../utils/ipc'
 import '../components/editor.css'
 
@@ -14,8 +15,7 @@ export const ProjectSetup: React.FC = () => {
 
   async function loadCampaigns(): Promise<Array<{ id: string; name: string }>> {
     try {
-      // @ts-expect-error injected by preload
-      const rows = await window.ipcRenderer.invoke('gamedocs:list-campaigns')
+      const rows = await (window as any).ipcRenderer.invoke('gamedocs:list-campaigns')
       setCampaigns(rows || [])
       return rows || []
     } catch (e) {
@@ -55,8 +55,7 @@ export const ProjectSetup: React.FC = () => {
   }
 
   const onOpen = async (id: string) => {
-    // @ts-expect-error injected by preload
-    await window.ipcRenderer.invoke('gamedocs:open-campaign', id)
+    await (window as any).ipcRenderer.invoke('gamedocs:open-campaign', id)
   }
 
   return (
@@ -75,9 +74,9 @@ export const ProjectSetup: React.FC = () => {
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <button className="main-button-edit" onClick={() => { setShowRename(true); setRenameTarget(c); setRenameName(c.name) }}><i className="ri-pencil-fill"></i></button>
                 <button className="main-button-delete" onClick={async () => {
-                  if (!confirm('Delete this campaign? (soft delete)')) return
-                  // @ts-expect-error injected by preload
-                  await window.ipcRenderer.invoke('gamedocs:delete-campaign', c.id)
+                  const ok = await confirmDialog({ title: 'Delete campaign', message: 'Delete this campaign? (soft delete)', variant: 'yes-no' })
+                  if (!ok) return
+                  await (window as any).ipcRenderer.invoke('gamedocs:delete-campaign', c.id)
                   loadCampaigns()
                 }}><i className="ri-delete-bin-fill"></i></button>
               </div>
@@ -131,8 +130,7 @@ export const ProjectSetup: React.FC = () => {
               <button onClick={async () => {
                 const nn = (renameName || '').trim()
                 if (!nn || !renameTarget) { setShowRename(false); return }
-                // @ts-expect-error injected by preload
-                await window.ipcRenderer.invoke('gamedocs:rename-campaign', renameTarget.id, nn)
+                await (window as any).ipcRenderer.invoke('gamedocs:rename-campaign', renameTarget.id, nn)
                 await loadCampaigns()
                 setShowRename(false)
               }}>Save</button>

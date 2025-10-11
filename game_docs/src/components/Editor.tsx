@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import './editor.css'
 import Fuse from 'fuse.js'
+import { confirmDialog } from './Confirm'
 
 type Campaign = { id: string; name: string }
 
@@ -82,8 +83,9 @@ export const Editor: React.FC = () => {
   // formatted listing three lines below the existing description
   const handleListAllItems = useCallback(async () => {
     if (!activeId || !campaign) { setShowMisc(false); return }
+    const campaignId = campaign.id
     async function fetchChildrenRec(parentId: string): Promise<Array<{ id: string; name: string; children: any[] }>> {
-      const rows = await window.ipcRenderer.invoke('gamedocs:list-children', campaign.id, parentId).catch(() => []) as Array<{ id: string; name: string; type: string }>
+      const rows = await window.ipcRenderer.invoke('gamedocs:list-children', campaignId, parentId).catch(() => []) as Array<{ id: string; name: string; type: string }>
       const result: Array<{ id: string; name: string; children: any[] }> = []
       for (const r of rows) {
         const kids = await fetchChildrenRec(r.id)
@@ -135,7 +137,7 @@ export const Editor: React.FC = () => {
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
-  }, [root?.id])
+  }, [root?.id, campaign])
 
   // Load palette from settings on mount
   useEffect(() => {
@@ -971,7 +973,7 @@ span[data-tag] {
               ) : (
                 <div className="ctx-menu-scroll">
                   {ctxLinkedTargets.map(t => (
-                    <div key={t.id} className="ctx-menu-item" dangerouslySetInnerHTML={{ __html: t.path }} />
+                    <div key={t.id} className="ctx-menu-item" dangerouslySetInnerHTML={{ __html: t.path }} onClick={() => { selectObject(t.id, t.name); setCtxMenu(m => ({ ...m, visible: false })); }} />
                   ))}
                 </div>
               )}
@@ -1012,7 +1014,7 @@ span[data-tag] {
                     onClick={async () => {
                       if (/^__SEPARATOR/.test(t.id)) return
                       if (t.id === '__DELETE__') {
-                        const ok = confirm(`Delete '${activeName}' and all descendants?`)
+                        const ok = await confirmDialog({ title: 'Delete', message: `Delete '${activeName}' and all descendants?`, variant: 'yes-no' })
                         if (!ok) { setTagMenu(m => ({ ...m, visible: false, hoverPreview: null })); return }
                         await window.ipcRenderer.invoke('gamedocs:delete-object-cascade', activeId)
                         // After delete, go to parent or root
