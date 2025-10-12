@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import './editor.css'
 import Fuse from 'fuse.js'
 import { confirmDialog, toast } from './Confirm'
+import { logger } from '../utils/logger'
 
 type Campaign = { id: string; name: string }
 
@@ -23,6 +24,10 @@ export const Editor: React.FC = () => {
       try {
         const row = await window.ipcRenderer.invoke('gamedocs:get-campaign', id)
         setCampaign(row)
+        
+        // Initialize logger for this campaign
+        await logger.initialize(id)
+        
         // Load root and its children
         const r = await window.ipcRenderer.invoke('gamedocs:get-root', id)
         setRoot(r)
@@ -94,6 +99,17 @@ export const Editor: React.FC = () => {
   const [selectedCommand, setSelectedCommand] = useState<any | null>(null)
   const [paletteSelIndex, setPaletteSelIndex] = useState(0)
   const paletteResultsRef = useRef<HTMLDivElement | null>(null)
+
+  // Test function to manually trigger missing image cleanup
+  const handleTestImageCleanup = useCallback(async () => {
+    if (!campaign?.id) return
+    try {
+      await window.ipcRenderer.invoke('gamedocs:cleanup-missing-images', campaign.id)
+      toast('Image cleanup completed - check logs for details')
+    } catch (error: any) {
+      toast(`Image cleanup failed: ${error?.message || 'Unknown error'}`)
+    }
+  }, [campaign?.id])
 
   // Build a recursive tree of children for the current object and append as a nicely
   // formatted listing three lines below the existing description
@@ -194,6 +210,8 @@ export const Editor: React.FC = () => {
     }
   }, [campaign])
 
+  
+
   const listOfCommands = [
     { id: 'settings', name: 'Settings', description: 'Open settings modal' },
     { id: 'editObject', name: 'Edit object', description: 'Edit the current object' },
@@ -203,6 +221,7 @@ export const Editor: React.FC = () => {
     { id: 'miscStuff', name: 'Open Misc stuff', description: 'Open misc stuff modal' },
     { id: 'exportShare', name: 'Export to Share', description: 'Export the current object to Share' },
     { id: 'exportPdf', name: 'Export to PDF', description: 'Export the current object to PDF' },
+    { id: 'testImageCleanup', name: 'Test Image Cleanup', description: 'Manually test missing image cleanup' },
     { id: 'exportHtml', name: 'Export to HTML', description: 'Export the current object to HTML' },
     { id: 'generateMap', name: 'Generate map', description: 'Generate a map of all the places' },
     { id: 'chooseFontFile', name: 'Choose font file', description: 'Choose a font file for the custom font', setting: true },
@@ -232,7 +251,7 @@ export const Editor: React.FC = () => {
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
-  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; newChild: string; addImage: string, miscStuff: string, exportShare: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+M', exportShare: 'Ctrl+E' })
+  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
@@ -280,7 +299,8 @@ export const Editor: React.FC = () => {
         newChild: savedShortcuts.newChild || 'Ctrl+N',
         addImage: savedShortcuts.addImage || 'Ctrl+I',
         miscStuff: savedShortcuts.miscStuff || 'Ctrl+M',
-        exportShare: savedShortcuts.exportShare || 'Ctrl+E'
+        exportShare: savedShortcuts.exportShare || 'Ctrl+E',
+        toggleLock: savedShortcuts.toggleLock || 'Ctrl+L'
       })
     })()
   }, [])
@@ -404,6 +424,19 @@ span[data-tag] {
         e.preventDefault(); setCatErr(null); setCatName(''); setShowCat(true)
       } else if (matchShortcut(e, shortcuts.addImage)) {
         e.preventDefault(); setAddPictureModal(true)
+      } else if (matchShortcut(e, shortcuts.toggleLock)) {
+        e.preventDefault();
+        if(!activeLocked){
+          window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true);
+          setActiveLocked(true); 
+          toast('Object locked', 'success');
+          window.location.reload();
+        } else {
+          window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, false);
+          setActiveLocked(false); 
+          toast('Object unlocked', 'success');
+          window.location.reload();
+        }
       }
     }
     window.addEventListener('keydown', onKey)
@@ -482,6 +515,7 @@ span[data-tag] {
       case 'addImage': setAddPictureModal(true); setShowPalette(false); return
       case 'miscStuff': setShowMisc(true); setShowPalette(false); return
       case 'exportShare': handleExportToShare(); setShowPalette(false); return
+      case 'testImageCleanup': handleTestImageCleanup(); setShowPalette(false); return
       case 'listAllItems': if (activeLocked) { toast('Object is locked', 'error'); return } handleListAllItems(); setShowPalette(false); return
       case 'command': setShowPalette(true); return
       case 'lockObject': (async () => { if (!activeId) return; await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true); setActiveLocked(true); toast('Object locked', 'success'); setShowPalette(false) })(); return
@@ -1266,6 +1300,11 @@ span[data-tag] {
             className="editor_content"
             style={activeLocked ? { opacity: 0.85 } : undefined}
           />
+          {images.length > 0 ? (
+            <></>
+          ) : (
+            <div className="editor_content_footer"></div>
+          )}
           {/* Hover preview card for single-target tags */}
           {hoverCard.visible && (
             <div className="hover-card" style={{ left: hoverCard.x, top: hoverCard.y }}>
@@ -1481,7 +1520,7 @@ span[data-tag] {
                 <div className="grid-gap-10">
                   <label>
                     <div>Name (optional)</div>
-                    <input value={picName} onChange={e => setPicName(e.target.value)} className="input-100" />
+                    <input autoFocus placeholder="Name" value={picName} onChange={e => setPicName(e.target.value)} className="input-100" />
                   </label>
                   <div className="flex-row">
                     <label><input type="radio" checked={picSource.type === 'file'} onChange={() => setPicSource(s => ({ type: 'file', value: '' }))} /> File</label>
@@ -1492,8 +1531,8 @@ span[data-tag] {
                     <span className="muted-ellipsis">{picSource.type === 'file' ? (picSource.value || 'No file selected') : ''}</span>
                   </div>
                   <div className="flex-row">
-                    <label><input type="radio" checked={picSource.type === 'url'} onChange={() => setPicSource(s => ({ type: 'url', value: '' }))} /> URL</label>
-                    <input placeholder="https://..." value={picSource.type === 'url' ? picSource.value : ''} onChange={e => setPicSource({ type: 'url', value: e.target.value })} className="flex-1" />
+                    <label><input id="picSourceUrl" type="radio" checked={picSource.type === 'url'} onChange={() => setPicSource(s => ({ type: 'url', value: '' }))} /> URL</label>
+                    <input placeholder="https://..." value={picSource.type === 'url' ? picSource.value : ''} onChange={(e) => { setPicSource({ type: 'url', value: e.target.value }); }} className="flex-1" />
                   </div>
                   <label className="items-center flex-gap-8">
                     <input type="checkbox" checked={picIsDefault} onChange={e => setPicIsDefault(e.target.checked)} /> Default image
@@ -1865,7 +1904,22 @@ span[data-tag] {
                                 <option value="Garamond, serif">Garamond</option>
                                 <option value="Palatino Linotype, Book Antiqua, Palatino, serif">Palatino</option>
                               </select>
-                              <button title="Choose font file" onClick={async () => {
+                              
+                            </div>
+                          </label>
+                          <label className="w-110">Size <input type="number" min={10} max={24}
+                            value={fonts.size}
+                            onChange={(e) => { const f = { ...fonts, size: parseInt(e.target.value || '14', 10) }; setFonts(f); applyFonts(f) }}
+                            className="settings-number" /></label>
+                          <label className="w-120">Weight <input type="number" min={100} max={900} step={100}
+                            value={fonts.weight}
+                            onChange={(e) => { const f = { ...fonts, weight: parseInt(e.target.value || '400', 10) }; setFonts(f); applyFonts(f) }}
+                            className="settings-number" /></label>
+                          <label>Text Color <input type="color"
+                            value={fonts.color}
+                            onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label>
+                          
+                          <button title="Choose font file" onClick={async () => {
                                 const pick = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
                                 if (pick?.path) {
                                   const loaded = await window.ipcRenderer.invoke('gamedocs:read-font-as-dataurl', pick.path).catch(() => null)
@@ -1883,26 +1937,14 @@ span[data-tag] {
                                   }
                                 }
                               }}>Browse…</button>
-                            </div>
-                          </label>
-                          <label className="w-110">Size <input type="number" min={10} max={24}
-                            value={fonts.size}
-                            onChange={(e) => { const f = { ...fonts, size: parseInt(e.target.value || '14', 10) }; setFonts(f); applyFonts(f) }}
-                            className="settings-number" /></label>
-                          <label className="w-120">Weight <input type="number" min={100} max={900} step={100}
-                            value={fonts.weight}
-                            onChange={(e) => { const f = { ...fonts, weight: parseInt(e.target.value || '400', 10) }; setFonts(f); applyFonts(f) }}
-                            className="settings-number" /></label>
-                          <label>Text Color <input type="color"
-                            value={fonts.color}
-                            onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label>
-                          <button onClick={async () => {
+
+                          {/* <button onClick={async () => {
                             const res = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
                             if (res?.path) {
                               // Placeholder: user can install font system-wide; we simply store path for future
                               await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.customFontPath', { path: res.path })
                             }
-                          }}>Choose Font File…</button>
+                          }}>Choose Font File…</button> */}
                         </div>
                       </div>
                     </div>
@@ -1918,6 +1960,7 @@ span[data-tag] {
                         <div className="settings-shortcut-row"><label htmlFor="addImage">Add image </label><input id="addImage" value={shortcuts.addImage} onChange={e => setShortcuts(s => ({ ...s, addImage: e.target.value }))} placeholder='Ctrl+I' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="miscStuff">Open Misc stuff </label><input id="miscStuff" value={shortcuts.miscStuff} onChange={e => setShortcuts(s => ({ ...s, miscStuff: e.target.value }))} placeholder='Ctrl+M' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="exportShare">Export to Share </label><input id="exportShare" value={shortcuts.exportShare} onChange={e => setShortcuts(s => ({ ...s, exportShare: e.target.value }))} placeholder='Ctrl+E' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="toggleLock">Toggle lock </label><input id="toggleLock" value={shortcuts.toggleLock} onChange={e => setShortcuts(s => ({ ...s, toggleLock: e.target.value }))} placeholder='Ctrl+L' /></div>
                         <button className="settings-save-row" onClick={async () => { await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts) }}>Save shortcuts</button>
                       </div>
                     </div>

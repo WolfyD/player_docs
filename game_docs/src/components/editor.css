@@ -1,3 +1,7 @@
+button {
+  padding: 5px !important;
+}
+
 .editor-grid {
   display: grid;
   grid-template-rows: 30px 1fr;
@@ -30,6 +34,7 @@
 }
 
 .menu_button {
+  padding: 10px 20px !important;
   z-index: 16;
   user-select: none;
   margin-top: -30px;
@@ -107,12 +112,18 @@
 
 .editor_content {
   width: 100%;
-  height: 70vh;
+  min-height: 300px;
+  height: calc(100vh - 400px);
   outline: none;
   white-space: pre-wrap;
   text-align: left;
   user-select: text;
-  
+  overflow-y: auto;
+}
+
+.editor_content_footer {
+  height: 10px;
+  border-bottom: 1px solid #333;
 }
 
 .tabbed_editor_lines {
@@ -249,7 +260,7 @@
 
 /* Settings modal */
 .settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; padding-top: 60px; z-index: 50; }
-.settings-width { width: 50%; min-width: 760px; max-width: 92vw; }
+.settings-width { width: 50%; min-width: 900px; max-width: 92vw; }
 .settings-card { background: var(--pd-surface, #1e1e1e); border: 1px solid #333; border-radius: 10px; padding: 16px; color: var(--pd-text, #e5e5e5); }
 .settings-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .settings-columns { display: flex; gap: 16px; }
@@ -266,6 +277,9 @@
 .settings-save-row { display: block; grid-column: 1 / -1; }
 .settings-shortcut-row { display: flex; flex-direction: row; gap: 20px; margin-left: 20px; }
 .settings-shortcut-row label { width: 200px; text-align: left; }
+.settings-shortcut-row input { width: 150px; }
+
+select option { background-color: #1e1e1e; color: #e5e5e5; }
 
 /* Utility sizes and spacing */
 .w-200 { width: 200px; }

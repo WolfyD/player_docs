@@ -160,13 +160,22 @@ async function ensureMigrations(db: any) {
 }
 
 // Cleanup orphaned and floating link data
-function cleanupLinkData(db: any) {
+function cleanupLinkData(db: any, gameId?: string) {
+  let removedLinks = 0
+  let removedTags = 0
+  
   // Remove tag_links pointing to missing tags
-  db.prepare('DELETE FROM tag_links WHERE tag_id NOT IN (SELECT id FROM link_tags WHERE deleted_at IS NULL)').run()
+  const result1 = db.prepare('DELETE FROM tag_links WHERE tag_id NOT IN (SELECT id FROM link_tags WHERE deleted_at IS NULL)').run()
+  removedLinks += result1.changes || 0
+  
   // Remove tag_links pointing to missing objects
-  db.prepare('DELETE FROM tag_links WHERE object_id NOT IN (SELECT id FROM objects WHERE deleted_at IS NULL)').run()
+  const result2 = db.prepare('DELETE FROM tag_links WHERE object_id NOT IN (SELECT id FROM objects WHERE deleted_at IS NULL)').run()
+  removedLinks += result2.changes || 0
+  
   // Remove floating link_tags with no tag_links
-  db.prepare('DELETE FROM link_tags WHERE deleted_at IS NULL AND id NOT IN (SELECT DISTINCT tag_id FROM tag_links)').run()
+  const result3 = db.prepare('DELETE FROM link_tags WHERE deleted_at IS NULL AND id NOT IN (SELECT DISTINCT tag_id FROM tag_links)').run()
+  removedTags += result3.changes || 0
+  
   // Remove link_tags whose owner object no longer references the token in its description
   const tags = db.prepare('SELECT id, object_id FROM link_tags WHERE deleted_at IS NULL').all() as Array<{ id: string; object_id: string | null }>
   for (const t of tags) {
@@ -176,6 +185,36 @@ function cleanupLinkData(db: any) {
     if (!text.includes(`|${t.id}]`)) {
       db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(t.id)
       db.prepare('DELETE FROM link_tags WHERE id = ?').run(t.id)
+      removedTags++
+    }
+  }
+  
+  // Log cleanup results if there were any changes
+  if (gameId && (removedLinks > 0 || removedTags > 0)) {
+    const now = new Date().toISOString()
+    if (removedLinks > 0) {
+      const id = crypto.randomUUID()
+      db.prepare(`
+        INSERT INTO logs (id, game_id, event_type, level, category, message, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, gameId, 'cleanup_orphaned_links', 'info', 'cleanup',
+        `Cleanup: Removed ${removedLinks} orphaned link(s)`,
+        JSON.stringify({ removedCount: removedLinks, gameId }),
+        now
+      )
+    }
+    if (removedTags > 0) {
+      const id = crypto.randomUUID()
+      db.prepare(`
+        INSERT INTO logs (id, game_id, event_type, level, category, message, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, gameId, 'cleanup_orphaned_tags', 'info', 'cleanup',
+        `Cleanup: Removed ${removedTags} orphaned tag(s)`,
+        JSON.stringify({ removedCount: removedTags, gameId }),
+        now
+      )
     }
   }
 }
@@ -201,7 +240,77 @@ function cleanupTagsForObject(db: any, objectId: string) {
       db.prepare('DELETE FROM link_tags WHERE id = ?').run(t.id)
     }
   }
+}
+
+// Cleanup images that don't exist physically on disk
+function cleanupMissingImages(db: any, gameId?: string) {
+  if (!projectDirCache) return
+  
+  const missingImages: Array<{
+    id: string
+    objectId: string
+    filePath: string
+    name: string | null
+  }> = []
+  
+  // Get all images for this game
+  const images = db.prepare(`
+    SELECT id, object_id, file_path, name 
+    FROM images 
+    WHERE deleted_at IS NULL
+  `).all() as Array<{
+    id: string
+    object_id: string
+    file_path: string
+    name: string | null
+  }>
+  
+  // Check each image file exists
+  for (const img of images) {
+    try {
+      // Check if the file exists
+      fssync.accessSync(img.file_path, fssync.constants.F_OK)
+    } catch (error) {
+      // File doesn't exist, mark for removal
+      missingImages.push({
+        id: img.id,
+        objectId: img.object_id,
+        filePath: img.file_path,
+        name: img.name
+      })
+    }
   }
+  
+  // Remove missing images from database
+  if (missingImages.length > 0) {
+    const now = new Date().toISOString()
+    for (const img of missingImages) {
+      db.prepare('UPDATE images SET deleted_at = ? WHERE id = ?').run(now, img.id)
+    }
+    
+    // Log the cleanup if gameId is provided
+    if (gameId) {
+      const logId = crypto.randomUUID()
+      db.prepare(`
+        INSERT INTO logs (id, game_id, event_type, level, category, message, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        logId, 
+        gameId, 
+        'cleanup_missing_images', 
+        'info', 
+        'cleanup',
+        `Cleanup: Removed ${missingImages.length} missing image(s) from database`,
+        JSON.stringify({ 
+          removedCount: missingImages.length, 
+          gameId, 
+          missingImages 
+        }),
+        now
+      )
+    }
+  }
+}
 
 async function createEditorWindow(title: string, routeHash: string) {
   if (editorWin) {
@@ -408,7 +517,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { file, db } = await initGameDatabase(projectDirCache, schemaSql)
-    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
+    try { ensureMigrations(db) } catch {}
     db.close()
     return listCampaigns(file)
   })
@@ -525,7 +634,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db, file } = await initGameDatabase(projectDirCache, schemaSql)
-    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
+    try { ensureMigrations(db); cleanupLinkData(db, gameId); cleanupMissingImages(db, gameId) } catch {}
     const row = db.prepare('SELECT id, name FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId)
     db.close()
     if (!row) throw new Error('Campaign not found')
@@ -537,7 +646,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
-    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
+    try { ensureMigrations(db); cleanupLinkData(db, gameId); cleanupMissingImages(db, gameId) } catch {}
     let row = db.prepare('SELECT id, name, type FROM objects WHERE game_id = ? AND parent_id IS NULL AND deleted_at IS NULL LIMIT 1').get(gameId)
     if (!row) {
       // Backfill: create a root object for existing campaigns created before root insertion logic
@@ -558,7 +667,7 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
-    try { ensureMigrations(db); cleanupLinkData(db) } catch {}
+    try { ensureMigrations(db); cleanupLinkData(db, gameId); cleanupMissingImages(db, gameId) } catch {}
     let rows: any[]
     if (parentId) {
       rows = db.prepare('SELECT id, name, type FROM objects WHERE game_id = ? AND parent_id = ? AND deleted_at IS NULL ORDER BY name COLLATE NOCASE').all(gameId, parentId)
@@ -663,6 +772,84 @@ app.whenReady().then(async () => {
       db.prepare('INSERT INTO settings (id, setting_name, setting_value, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
         .run(id, key, text, now, now)
     }
+    db.close()
+    return true
+  })
+
+  // Logging system IPC handlers
+  ipcMain.handle('gamedocs:log-event', async (_evt, logData: {
+    gameId: string
+    eventType: string
+    level: string
+    category: string
+    message: string
+    metadata: string
+    timestamp: string
+  }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    
+    const id = crypto.randomUUID()
+    const now = new Date().toISOString()
+    
+    db.prepare(`
+      INSERT INTO logs (id, game_id, event_type, level, category, message, metadata, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      logData.gameId,
+      logData.eventType,
+      logData.level,
+      logData.category,
+      logData.message,
+      logData.metadata,
+      logData.timestamp || now
+    )
+    
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:get-logs', async (_evt, gameId: string, limit = 100, offset = 0) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    
+    const logs = db.prepare(`
+      SELECT id, event_type, level, category, message, metadata, created_at
+      FROM logs 
+      WHERE game_id = ? 
+      ORDER BY created_at DESC 
+      LIMIT ? OFFSET ?
+    `).all(gameId, limit, offset) as Array<{
+      id: string
+      event_type: string
+      level: string
+      category: string
+      message: string
+      metadata: string
+      created_at: string
+    }>
+    
+    db.close()
+    return logs
+  })
+
+  // Manual cleanup of missing images
+  ipcMain.handle('gamedocs:cleanup-missing-images', async (_evt, gameId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    
+    cleanupMissingImages(db, gameId)
+    
     db.close()
     return true
   })
@@ -1326,6 +1513,11 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     try { ensureMigrations(db) } catch {}
+    
+    // Get gameId from the object
+    const gameRow = db.prepare('SELECT game_id FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { game_id?: string } | undefined
+    const gameId = gameRow?.game_id
+    
     const now = new Date().toISOString()
     // Collect all descendant object ids (simple iterative approach)
     const toDelete: string[] = []
@@ -1343,7 +1535,8 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     const stmtDelLinks = db.prepare('DELETE FROM tag_links WHERE object_id = ?')
     for (const id of toDelete) stmtDelLinks.run(id)
     // Remove floating link_tags
-    cleanupLinkData(db)
+    cleanupLinkData(db, gameId)
+    cleanupMissingImages(db, gameId)
     db.close()
     return { count: toDelete.length }
   })
@@ -1394,10 +1587,16 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     const now = new Date().toISOString()
     db.prepare('UPDATE objects SET description = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(description ?? '', now, objectId)
+    
+    // Get gameId from the object
+    const gameRow = db.prepare('SELECT game_id FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { game_id?: string } | undefined
+    const gameId = gameRow?.game_id
+    
     try {
       ensureMigrations(db)
       cleanupTagsForObject(db, objectId)
-      cleanupLinkData(db)
+      cleanupLinkData(db, gameId)
+    cleanupMissingImages(db, gameId)
     } catch {}
     db.close()
     return true
