@@ -316,11 +316,11 @@ export async function populateExampleCampaign(db: any, gameId: string, rootId: s
   const rootDescription = `Welcome to the World War II Demo Campaign! This comprehensive collection covers the major people, places, events, and cultural aspects of the Second World War (1939-1945).
 
 Explore the folders to discover:
-• **People**: Key figures like [[Adolf Hitler|initial_hitler]], [[Winston Churchill|initial_churchill]], and [[Anne Frank|initial_anne_frank]]
-• **Places**: Important locations from [[Pearl Harbor|initial_pearl_harbor]] to [[Auschwitz|initial_auschwitz]]
-• **Nations**: The major powers including [[Germany|initial_germany]], the [[United States|initial_usa]], and [[Japan|initial_japan]]
-• **Major Events**: Critical moments like the [[Invasion of Poland|initial_invasion_poland]] and [[D-Day|initial_d_day]]
-• **Lore & Culture**: Cultural artifacts, propaganda, and social changes during wartime
+• <strong>People</strong>: Key figures like [[Adolf Hitler|initial_hitler]], [[Winston Churchill|initial_churchill]], and [[Anne Frank|initial_anne_frank]]
+• <strong>Places</strong>: Important locations from [[Pearl Harbor|initial_pearl_harbor]] to [[Auschwitz|initial_auschwitz]]
+• <strong>Nations</strong>: The major powers including [[Germany|initial_germany]], the [[United States|initial_usa]], and [[Japan|initial_japan]]
+• <strong>Major Events</strong>: Critical moments like the [[Invasion of Poland|initial_invasion_poland]] and [[D-Day|initial_d_day]]
+• <strong>Lore & Culture</strong>: Cultural artifacts, propaganda, and social changes during wartime
 
 This campaign demonstrates the interconnected nature of historical events and how people, places, and ideas shaped one of the most significant conflicts in human history.`
   

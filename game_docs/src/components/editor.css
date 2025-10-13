@@ -259,7 +259,7 @@ button {
 .image-modal-img { max-width: 95vw; max-height: 95vh; object-fit: contain; border-radius: 8px; display: block; }
 
 /* Settings modal */
-.settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; padding-top: 60px; z-index: 50; }
+.settings-overlay { user-select: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; padding-top: 60px; z-index: 50; }
 .settings-width { width: 50%; min-width: 900px; max-width: 92vw; }
 .settings-card { background: var(--pd-surface, #1e1e1e); border: 1px solid #333; border-radius: 10px; padding: 16px; color: var(--pd-text, #e5e5e5); }
 .settings-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
@@ -385,3 +385,16 @@ select option { background-color: #1e1e1e; color: #e5e5e5; }
 /* Lock badge */
 .lock-badge { position: absolute; right: 12px; top: 12px; color: #ef4444; font-size: 18px; z-index: 12; }
 .locked-overlay { pointer-events: none; opacity: 0.8; }
+
+.shortcut-button {
+  @apply relative cursor-pointer px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent hover:border-gray-400 dark:hover:border-gray-500;
+}
+
+.shortcut-button .shortcut-button-icon {
+  @apply w-4 h-4 text-gray-400;
+  padding-left: 8px;
+}
+
+.shortcut-button:hover .shortcut-button-icon {
+  color: #6495ED;
+}
