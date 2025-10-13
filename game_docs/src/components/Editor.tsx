@@ -64,7 +64,7 @@ export const Editor: React.FC = () => {
   const [wizardType, setWizardType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
   // Edit target picker when a tag links to multiple objects
   const [showEditPicker, setShowEditPicker] = useState(false)
-  const [editPickerItems, setEditPickerItems] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [editPickerItems, setEditPickerItems] = useState<Array<{ id: string; tag_id: string; name: string; path: string }>>([])
   // Target being edited (can differ from active object)
   const [editTargetId, setEditTargetId] = useState<string | null>(null)
   // Linker modal state
@@ -327,6 +327,12 @@ export const Editor: React.FC = () => {
         toggleLock: savedShortcuts.toggleLock || 'Ctrl+L'
       })
     })()
+  }, [])
+
+  const handleDeleteLink = useCallback(async (tag_id: string, id: string) => {
+    await window.ipcRenderer.invoke('gamedocs:delete-tag-link', tag_id, id)
+    toast('Link deleted', 'success')
+    setShowEditPicker(false)
   }, [])
 
   // Inject global CSS once to bind typography variables across the app
@@ -769,7 +775,7 @@ span[data-tag] {
     setShowEditPicker(true)
   }, [ctxLinkedTargets, openEditForObject])
 
-  const handleClearLink = useCallback(() => {
+  const handleClearLink = useCallback(async () => {
     const range = selectionRangeRef.current
     if (!range) { setCtxMenu(m => ({ ...m, visible: false })); return }
     let el: HTMLElement | null = (range.startContainer as any).parentElement
@@ -778,9 +784,22 @@ span[data-tag] {
       el = el.parentElement
     }
     if (el && editorRef.current) {
+      const tagId = el.getAttribute('data-tag')
+      if (tagId) {
+        // Remove the link tag from the database (this will also clean up tag_links)
+        try {
+          await window.ipcRenderer.invoke('gamedocs:delete-link-tag', tagId)
+        } catch (e) {
+          console.warn('Failed to delete link tag from database:', e)
+        }
+      }
+      
+      // Remove the span element and replace with plain text
       const text = document.createTextNode(el.textContent || '')
       el.replaceWith(text)
       setDesc(htmlToDesc(editorRef.current))
+      
+      toast('Link cleared', 'success')
     }
     setCtxMenu(m => ({ ...m, visible: false }))
   }, [])
@@ -1710,15 +1729,20 @@ span[data-tag] {
           {/* Edit picker when multiple objects linked in a tag */}
           {showEditPicker && (
             <div className="modal-overlay" onClick={() => setShowEditPicker(false)}>
-              <div className="dialog-card w-420" onClick={e => e.stopPropagation()}>
+              <div className="edit-picker-modal dialog-card w-520" onClick={e => e.stopPropagation()}>
                 <h3 className="mt-0">Choose object to edit</h3>
                 <div className="mt-10 maxh-260 border-top">
                   <ul className="list-reset">
                     {editPickerItems.map(it => (
-                      <li key={it.id} className="list-item-click"
-                        onClick={async () => { setShowEditPicker(false); await openEditForObject(it.id, it.name) }}
-                        dangerouslySetInnerHTML={{ __html: it.path }}
-                      />
+                      <>
+                      <div className="list-item-row">
+                        <li key={it.id} className="list-item-click"
+                          onClick={async () => { setShowEditPicker(false); await openEditForObject(it.id, it.name) }}
+                          dangerouslySetInnerHTML={{ __html: it.path }}
+                        />
+                        <a className="list-item-delete" onClick={async () => { await handleDeleteLink(it.tag_id, it.id); const ep = await window.ipcRenderer.invoke('gamedocs:list-edit-picker-items', activeId).catch(() => []); setEditPickerItems(ep || []) }}><i className='ri-delete-bin-2-line'></i></a>
+                      </div>
+                      </>
                     ))}
                   </ul>
                 </div>

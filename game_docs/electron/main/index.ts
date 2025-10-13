@@ -1374,7 +1374,7 @@ app.whenReady().then(async () => {
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     try { ensureMigrations(db) } catch {}
     const links = db.prepare('SELECT o.id, o.name, o.game_id FROM tag_links tl JOIN objects o ON o.id = tl.object_id WHERE tl.tag_id = ? AND o.deleted_at IS NULL').all(tagId)
-    const withPaths = links.map((r: any) => ({ id: r.id, name: r.name, path: getPathString(db, r.game_id, r.id) }))
+    const withPaths = links.map((r: any) => ({ id: r.id, tag_id: tagId, name: r.name, path: getPathString(db, r.game_id, r.id) }))
     db.close()
     return withPaths as Array<{ id: string; name: string; path: string }>
   })
@@ -1419,6 +1419,17 @@ app.whenReady().then(async () => {
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(tagId)
     db.prepare('DELETE FROM link_tags WHERE id = ?').run(tagId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:delete-tag-link', async (_evt, tagId: string, id: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    db.prepare('DELETE FROM tag_links WHERE tag_id = ? AND object_id = ?').run(tagId, id)
+    //db.prepare('DELETE FROM link_tags WHERE id = ?').run(tagId)
     db.close()
     return true
   })

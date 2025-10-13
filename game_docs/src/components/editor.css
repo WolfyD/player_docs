@@ -234,7 +234,8 @@ button {
 .justify-between { display: flex; justify-content: space-between; }
 .items-center { align-items: center; display: flex; }
 .grid-gap-8 { display: grid; gap: 8px; }
-.list-item-click { padding: 6px 4px; border-bottom: 1px solid #2a2a2a; cursor: pointer; }
+.list-item-click { padding: 6px 4px; border-bottom: 1px solid #2a2a2a; cursor: pointer; width: 100%; }
+.list-item-click:hover { background: #2a2a2a; }
 .flex-1 { flex: 1; }
 .mt-6 { margin-top: 6px; }
 .mt-8 { margin-top: 8px; }
@@ -398,3 +399,12 @@ select option { background-color: #1e1e1e; color: #e5e5e5; }
 .shortcut-button:hover .shortcut-button-icon {
   color: #6495ED;
 }
+
+.list-item-row {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+}
+
+.list-item-delete { cursor: pointer; position: absolute; right: 10px; top: 18%; }
+.list-item-delete:hover { color: #f06262c5; }
