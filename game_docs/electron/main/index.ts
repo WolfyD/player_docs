@@ -1149,6 +1149,31 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Copy font file to project base folder and return the new path
+  ipcMain.handle('gamedocs:copy-font-to-project', async (_evt, fontPath: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    try {
+      const buf = await fs.readFile(fontPath)
+      const fileName = path.basename(fontPath)
+      const destPath = path.join(projectDirCache, fileName)
+      
+      // Ensure the file doesn't already exist, or add a timestamp
+      let finalDestPath = destPath
+      let counter = 1
+      while (await fs.access(finalDestPath).then(() => true).catch(() => false)) {
+        const ext = path.extname(fileName)
+        const base = path.basename(fileName, ext)
+        finalDestPath = path.join(projectDirCache, `${base}_${counter}${ext}`)
+        counter++
+      }
+      
+      await fs.writeFile(finalDestPath, buf)
+      return { success: true, path: finalDestPath, fileName: path.basename(finalDestPath) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : 'Unknown error' }
+    }
+  })
+
   ipcMain.handle('gamedocs:get-file-dataurl', async (_evt, filePath: string) => {
     try {
       const buf = await fs.readFile(filePath)

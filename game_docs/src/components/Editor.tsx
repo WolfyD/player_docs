@@ -252,6 +252,7 @@ export const Editor: React.FC = () => {
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
+  const [customFont, setCustomFont] = useState<{ fontName: string; fontPath: string; fileName: string } | null>(null)
   const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L' })
   useEffect(() => {
     if (!root || !campaign) return
@@ -279,6 +280,27 @@ export const Editor: React.FC = () => {
       }
 
       const savedFonts = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.fonts').catch(() => null)
+      const customFontData = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.customFont').catch(() => null)
+      
+      // Load custom font if it exists
+      if (customFontData?.fontPath && customFontData?.fontName) {
+        setCustomFont(customFontData)
+        try {
+          const loaded = await window.ipcRenderer.invoke('gamedocs:read-font-as-dataurl', customFontData.fontPath).catch(() => null)
+          if (loaded?.dataUrl) {
+            const styleTagId = `pd-font-${customFontData.fontName}`
+            if (!document.getElementById(styleTagId)) {
+              const st = document.createElement('style')
+              st.id = styleTagId
+              st.innerHTML = `@font-face{ font-family: "${customFontData.fontName}"; src: url(${loaded.dataUrl}) format("${(loaded.mime||'').includes('woff')?'woff2':'truetype'}"); font-weight: 100 900; font-style: normal; font-display: swap; }`
+              document.head.appendChild(st)
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to load custom font:', e)
+        }
+      }
+      
       if (savedFonts) {
         const f = {
           family: savedFonts.family || fonts.family,
@@ -1911,6 +1933,7 @@ span[data-tag] {
                                 <option value="Georgia, serif">Georgia</option>
                                 <option value="Garamond, serif">Garamond</option>
                                 <option value="Palatino Linotype, Book Antiqua, Palatino, serif">Palatino</option>
+                                {customFont?.fontName && <option value={customFont.fontName}>Custom ({customFont.fontName})</option>}
                               </select>
                               
                             </div>
@@ -1930,18 +1953,41 @@ span[data-tag] {
                           <button title="Choose font file" onClick={async () => {
                                 const pick = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
                                 if (pick?.path) {
-                                  const loaded = await window.ipcRenderer.invoke('gamedocs:read-font-as-dataurl', pick.path).catch(() => null)
-                                  if (loaded?.dataUrl) {
-                                    const fontName = loaded.suggestedFamily || 'CustomFont'
-                                    const styleTagId = `pd-font-${fontName}`
-                                    if (!document.getElementById(styleTagId)) {
-                                      const st = document.createElement('style')
-                                      st.id = styleTagId
-                                      st.innerHTML = `@font-face{ font-family: "${fontName}"; src: url(${loaded.dataUrl}) format("${(loaded.mime||'').includes('woff')?'woff2':'truetype'}"); font-weight: 100 900; font-style: normal; font-display: swap; }`
-                                      document.head.appendChild(st)
+                                  // Copy font file to project folder
+                                  const copyResult = await window.ipcRenderer.invoke('gamedocs:copy-font-to-project', pick.path).catch(() => null)
+                                  if (copyResult?.success) {
+                                    // Load the font from the copied location
+                                    const loaded = await window.ipcRenderer.invoke('gamedocs:read-font-as-dataurl', copyResult.path).catch(() => null)
+                                    if (loaded?.dataUrl) {
+                                      const fontName = loaded.suggestedFamily || 'CustomFont'
+                                      const styleTagId = `pd-font-${fontName}`
+                                      if (!document.getElementById(styleTagId)) {
+                                        const st = document.createElement('style')
+                                        st.id = styleTagId
+                                        st.innerHTML = `@font-face{ font-family: "${fontName}"; src: url(${loaded.dataUrl}) format("${(loaded.mime||'').includes('woff')?'woff2':'truetype'}"); font-weight: 100 900; font-style: normal; font-display: swap; }`
+                                        document.head.appendChild(st)
+                                      }
+                                      
+                                      // Update font family to use the custom font
+                                      const f = { ...fonts, family: fontName }
+                                      setFonts(f)
+                                      applyFonts(f)
+                                      
+                                      // Set custom font state
+                                      const customFontData = {
+                                        fontName,
+                                        fontPath: copyResult.path,
+                                        fileName: copyResult.fileName
+                                      }
+                                      setCustomFont(customFontData)
+                                      
+                                      // Save the custom font settings to database
+                                      await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.customFont', customFontData)
+                                      
+                                      toast('Custom font loaded and saved', 'success')
                                     }
-                                    const f = { ...fonts, family: `${fontName}, ${fonts.family}` }
-                                    setFonts(f); applyFonts(f)
+                                  } else {
+                                    toast('Failed to copy font file', 'error')
                                   }
                                 }
                               }}>Browse…</button>
