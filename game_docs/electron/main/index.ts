@@ -159,6 +159,245 @@ async function ensureMigrations(db: any) {
   }
 }
 
+// Populate example World War II campaign
+export async function populateExampleCampaign(db: any, gameId: string, rootId: string, gameDir: string) {
+  console.log('populateExampleCampaign', gameId, rootId, gameDir)
+  const now = new Date().toISOString()
+  
+  // Create folders
+  const peopleFolder = 'initial_people_folder'
+  const placesFolder = 'initial_places_folder'
+  const nationsFolder = 'initial_nations_folder'
+  const loreFolder = 'initial_lore_folder'
+  const eventsFolder = 'initial_events_folder'
+  
+  // Insert folder objects
+  const folders = [
+    { id: peopleFolder, name: 'People', type: 'Other' },
+    { id: placesFolder, name: 'Places', type: 'Other' },
+    { id: nationsFolder, name: 'Nations', type: 'Other' },
+    { id: loreFolder, name: 'Lore & Culture', type: 'Other' },
+    { id: eventsFolder, name: 'Major Events', type: 'Other' }
+  ]
+  
+  for (const folder of folders) {
+    db.prepare(
+      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+    ).run(folder.id, gameId, folder.name, folder.type, rootId, '', now, now)
+  }
+  
+  // Create nations
+  const nations = [
+    { id: 'initial_germany', name: 'Germany', description: 'The Third Reich, led by [[Adolf Hitler|initial_hitler]], sought to establish German dominance over Europe through aggressive expansion and the implementation of Nazi ideology.' },
+    { id: 'initial_usa', name: 'United States', description: 'Initially neutral, the US entered the war after the [[Pearl Harbor Attack|initial_pearl_harbor]] in 1941, becoming a major Allied power.' },
+    { id: 'initial_uk', name: 'United Kingdom', description: 'Led by [[Winston Churchill|initial_churchill]], Britain stood alone against Germany in 1940-1941 before the US and USSR joined the war.' },
+    { id: 'initial_ussr', name: 'Soviet Union', description: 'Initially allied with Germany through the Molotov-Ribbentrop Pact, the USSR was invaded in 1941 and became a crucial Allied power.' },
+    { id: 'initial_france', name: 'France', description: 'Fell to German forces in 1940, with [[Charles de Gaulle|initial_de_gaulle]] leading the Free French resistance from London.' },
+    { id: 'initial_japan', name: 'Japan', description: 'Sought to establish the Greater East Asia Co-Prosperity Sphere, attacking the US at [[Pearl Harbor|initial_pearl_harbor]] and expanding throughout the Pacific.' }
+  ]
+  
+  for (const nation of nations) {
+    db.prepare(
+      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+    ).run(nation.id, gameId, nation.name, 'Other', nationsFolder, nation.description, now, now)
+  }
+  
+  // Create key people
+  const people = [
+    { id: 'initial_hitler', name: 'Adolf Hitler', description: 'Führer of [[Germany|initial_germany]] and leader of the Nazi Party. His aggressive expansionist policies and implementation of the Holocaust made him one of history\'s most notorious figures.' },
+    { id: 'initial_churchill', name: 'Winston Churchill', description: 'Prime Minister of the [[United Kingdom|initial_uk]] during most of the war. Known for his inspiring speeches and unwavering determination to defeat Nazi Germany.' },
+    { id: 'initial_roosevelt', name: 'Franklin D. Roosevelt', description: 'President of the [[United States|initial_usa]] during the war. Led the US through the Great Depression and into World War II, though he died before seeing victory.' },
+    { id: 'initial_stalin', name: 'Joseph Stalin', description: 'Leader of the [[Soviet Union|initial_ussr]]. His brutal policies and the Soviet victory at [[Stalingrad|initial_stalingrad]] were crucial to the Allied victory.' },
+    { id: 'initial_eisenhower', name: 'Dwight D. Eisenhower', description: 'Supreme Commander of Allied Forces in Europe. Led the [[D-Day Invasion|initial_d_day]] and later became President of the United States.' },
+    { id: 'initial_patton', name: 'George S. Patton', description: 'Famed American general known for his aggressive tactics and colorful personality. Led the Third Army across Europe after [[D-Day|initial_d_day]].' },
+    { id: 'initial_rommel', name: 'Erwin Rommel', description: 'German field marshal known as the "Desert Fox" for his campaigns in North Africa. Later involved in the plot to assassinate Hitler.' },
+    { id: 'initial_de_gaulle', name: 'Charles de Gaulle', description: 'Leader of the Free French forces and later President of France. Symbolized French resistance against German occupation.' },
+    { id: 'initial_anne_frank', name: 'Anne Frank', description: 'Young Jewish girl whose diary became one of the most famous accounts of life during the Holocaust. Died in [[Bergen-Belsen|initial_bergen_belsen]] concentration camp.' },
+    { id: 'initial_hirohito', name: 'Emperor Hirohito', description: 'Emperor of [[Japan|initial_japan]] during the war. His role in Japan\'s surrender remains a subject of historical debate.' }
+  ]
+  
+  for (const person of people) {
+    db.prepare(
+      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+    ).run(person.id, gameId, person.name, 'Person', peopleFolder, person.description, now, now)
+  }
+  
+  // Create important places
+  const places = [
+    { id: 'initial_pearl_harbor', name: 'Pearl Harbor', description: 'US naval base in Hawaii attacked by [[Japan|initial_japan]] on December 7, 1941, bringing the [[United States|initial_usa]] into World War II.' },
+    { id: 'initial_stalingrad', name: 'Stalingrad', description: 'City in the [[Soviet Union|initial_ussr]] where one of the bloodiest battles in history took place. The Soviet victory here marked a turning point in the war.' },
+    { id: 'initial_d_day', name: 'D-Day Beaches', description: 'The beaches of Normandy where Allied forces, led by [[Dwight D. Eisenhower|initial_eisenhower]], launched the largest amphibious invasion in history on June 6, 1944.' },
+    { id: 'initial_auschwitz', name: 'Auschwitz', description: 'The largest and most notorious Nazi concentration and extermination camp, where over 1 million people, mostly Jews, were murdered.' },
+    { id: 'initial_bergen_belsen', name: 'Bergen-Belsen', description: 'Nazi concentration camp where [[Anne Frank|initial_anne_frank]] died. Liberated by British forces in April 1945.' },
+    { id: 'initial_hiroshima', name: 'Hiroshima', description: 'Japanese city where the first atomic bomb was dropped on August 6, 1945, leading to Japan\'s surrender.' },
+    { id: 'initial_nagasaki', name: 'Nagasaki', description: 'Japanese city where the second atomic bomb was dropped on August 9, 1945.' },
+    { id: 'initial_dresden', name: 'Dresden', description: 'German city heavily bombed by Allied forces in February 1945, causing massive civilian casualties and sparking controversy.' },
+    { id: 'initial_london', name: 'London', description: 'Capital of the [[United Kingdom|initial_uk]] that endured the Blitz, a sustained bombing campaign by [[Germany|initial_germany]] in 1940-1941.' },
+    { id: 'initial_berlin', name: 'Berlin', description: 'Capital of [[Germany|initial_germany]] and the site of Hitler\'s bunker where he committed suicide in April 1945.' }
+  ]
+  
+  for (const place of places) {
+    db.prepare(
+      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+    ).run(place.id, gameId, place.name, 'Place', placesFolder, place.description, now, now)
+  }
+  
+  // Create major events
+  const events = [
+    { id: 'initial_invasion_poland', name: 'Invasion of Poland', description: '[[Germany|initial_germany]] invaded [[Poland|initial_poland]] on September 1, 1939, marking the official start of World War II. This prompted [[United Kingdom|initial_uk]] and [[France|initial_france]] to declare war on Germany.' },
+    { id: 'initial_battle_britain', name: 'Battle of Britain', description: 'Aerial battle between the [[United Kingdom|initial_uk]] and [[Germany|initial_germany]] in 1940. The RAF\'s victory prevented a German invasion of Britain.' },
+    { id: 'initial_operation_barbarossa', name: 'Operation Barbarossa', description: '[[Germany|initial_germany]]\'s invasion of the [[Soviet Union|initial_ussr]] on June 22, 1941, breaking the Molotov-Ribbentrop Pact and opening the Eastern Front.' },
+    { id: 'initial_holocaust', name: 'The Holocaust', description: 'The systematic persecution and murder of six million Jews and millions of others by [[Germany|initial_germany]] and its collaborators. Places like [[Auschwitz|initial_auschwitz]] became symbols of this genocide.' },
+    { id: 'initial_manhattan_project', name: 'Manhattan Project', description: 'The secret US program to develop atomic weapons. The resulting bombs were dropped on [[Hiroshima|initial_hiroshima]] and [[Nagasaki|initial_nagasaki]].' }
+  ]
+  
+  for (const event of events) {
+    db.prepare(
+      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+    ).run(event.id, gameId, event.name, 'Other', eventsFolder, event.description, now, now)
+  }
+  
+  // Create cultural and literary content
+  const lore = [
+    { id: 'initial_anne_frank_diary', name: 'The Diary of Anne Frank', description: 'The diary kept by [[Anne Frank|initial_anne_frank]] while hiding from the Nazis. Published after her death, it became one of the most important documents of the Holocaust.' },
+    { id: 'initial_we_shall_fight', name: 'We Shall Fight on the Beaches', description: 'Famous speech by [[Winston Churchill|initial_churchill]] on June 4, 1940, rallying British resolve during the darkest days of the war.' },
+    { id: 'initial_rosie_riveter', name: 'Rosie the Riveter', description: 'Cultural icon representing the women who worked in factories and shipyards during the war, replacing men who had gone to fight.' },
+    { id: 'initial_swastika', name: 'The Swastika', description: 'Ancient symbol appropriated by the Nazi Party as their emblem. The symbol\'s meaning was forever changed by its association with [[Germany|initial_germany]]\'s atrocities.' },
+    { id: 'initial_victory_garden', name: 'Victory Gardens', description: 'Home vegetable gardens planted by civilians to supplement their food rations and support the war effort.' },
+    { id: 'initial_rationing', name: 'Rationing', description: 'Government-controlled distribution of scarce resources like food, fuel, and clothing to ensure fair distribution during wartime.' },
+    { id: 'initial_propaganda', name: 'War Propaganda', description: 'Both Allied and Axis powers used posters, films, and radio broadcasts to maintain morale and demonize the enemy.' },
+    { id: 'initial_code_talkers', name: 'Navajo Code Talkers', description: 'Native American Marines who used their language to create an unbreakable code for military communications in the Pacific theater.' }
+  ]
+  
+  for (const loreItem of lore) {
+    db.prepare(
+      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+    ).run(loreItem.id, gameId, loreItem.name, 'Lore', loreFolder, loreItem.description, now, now)
+  }
+  
+  // Create link tags and connections
+  const linkTags = [
+    { id: 'initial_tag_hitler_germany', ownerId: 'initial_hitler', targets: ['initial_germany'] },
+    { id: 'initial_tag_churchill_uk', ownerId: 'initial_churchill', targets: ['initial_uk'] },
+    { id: 'initial_tag_roosevelt_usa', ownerId: 'initial_roosevelt', targets: ['initial_usa'] },
+    { id: 'initial_tag_stalin_ussr', ownerId: 'initial_stalin', targets: ['initial_ussr'] },
+    { id: 'initial_tag_eisenhower_dday', ownerId: 'initial_eisenhower', targets: ['initial_d_day'] },
+    { id: 'initial_tag_patton_dday', ownerId: 'initial_patton', targets: ['initial_d_day'] },
+    { id: 'initial_tag_rommel_germany', ownerId: 'initial_rommel', targets: ['initial_germany'] },
+    { id: 'initial_tag_degaulle_france', ownerId: 'initial_de_gaulle', targets: ['initial_france'] },
+    { id: 'initial_tag_anne_bergen', ownerId: 'initial_anne_frank', targets: ['initial_bergen_belsen'] },
+    { id: 'initial_tag_hirohito_japan', ownerId: 'initial_hirohito', targets: ['initial_japan'] },
+    { id: 'initial_tag_pearl_japan', ownerId: 'initial_pearl_harbor', targets: ['initial_japan'] },
+    { id: 'initial_tag_pearl_usa', ownerId: 'initial_pearl_harbor', targets: ['initial_usa'] },
+    { id: 'initial_tag_stalingrad_ussr', ownerId: 'initial_stalingrad', targets: ['initial_ussr'] },
+    { id: 'initial_tag_auschwitz_germany', ownerId: 'initial_auschwitz', targets: ['initial_germany'] },
+    { id: 'initial_tag_hiroshima_japan', ownerId: 'initial_hiroshima', targets: ['initial_japan'] },
+    { id: 'initial_tag_nagasaki_japan', ownerId: 'initial_nagasaki', targets: ['initial_japan'] },
+    { id: 'initial_tag_dresden_germany', ownerId: 'initial_dresden', targets: ['initial_germany'] },
+    { id: 'initial_tag_london_uk', ownerId: 'initial_london', targets: ['initial_uk'] },
+    { id: 'initial_tag_berlin_germany', ownerId: 'initial_berlin', targets: ['initial_germany'] }
+  ]
+  
+  // Insert link tags
+  for (const linkTag of linkTags) {
+    db.prepare(
+      'INSERT INTO link_tags (id, game_id, object_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)'
+    ).run(linkTag.id, gameId, linkTag.ownerId, now, now)
+    
+    // Insert tag links for each target
+    for (const targetId of linkTag.targets) {
+      db.prepare(
+        'INSERT INTO tag_links (tag_id, object_id, created_at, deleted_at) VALUES (?, ?, ?, NULL)'
+      ).run(linkTag.id, targetId, now)
+    }
+  }
+  
+  // Update root description with overview
+  const rootDescription = `Welcome to the World War II Demo Campaign! This comprehensive collection covers the major people, places, events, and cultural aspects of the Second World War (1939-1945).
+
+Explore the folders to discover:
+• **People**: Key figures like [[Adolf Hitler|initial_hitler]], [[Winston Churchill|initial_churchill]], and [[Anne Frank|initial_anne_frank]]
+• **Places**: Important locations from [[Pearl Harbor|initial_pearl_harbor]] to [[Auschwitz|initial_auschwitz]]
+• **Nations**: The major powers including [[Germany|initial_germany]], the [[United States|initial_usa]], and [[Japan|initial_japan]]
+• **Major Events**: Critical moments like the [[Invasion of Poland|initial_invasion_poland]] and [[D-Day|initial_d_day]]
+• **Lore & Culture**: Cultural artifacts, propaganda, and social changes during wartime
+
+This campaign demonstrates the interconnected nature of historical events and how people, places, and ideas shaped one of the most significant conflicts in human history.`
+  
+  db.prepare(
+    'UPDATE objects SET description = ? WHERE id = ?'
+  ).run(rootDescription, rootId)
+}
+
+// Download example images for the campaign
+async function downloadExampleImages(gameId: string, gameDir: string) {
+  const images = [
+    {
+      objectId: 'initial_hitler',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/Adolf_Hitler_cropped_restored.jpg/256px-Adolf_Hitler_cropped_restored.jpg',
+      name: 'Adolf Hitler Portrait'
+    },
+    {
+      objectId: 'initial_churchill',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Sir_Winston_Churchill_-_19086236948.jpg/256px-Sir_Winston_Churchill_-_19086236948.jpg',
+      name: 'Winston Churchill Portrait'
+    },
+    {
+      objectId: 'initial_anne_frank',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Anne_Frank_%281929-1945%29%2C_writing_at_her_desk%2C_at_the_International_Institute_for_War%2C_Holocaust_and_Genocide_Studies_%28NIOD%29.jpg/256px-Anne_Frank_%281929-1945%29%2C_writing_at_her_desk%2C_at_the_International_Institute_for_War%2C_Holocaust_and_Genocide_Studies_%28NIOD%29.jpg',
+      name: 'Anne Frank Writing'
+    },
+    {
+      objectId: 'initial_pearl_harbor',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/09/USS_Arizona_Pearl_Harbor.jpg/256px-USS_Arizona_Pearl_Harbor.jpg',
+      name: 'USS Arizona at Pearl Harbor'
+    },
+    {
+      objectId: 'initial_d_day',
+      url: 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a5/Into_the_Jaws_of_Death_23-0455M_edit.jpg/256px-Into_the_Jaws_of_Death_23-0455M_edit.jpg',
+      name: 'D-Day Landing'
+    }
+  ]
+  
+  for (const image of images) {
+    try {
+      const response = await fetch(image.url)
+      if (!response.ok) continue
+      
+      const buffer = await response.arrayBuffer()
+      const imageId = crypto.randomUUID()
+      const fileName = `${imageId}.jpg`
+      const filePath = path.join(gameDir, 'images', fileName)
+      const thumbPath = path.join(gameDir, 'thumbs', fileName)
+      
+      // Save original image
+      await fs.writeFile(filePath, Buffer.from(buffer))
+      
+      // Create thumbnail
+      const thumbnail = await sharp(Buffer.from(buffer))
+        .resize(350, 350, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer()
+      
+      await fs.writeFile(thumbPath, thumbnail)
+      
+      // Add to database
+      const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+      const schemaSql = await fs.readFile(schemaPath, 'utf8')
+      const { db } = await initGameDatabase(projectDirCache!, schemaSql)
+      
+      const now = new Date().toISOString()
+      db.prepare(
+        'INSERT INTO images (id, object_id, file_path, thumb_path, name, is_default, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+      ).run(imageId, image.objectId, filePath, thumbPath, image.name, 1, now, now)
+      
+      db.close()
+    } catch (error) {
+      console.log(`Failed to download image for ${image.objectId}:`, error)
+    }
+  }
+}
+
 // Cleanup orphaned and floating link data
 function cleanupLinkData(db: any, gameId?: string) {
   let removedLinks = 0
@@ -615,7 +854,20 @@ app.whenReady().then(async () => {
     db.prepare(
       'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)'
     ).run(rootId, id, safeName, 'Other', '', now, now)
+    
+    // If this is the example campaign, populate it with content immediately
+    if (safeName === 'Demo Campaign') {
+      await populateExampleCampaign(db, id, rootId, gameDir)
+    }
+    
     db.close()
+    
+    // Download images asynchronously after database is closed (for example campaign)
+    if (safeName === 'Demo Campaign') {
+      downloadExampleImages(id, gameDir).catch(error => {
+        console.log('Failed to download example images:', error)
+      })
+    }
 
     // Open editor for the new campaign and hide main
     await createEditorWindow(`PlayerDocs - ${safeName}`, `/editor/${id}`)

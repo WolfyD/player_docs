@@ -1,6 +1,8 @@
 import path from 'node:path'
 import fsp from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import fs from 'node:fs'
+import crypto from 'node:crypto'
 
 export type DbHandle = {
   db: Database.Database

@@ -1321,7 +1321,7 @@ span[data-tag] {
             <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} ref={ctxMenuRef}>
               <div className="ctx-menu-section-title">Links</div>
               <div className="separator" />
-              <div className="ctx-menu-item"  onClick={handleAddLinkOpen}>Add link</div>
+              <div className="ctx-menu-item"  onClick={handleAddLinkOpen}>Link Object</div>
 
               {/* Only show edit and clear if there are linked targets */}
               {ctxLinkedTargets.length > 0 ? (
@@ -1514,8 +1514,8 @@ span[data-tag] {
 
           {/* Add Picture modal */}
           {addPictureModal && (
-            <div className="modal-overlay">
-              <div className="dialog-card w-520">
+            <div className="modal-overlay" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setAddPictureModal(false) }}>
+              <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setAddPictureModal(false) } }}>
                 <h3 className="dialog-title">Add Picture</h3>
                 <div className="grid-gap-10">
                   <label>
@@ -2036,8 +2036,8 @@ span[data-tag] {
 
           {/* Link to object modal */}
           {showLinker && (
-            <div className="modal-overlay">
-              <div className="dialog-card w-520">
+            <div className="modal-overlay" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setShowLinker(false) }}>
+              <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false) } }}>
                 <h3 className="mt-0">Link to object</h3>
                 <div className="flex-row">
                   <input value={linkerInput} autoFocus onChange={async e => {
