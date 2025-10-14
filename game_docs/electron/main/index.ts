@@ -1843,20 +1843,22 @@ app.whenReady().then(async () => {
     const css = `
       @page { 
         size: A4; 
-        margin: 1in; 
+        margin: 0; 
       }
       body { 
         font-family: system-ui, -apple-system, sans-serif; 
         line-height: 1.6; 
-        color: #333; 
+        color: ${palette.text}; 
+        background: ${palette.surface};
         margin: 0; 
-        padding: 0;
+        padding: 0.5in;
+        min-height: 100vh;
       }
       .pdf-header { 
         text-align: center; 
         margin-bottom: 2rem; 
         padding-bottom: 1rem; 
-        border-bottom: 2px solid #ddd;
+        border-bottom: 2px solid ${palette.tagBorder};
       }
       .pdf-header h1 { 
         margin: 0; 
@@ -1865,7 +1867,8 @@ app.whenReady().then(async () => {
       }
       .export-info { 
         margin-top: 0.5rem; 
-        color: #666; 
+        color: ${palette.text}; 
+        opacity: 0.7;
         font-size: 0.9rem;
       }
       .table-of-contents { 
@@ -1874,7 +1877,7 @@ app.whenReady().then(async () => {
       }
       .table-of-contents h2 { 
         color: ${palette.primary}; 
-        border-bottom: 1px solid #ddd; 
+        border-bottom: 1px solid ${palette.tagBorder}; 
         padding-bottom: 0.5rem;
       }
       .table-of-contents ul { 
@@ -1885,7 +1888,7 @@ app.whenReady().then(async () => {
         margin: 0.5rem 0;
       }
       .table-of-contents a { 
-        color: #333; 
+        color: ${palette.text}; 
         text-decoration: none; 
         padding: 0.25rem 0;
         display: block;
@@ -1900,7 +1903,8 @@ app.whenReady().then(async () => {
       }
       .breadcrumb { 
         font-size: 0.9rem; 
-        color: #666; 
+        color: ${palette.text}; 
+        opacity: 0.7;
         margin-bottom: 0.5rem;
       }
       .breadcrumb a { 
@@ -1911,16 +1915,18 @@ app.whenReady().then(async () => {
         margin: 0 0 0.5rem 0; 
         font-size: 1.8rem; 
         color: ${palette.primary};
-        border-bottom: 1px solid #eee;
+        border-bottom: 1px solid ${palette.tagBorder};
         padding-bottom: 0.5rem;
       }
       .object-type { 
         font-style: italic; 
-        color: #666; 
+        color: ${palette.text}; 
+        opacity: 0.7;
         margin-bottom: 1rem;
       }
       .object-content { 
         margin-bottom: 1rem;
+        color: ${palette.text};
       }
       .images { 
         margin: 1rem 0; 
@@ -1935,12 +1941,13 @@ app.whenReady().then(async () => {
       .image-item img { 
         max-width: 100%; 
         height: auto; 
-        border: 1px solid #ddd; 
+        border: 1px solid ${palette.tagBorder}; 
         border-radius: 4px;
       }
       .image-caption { 
         font-size: 0.8rem; 
-        color: #666; 
+        color: ${palette.text}; 
+        opacity: 0.7;
         margin-top: 0.25rem;
       }
       .star { 
@@ -1950,7 +1957,7 @@ app.whenReady().then(async () => {
       .children { 
         margin-top: 1rem; 
         padding-top: 1rem; 
-        border-top: 1px solid #eee;
+        border-top: 1px solid ${palette.tagBorder};
       }
       .children h4 { 
         margin: 0 0 0.5rem 0; 
@@ -2212,10 +2219,10 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
       const pdfBuffer = await page.pdf({
         format: 'A4',
         printBackground: true,
-        margin: { top: '1in', right: '1in', bottom: '1in', left: '1in' },
+        margin: { top: '0', right: '0', bottom: '0', left: '0' },
         displayHeaderFooter: true,
-        headerTemplate: '<div style="font-size: 10px; text-align: center; width: 100%; color: #666;">PlayerDocs Campaign Export</div>',
-        footerTemplate: '<div style="font-size: 10px; text-align: center; width: 100%; color: #666;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>'
+        headerTemplate: `<div style="font-size: 10px; text-align: center; width: 100%; color: ${palette.text}; opacity: 0.7; padding: 0.5in 0.5in 0 0.5in;">PlayerDocs Campaign Export</div>`,
+        footerTemplate: `<div style="font-size: 10px; text-align: center; width: 100%; color: ${palette.text}; opacity: 0.7; padding: 0 0.5in 0.5in 0.5in;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>`
       })
       
       await browser.close()
