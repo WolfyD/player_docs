@@ -2221,7 +2221,6 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
         printBackground: true,
         margin: { top: '0', right: '0', bottom: '0', left: '0' },
         displayHeaderFooter: true,
-        headerTemplate: `<div style="font-size: 10px; text-align: center; width: 100%; color: ${palette.text}; opacity: 0.7; padding: 0.5in 0.5in 0 0.5in;">PlayerDocs Campaign Export</div>`,
         footerTemplate: `<div style="font-size: 10px; text-align: center; width: 100%; color: ${palette.text}; opacity: 0.7; padding: 0 0.5in 0.5in 0.5in;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>`
       })
       
