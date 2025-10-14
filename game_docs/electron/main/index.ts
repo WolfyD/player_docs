@@ -2237,6 +2237,91 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     }
   })
 
+  ipcMain.handle('gamedocs:create-backup', async (_evt) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    
+    // Generate default filename with current date/time
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
+    const defaultFileName = `player_docs_db_backup_${dateStr}.db`
+    
+    // Show save dialog
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Create Database Backup',
+      defaultPath: path.join(projectDirCache, defaultFileName),
+      filters: [{ name: 'SQLite Database', extensions: ['db'] }]
+    })
+    
+    if (canceled || !filePath) {
+      return { ok: false }
+    }
+    
+    try {
+      // Get the current database file path
+      const currentDbPath = path.join(projectDirCache, 'player_docs.db')
+      
+      // Copy the database file
+      await fs.copyFile(currentDbPath, filePath)
+      
+      // Add log entry to the database
+      const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+      const schemaSql = await fs.readFile(schemaPath, 'utf8')
+      const { db } = await initGameDatabase(projectDirCache, schemaSql)
+      try { ensureMigrations(db) } catch {}
+      
+      // Insert backup log entry
+      const logId = crypto.randomUUID().replace(/-/g, '')
+      const now = new Date().toISOString()
+      
+      // Get the first available game_id or create a default one
+      let firstGame = db.prepare('SELECT id FROM games LIMIT 1').get() as { id: string } | undefined
+      let gameId = firstGame?.id
+      
+      if (!gameId) {
+        // Create a default game if none exists
+        gameId = 'default'
+        const defaultGameId = crypto.randomUUID().replace(/-/g, '')
+        db.prepare(`
+          INSERT INTO games (id, name, type, description, parent_id, images, tags, created, updated, deleted) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          defaultGameId,
+          'Default Game',
+          'game',
+          'Default game for system operations',
+          null,
+          '[]',
+          '[]',
+          now,
+          now,
+          null
+        )
+        gameId = defaultGameId
+      }
+      
+      db.prepare(`
+        INSERT INTO logs (id, game_id, event_type, level, category, message, metadata, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        logId,
+        gameId, // Use existing game_id or 'default'
+        'backup_created',
+        'info',
+        'backup',
+        `Database backup created: ${path.basename(filePath)}`,
+        JSON.stringify({ backupFile: path.basename(filePath), backupPath: filePath }),
+        now
+      )
+      
+      db.close()
+      
+      return { ok: true, filePath, fileName: path.basename(filePath) }
+    } catch (error) {
+      throw new Error(`Failed to create backup: ${error}`)
+    }
+  })
+
   // Delete an object and cascade: children, tag_links, orphan link_tags
   ipcMain.handle('gamedocs:delete-object-cascade', async (_evt, objectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')

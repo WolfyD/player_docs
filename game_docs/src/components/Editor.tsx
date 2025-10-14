@@ -244,7 +244,29 @@ export const Editor: React.FC = () => {
     }
   }, [campaign])
 
-  
+  const handleCreateBackup = useCallback(async () => {
+    try {
+      const res = await window.ipcRenderer.invoke('gamedocs:create-backup')
+      if (res && res.ok) {
+        toast('Database backup created successfully', 'success')
+        
+        // Ask if user wants to open the folder
+        const openFolder = await confirmDialog({ 
+          title: 'Backup Complete', 
+          message: `Database backup "${res.fileName}" has been created successfully. Would you like to open the folder where it was saved?`, 
+          variant: 'yes-no' 
+        })
+        
+        if (openFolder) {
+          await window.ipcRenderer.invoke('gamedocs:reveal-path', res.filePath)
+        }
+      } else {
+        toast('Backup cancelled', 'info')
+      }
+    } catch (e) {
+      toast('Failed to create backup', 'error')
+    }
+  }, [])
 
   const listOfCommands = [
     { id: 'settings', name: 'Settings', description: 'Open settings modal' },
@@ -1584,7 +1606,7 @@ span[data-tag] {
                   {activeLocked ? null : (
                     <div className="misc-item" onClick={handleListAllItems}>List all items</div>
                   )}
-                  <div className="misc-item" onClick={() => { /* TODO: Create Backup */ }}>Create backup</div>
+                  <div className="misc-item" onClick={handleCreateBackup}>Create backup</div>
                 </div>
                 <div className="actions mt-12">
                   <button onClick={() => setShowMisc(false)}>Close</button>
