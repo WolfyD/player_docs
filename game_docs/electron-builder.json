@@ -7,7 +7,16 @@
   },
   "files": [
     "dist-electron",
-    "dist"
+    "dist",
+    "db",
+    "node_modules/better-sqlite3",
+    "node_modules/bindings",
+    "node_modules/sharp"
+  ],
+  "asarUnpack": [
+    "node_modules/better-sqlite3/**/*",
+    "node_modules/bindings/**/*",
+    "node_modules/sharp/**/*"
   ],
   "mac": {
     "artifactName": "${productName}_${version}.${ext}",

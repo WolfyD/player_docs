@@ -14,6 +14,7 @@ import sharp from 'sharp'
 import { exec } from 'child_process';
 import { platform } from 'os';
 
+
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -572,6 +573,13 @@ async function createEditorWindow(title: string, routeHash: string) {
     }
   }
   editorWin = new BrowserWindow(baseOptions)
+  editorWin.webContents.on('did-finish-load', () => {
+    console.log('[Editor] did-finish-load')
+  })
+  editorWin.on('ready-to-show', () => {
+    console.log('[Editor] ready-to-show')
+    editorWin?.show()
+  })
   // Apply saved state (maximized/fullscreen) after creation
   if (saved) {
     if (saved.isFullScreen) {
@@ -596,7 +604,7 @@ async function createEditorWindow(title: string, routeHash: string) {
   })
   // Persist state on changes
   const saveBounds = async () => {
-    if (!editorWin) return
+    if (!editorWin || editorWin.isDestroyed() || editorWin == null) return
     const isMaximized = editorWin.isMaximized()
     const isFullScreen = editorWin.isFullScreen()
     const bounds = isMaximized || isFullScreen ? editorWin.getNormalBounds() : editorWin.getBounds()
@@ -612,8 +620,23 @@ async function createEditorWindow(title: string, routeHash: string) {
   return editorWin
 }
 
+function loadBetterSqlite3() {
+  const devPath = path.join(process.cwd(), 'package.json')
+  const prodPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'better-sqlite3', 'package.json')
+
+  try {
+    // Works in dev
+    const requireFromDev = createRequire(devPath)
+    return requireFromDev('better-sqlite3')
+  } catch {
+    // Works in packaged app
+    const requireFromProd = createRequire(prodPath)
+    return requireFromProd('better-sqlite3')
+  }
+}
+
 async function listCampaigns(dbFile: string) {
-  const Database = createRequire(process.cwd() + '/package.json')('better-sqlite3') as typeof import('better-sqlite3')
+  const Database = loadBetterSqlite3() as typeof import('better-sqlite3')
   const db = new Database(dbFile)
   const rows = db.prepare('SELECT id, name FROM games WHERE deleted_at IS NULL ORDER BY created_at DESC').all()
   db.close()
@@ -680,12 +703,13 @@ async function createWindow() {
   const savedMain = await readSetting<any>('ui.mainWindow').catch(() => null)
   const mainOpts: Electron.BrowserWindowConstructorOptions = {
     title: 'PlayerDocs',
-    icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
+    icon: path.join(__dirname, "build", "icon.ico"),
+    // icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
     webPreferences: { preload },
   }
   if (savedMain && savedMain.bounds && typeof savedMain.bounds.width === 'number' && typeof savedMain.bounds.height === 'number') {
-    mainOpts.width = Math.max(600, savedMain.bounds.width)
-    mainOpts.height = Math.max(400, savedMain.bounds.height)
+    mainOpts.width = Math.max(700, savedMain.bounds.width)
+    mainOpts.height = Math.max(500, savedMain.bounds.height)
     if (typeof savedMain.bounds.x === 'number' && typeof savedMain.bounds.y === 'number') {
       mainOpts.x = savedMain.bounds.x
       mainOpts.y = savedMain.bounds.y
@@ -1376,7 +1400,7 @@ app.whenReady().then(async () => {
     const links = db.prepare('SELECT o.id, o.name, o.game_id FROM tag_links tl JOIN objects o ON o.id = tl.object_id WHERE tl.tag_id = ? AND o.deleted_at IS NULL').all(tagId)
     const withPaths = links.map((r: any) => ({ id: r.id, tag_id: tagId, name: r.name, path: getPathString(db, r.game_id, r.id) }))
     db.close()
-    return withPaths as Array<{ id: string; name: string; path: string }>
+    return withPaths as Array<{ id: string; tag_id: string; name: string; path: string }>
   })
 
   // List link tags owned by an object

@@ -75,7 +75,7 @@ export const Editor: React.FC = () => {
   const [allObjects, setAllObjects] = useState<Array<{ id: string; name: string; parent_id: string | null }>>([])
   const [pathChoices, setPathChoices] = useState<Array<{ id: string; name: string; path: string }>>([])
   const fuseRef = useRef<Fuse<any> | null>(null)
-  const [ctxLinkedTargets, setCtxLinkedTargets] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [ctxLinkedTargets, setCtxLinkedTargets] = useState<Array<{ id: string; name: string; path: string; tag_id: string }>>([])
   // Hover preview for single-target tags
   const [hoverCard, setHoverCard] = useState<{ visible: boolean; x: number; y: number; name: string; snippet: string; imageUrl: string | null }>({ visible: false, x: 0, y: 0, name: '', snippet: '', imageUrl: null })
   const [imageModal, setImageModal] = useState<{ visible: boolean; dataUrl: string | null }>({ visible: false, dataUrl: null })
