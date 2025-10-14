@@ -109,6 +109,45 @@ function generateTagId(): string {
   return 'tag_' + crypto.randomUUID().replace(/-/g, '').slice(0, 8)
 }
 
+// Utility function to validate window bounds against available screens
+function validateWindowBounds(savedBounds: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+  const { screen } = require('electron')
+  const displays = screen.getAllDisplays()
+  
+  // Check if the saved position is within any screen bounds
+  for (const display of displays) {
+    const { x: screenX, y: screenY, width: screenWidth, height: screenHeight } = display.bounds
+    
+    // Check if window is at least partially visible on this screen
+    if (savedBounds.x < screenX + screenWidth && 
+        savedBounds.x + savedBounds.width > screenX &&
+        savedBounds.y < screenY + screenHeight && 
+        savedBounds.y + savedBounds.height > screenY) {
+      // Position is valid, return as-is
+      return savedBounds
+    }
+  }
+
+  console.log('[validateWindowBounds] No screen found for position:', savedBounds)
+  console.log('[validateWindowBounds] Displays:', displays)
+  console.log('[validateWindowBounds] Primary display:', screen.getPrimaryDisplay())
+  
+  // If we get here, the position is not on any screen
+  // Center on the primary display with default size
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { x: screenX, y: screenY, width: screenWidth, height: screenHeight } = primaryDisplay.bounds
+  
+  const defaultWidth = 600
+  const defaultHeight = 400
+  
+  return {
+    x: Math.round(screenX + (screenWidth - defaultWidth) / 2),
+    y: Math.round(screenY + (screenHeight - defaultHeight) / 2),
+    width: defaultWidth,
+    height: defaultHeight
+  }
+}
+
 function escapeHtml(text: string): string {
   return String(text)
     .replace(/&/g, '&amp;')
@@ -565,12 +604,16 @@ async function createEditorWindow(title: string, routeHash: string) {
     webPreferences: { preload },
   }
   if (saved && saved.bounds && typeof saved.bounds.width === 'number' && typeof saved.bounds.height === 'number') {
-    baseOptions.width = Math.max(400, saved.bounds.width)
-    baseOptions.height = Math.max(300, saved.bounds.height)
-    if (typeof saved.bounds.x === 'number' && typeof saved.bounds.y === 'number') {
-      baseOptions.x = saved.bounds.x
-      baseOptions.y = saved.bounds.y
-    }
+    const validatedBounds = validateWindowBounds({
+      x: saved.bounds.x || 0,
+      y: saved.bounds.y || 0,
+      width: Math.max(400, saved.bounds.width),
+      height: Math.max(300, saved.bounds.height)
+    })
+    baseOptions.width = validatedBounds.width
+    baseOptions.height = validatedBounds.height
+    baseOptions.x = validatedBounds.x
+    baseOptions.y = validatedBounds.y
   }
   editorWin = new BrowserWindow(baseOptions)
   editorWin.webContents.on('did-finish-load', () => {
@@ -715,12 +758,16 @@ async function createWindow() {
     webPreferences: { preload },
   }
   if (savedMain && savedMain.bounds && typeof savedMain.bounds.width === 'number' && typeof savedMain.bounds.height === 'number') {
-    mainOpts.width = Math.max(700, savedMain.bounds.width)
-    mainOpts.height = Math.max(500, savedMain.bounds.height)
-    if (typeof savedMain.bounds.x === 'number' && typeof savedMain.bounds.y === 'number') {
-      mainOpts.x = savedMain.bounds.x
-      mainOpts.y = savedMain.bounds.y
-    }
+    const validatedBounds = validateWindowBounds({
+      x: savedMain.bounds.x || 0,
+      y: savedMain.bounds.y || 0,
+      width: Math.max(700, savedMain.bounds.width),
+      height: Math.max(500, savedMain.bounds.height)
+    })
+    mainOpts.width = validatedBounds.width
+    mainOpts.height = validatedBounds.height
+    mainOpts.x = validatedBounds.x
+    mainOpts.y = validatedBounds.y
   }
   win = new BrowserWindow(mainOpts)
   if (savedMain) {
@@ -815,12 +862,16 @@ app.whenReady().then(async () => {
       height: 700,
     }
     if (saved && saved.bounds) {
-      opts.width = Math.max(600, saved.bounds.width)
-      opts.height = Math.max(400, saved.bounds.height)
-      if (typeof saved.bounds.x === 'number' && typeof saved.bounds.y === 'number') {
-        opts.x = saved.bounds.x
-        opts.y = saved.bounds.y
-      }
+      const validatedBounds = validateWindowBounds({
+        x: saved.bounds.x || 0,
+        y: saved.bounds.y || 0,
+        width: Math.max(600, saved.bounds.width),
+        height: Math.max(400, saved.bounds.height)
+      })
+      opts.width = validatedBounds.width
+      opts.height = validatedBounds.height
+      opts.x = validatedBounds.x
+      opts.y = validatedBounds.y
     }
     if (mapWin && !mapWin.isDestroyed()) {
       mapWin.focus()
