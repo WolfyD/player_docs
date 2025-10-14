@@ -616,7 +616,14 @@ async function createEditorWindow(title: string, routeHash: string) {
   editorWin.on('unmaximize', () => { saveBounds() })
   editorWin.on('enter-full-screen', () => { saveBounds() })
   editorWin.on('leave-full-screen', () => { saveBounds() })
-  editorWin.on('close', () => { saveBounds() })
+  editorWin.on('close', () => { 
+    try { 
+      saveBounds() 
+    } catch (error) {
+      // Window might be destroyed, ignore the error
+      console.log('Editor window close saveBounds error (ignored):', error)
+    }
+  })
   return editorWin
 }
 
@@ -753,7 +760,14 @@ async function createWindow() {
   win.on('unmaximize', () => { saveMain() })
   win.on('enter-full-screen', () => { saveMain() })
   win.on('leave-full-screen', () => { saveMain() })
-  win.on('close', () => { saveMain() })
+  win.on('close', () => { 
+    try { 
+      saveMain() 
+    } catch (error) {
+      // Window might be destroyed, ignore the error
+      console.log('Main window close saveMain error (ignored):', error)
+    }
+  })
 }
 
 app.whenReady().then(async () => {
@@ -828,7 +842,14 @@ app.whenReady().then(async () => {
     mapWin.on('unmaximize', () => { save() })
     mapWin.on('enter-full-screen', () => { save() })
     mapWin.on('leave-full-screen', () => { save() })
-    mapWin.on('close', () => { save() })
+    mapWin.on('close', () => { 
+      try { 
+        save() 
+      } catch (error) {
+        // Window might be destroyed, ignore the error
+        console.log('Map window close save error (ignored):', error)
+      }
+    })
     return true
   })
 
