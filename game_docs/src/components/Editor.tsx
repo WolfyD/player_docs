@@ -211,6 +211,39 @@ export const Editor: React.FC = () => {
     }
   }, [campaign])
 
+  const handleExportToPdf = useCallback(async () => {
+    if (!campaign) return
+    try {
+      const cs = getComputedStyle(document.documentElement)
+      const palette = {
+        primary: (cs.getPropertyValue('--pd-primary') || '#6495ED').trim(),
+        surface: (cs.getPropertyValue('--pd-surface') || '#1e1e1e').trim(),
+        text: (cs.getPropertyValue('--pd-text') || '#e5e5e5').trim(),
+        tagBg: (cs.getPropertyValue('--pd-tag-bg') || 'rgba(100,149,237,0.2)').trim(),
+        tagBorder: (cs.getPropertyValue('--pd-tag-border') || '#6495ED').trim(),
+      }
+      const res = await window.ipcRenderer.invoke('gamedocs:export-to-pdf', campaign.id, { palette })
+      if (res && res.ok) {
+        toast('PDF export completed', 'success')
+        
+        // Ask if user wants to open the folder
+        const openFolder = await confirmDialog({ 
+          title: 'PDF Export Complete', 
+          message: `PDF "${res.fileName}" has been saved successfully. Would you like to open the folder where it was saved?`, 
+          variant: 'yes-no' 
+        })
+        
+        if (openFolder) {
+          await window.ipcRenderer.invoke('gamedocs:reveal-path', res.filePath)
+        }
+      } else {
+        toast('Export cancelled', 'info')
+      }
+    } catch (e) {
+      toast('Export to PDF failed', 'error')
+    }
+  }, [campaign])
+
   
 
   const listOfCommands = [
@@ -1540,7 +1573,7 @@ span[data-tag] {
                 <h3 className="mt-0">Misc</h3>
                 <div className="misc-list">
                   <div className="misc-item" onClick={handleExportToShare}>Export to Share</div>
-                  <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
+                  <div className="misc-item" onClick={handleExportToPdf}>Export to PDF</div>
                   <div className="misc-item" onClick={handleExportToHtml}>Export to HTML</div>
                    {hasPlaces ? (
                      <div className="misc-item" onClick={async () => {

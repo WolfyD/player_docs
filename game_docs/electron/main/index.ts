@@ -729,14 +729,20 @@ async function createWindow() {
   }
 
   if (VITE_DEV_SERVER_URL) { // #298
+    console.log('[Main] Loading dev server URL:', VITE_DEV_SERVER_URL)
     win.loadURL(VITE_DEV_SERVER_URL)
     win.webContents.openDevTools()
   } else {
+    console.log('[Main] Loading index.html from:', indexHtml)
     win.loadFile(indexHtml)
   }
 
   win.webContents.on('did-finish-load', () => {
     win?.webContents.send('main-process-message', new Date().toLocaleString())
+  })
+
+  win.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('[Main] Failed to load:', { errorCode, errorDescription, validatedURL })
   })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -1702,6 +1708,293 @@ app.whenReady().then(async () => {
     return true
   })
 
+  // Helper function to sort objects in hierarchy order
+  function sortObjectsHierarchically(
+    objects: Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }>,
+    idToObj: Map<string, any>,
+    children: Map<string, string[]>
+  ): Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }> {
+    const result: Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }> = []
+    const visited = new Set<string>()
+    
+    // Find the game object (root object with no parent)
+    const gameObject = objects.find(obj => !obj.parent_id)
+    if (gameObject) {
+      result.push(gameObject)
+      visited.add(gameObject.id)
+    }
+    
+    // Depth-first traversal function
+    function traverseDepthFirst(objId: string) {
+      const childIds = children.get(objId) || []
+      for (const childId of childIds) {
+        if (!visited.has(childId)) {
+          const child = idToObj.get(childId)
+          if (child) {
+            result.push(child)
+            visited.add(childId)
+            traverseDepthFirst(childId) // Recursively traverse children
+          }
+        }
+      }
+    }
+    
+    // Start traversal from the game object
+    if (gameObject) {
+      traverseDepthFirst(gameObject.id)
+    }
+    
+    // Add any remaining objects that weren't reached (orphaned objects)
+    for (const obj of objects) {
+      if (!visited.has(obj.id)) {
+        result.push(obj)
+        visited.add(obj.id)
+        traverseDepthFirst(obj.id) // Traverse from orphaned objects too
+      }
+    }
+    
+    return result
+  }
+
+  // Helper function to generate PDF HTML content
+  async function generatePdfHtml(
+    game: { id: string; name: string },
+    objects: Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }>,
+    objImages: Map<string, Array<{ id: string; file_path: string; name: string | null; is_default: number }>>,
+    tagToTargets: Map<string, string[]>,
+    idToObj: Map<string, any>,
+    children: Map<string, string[]>,
+    palette: any
+  ): Promise<string> {
+    const readAsDataUrl = async (file: string): Promise<string | null> => {
+      try { 
+        const buf = await fs.readFile(file)
+        const ext = (path.extname(file) || '.png').toLowerCase()
+        const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/png'
+        return `data:${mime};base64,${buf.toString('base64')}`
+      } catch { 
+        return null 
+      }
+    }
+
+    const tokenToHtml = (text: string): string => {
+      if (!text) return ''
+      return String(text).replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label: string, tagId: string) => {
+        const targets = tagToTargets.get(String(tagId)) || []
+        const first = targets.find(t => idToObj.has(t))
+        if (!first) return String(label)
+        return `<a href="#${first}">${label}</a>`
+      }).replace(/\n/g, '<br>')
+    }
+
+    const breadcrumb = (id: string): Array<{ name: string; href: string | null }> => {
+      const parts: Array<{ name: string; href: string | null }> = [{ name: 'Index', href: '#toc' }]
+      let cur = idToObj.get(id) || null
+      const chain: Array<{ id: string; name: string }> = []
+      while (cur) { 
+        chain.push({ id: cur.id, name: cur.name })
+        cur = cur.parent_id ? (idToObj.get(cur.parent_id) || null) : null 
+      }
+      chain.reverse()
+      for (const c of chain.slice(0, -1)) parts.push({ name: c.name, href: `#${c.id}` })
+      const last = chain[chain.length - 1]
+      if (last) parts.push({ name: last.name, href: null })
+      return parts
+    }
+
+    // Sort objects in hierarchy order: game object first, then depth-first traversal
+    const sortedObjects = sortObjectsHierarchically(objects, idToObj, children)
+    
+    // Generate table of contents
+    const tocItems = sortedObjects.map(obj => `<li><a href="#${obj.id}">${obj.name}</a></li>`).join('')
+
+    // Generate object sections
+    const sections: string[] = []
+    for (const obj of sortedObjects) {
+      const crumbs = breadcrumb(obj.id).map(c => c.href ? `<a href="${c.href}">${c.name}</a>` : `<span>${c.name}</span>`).join(' / ')
+      const childIds = children.get(obj.id) || []
+      const imgsFor = objImages.get(obj.id) || []
+      
+      // Process images
+      const imageElements: string[] = []
+      for (const img of imgsFor) {
+        const data = await readAsDataUrl(img.file_path)
+        if (!data) continue
+        const star = img.is_default ? '<span class="star">★</span>' : ''
+        const cap = (img.name || '').replace(/"/g, '&quot;')
+        imageElements.push(`<div class="image-item"><img src="${data}" alt="${cap}"/><div class="image-caption">${cap}${star}</div></div>`)
+      }
+      
+      const descHtml = tokenToHtml(obj.description || '')
+      const childLinks = childIds.map(cid => `<a href="#${cid}">${idToObj.get(cid)?.name}</a>`).join(', ')
+      
+      sections.push(`
+        <section class="object-section" id="${obj.id}">
+          <div class="breadcrumb">${crumbs}</div>
+          <h2 class="object-title">${obj.name}</h2>
+          <div class="object-type">${obj.type}</div>
+          <div class="object-content">${descHtml}</div>
+          ${imageElements.length ? `<div class="images">${imageElements.join('')}</div>` : ''}
+          ${childIds.length ? `<div class="children"><h4>Related Items</h4><p>${childLinks}</p></div>` : ''}
+        </section>
+      `)
+    }
+
+    const css = `
+      @page { 
+        size: A4; 
+        margin: 1in; 
+      }
+      body { 
+        font-family: system-ui, -apple-system, sans-serif; 
+        line-height: 1.6; 
+        color: #333; 
+        margin: 0; 
+        padding: 0;
+      }
+      .pdf-header { 
+        text-align: center; 
+        margin-bottom: 2rem; 
+        padding-bottom: 1rem; 
+        border-bottom: 2px solid #ddd;
+      }
+      .pdf-header h1 { 
+        margin: 0; 
+        font-size: 2.5rem; 
+        color: ${palette.primary}; 
+      }
+      .export-info { 
+        margin-top: 0.5rem; 
+        color: #666; 
+        font-size: 0.9rem;
+      }
+      .table-of-contents { 
+        margin-bottom: 2rem; 
+        page-break-after: always;
+      }
+      .table-of-contents h2 { 
+        color: ${palette.primary}; 
+        border-bottom: 1px solid #ddd; 
+        padding-bottom: 0.5rem;
+      }
+      .table-of-contents ul { 
+        list-style: none; 
+        padding: 0;
+      }
+      .table-of-contents li { 
+        margin: 0.5rem 0;
+      }
+      .table-of-contents a { 
+        color: #333; 
+        text-decoration: none; 
+        padding: 0.25rem 0;
+        display: block;
+      }
+      .table-of-contents a:hover { 
+        color: ${palette.primary}; 
+        text-decoration: underline;
+      }
+      .object-section { 
+        margin-bottom: 2rem; 
+        page-break-inside: avoid;
+      }
+      .breadcrumb { 
+        font-size: 0.9rem; 
+        color: #666; 
+        margin-bottom: 0.5rem;
+      }
+      .breadcrumb a { 
+        color: ${palette.primary}; 
+        text-decoration: none;
+      }
+      .object-title { 
+        margin: 0 0 0.5rem 0; 
+        font-size: 1.8rem; 
+        color: ${palette.primary};
+        border-bottom: 1px solid #eee;
+        padding-bottom: 0.5rem;
+      }
+      .object-type { 
+        font-style: italic; 
+        color: #666; 
+        margin-bottom: 1rem;
+      }
+      .object-content { 
+        margin-bottom: 1rem;
+      }
+      .images { 
+        margin: 1rem 0; 
+        display: flex; 
+        flex-wrap: wrap; 
+        gap: 1rem;
+      }
+      .image-item { 
+        max-width: 200px; 
+        text-align: center;
+      }
+      .image-item img { 
+        max-width: 100%; 
+        height: auto; 
+        border: 1px solid #ddd; 
+        border-radius: 4px;
+      }
+      .image-caption { 
+        font-size: 0.8rem; 
+        color: #666; 
+        margin-top: 0.25rem;
+      }
+      .star { 
+        color: gold; 
+        margin-left: 0.25rem;
+      }
+      .children { 
+        margin-top: 1rem; 
+        padding-top: 1rem; 
+        border-top: 1px solid #eee;
+      }
+      .children h4 { 
+        margin: 0 0 0.5rem 0; 
+        color: ${palette.primary};
+      }
+      .children a { 
+        color: ${palette.primary}; 
+        text-decoration: none;
+      }
+      .children a:hover { 
+        text-decoration: underline;
+      }
+      a { 
+        color: ${palette.primary}; 
+        text-decoration: none;
+      }
+      a:hover { 
+        text-decoration: underline;
+      }
+    `
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${game.name} - Campaign Export</title>
+  <style>${css}</style>
+</head>
+<body>
+  <div class="pdf-header">
+    <h1>${game.name}</h1>
+    <div class="export-info">Campaign Export - Generated on ${new Date().toLocaleDateString()}</div>
+  </div>
+  
+  <div class="table-of-contents" id="toc">
+    <h2>Table of Contents</h2>
+    <ul>${tocItems}</ul>
+  </div>
+  
+  ${sections.join('')}
+</body>
+</html>`
+  }
+
   ipcMain.handle('gamedocs:export-to-html', async (_evt, gameId: string, opts: { palette: any; zip?: boolean }) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
@@ -1837,6 +2130,105 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
       zipPath = zipFile
     }
     return { ok: true, outDir, zipPath }
+  })
+
+  ipcMain.handle('gamedocs:export-to-pdf', async (_evt, gameId: string, opts: { palette: any }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+
+    const game = db.prepare('SELECT id, name FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId) as { id: string; name: string } | undefined
+    if (!game) { db.close(); throw new Error('Campaign not found') }
+    const objects = db.prepare('SELECT id, name, type, parent_id, description FROM objects WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }>
+    const imgs = db.prepare('SELECT id, object_id, file_path, name, is_default FROM images WHERE object_id IN (SELECT id FROM objects WHERE game_id = ? AND deleted_at IS NULL) AND deleted_at IS NULL').all(gameId) as Array<{ id: string; object_id: string; file_path: string; name: string | null; is_default: number }>
+    const tagLinks = db.prepare('SELECT tl.tag_id AS tag_id, tl.object_id AS object_id FROM tag_links tl JOIN link_tags lt ON lt.id = tl.tag_id AND lt.deleted_at IS NULL WHERE lt.game_id = ? AND tl.deleted_at IS NULL').all(gameId) as Array<{ tag_id: string; object_id: string }>
+    db.close()
+
+    const idToObj = new Map(objects.map(o => [o.id, o]))
+    const children = new Map<string, string[]>()
+    for (const o of objects) { if (o.parent_id) { const a = children.get(o.parent_id) || []; a.push(o.id); children.set(o.parent_id, a) } }
+    const objImages = new Map<string, Array<{ id: string; file_path: string; name: string | null; is_default: number }>>()
+    for (const im of imgs) { const a = objImages.get(im.object_id) || []; a.push({ id: im.id, file_path: im.file_path, name: im.name, is_default: im.is_default }); objImages.set(im.object_id, a) }
+    const tagToTargets = new Map<string, string[]>()
+    for (const tl of tagLinks) { const a = tagToTargets.get(tl.tag_id) || []; a.push(tl.object_id); tagToTargets.set(tl.tag_id, a) }
+
+    // Ask for save location FIRST, before doing any generation
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Export to PDF',
+      defaultPath: path.join(projectDirCache, `${toSlug(game.name)}.pdf`),
+      filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+    })
+    
+    if (canceled || !filePath) {
+      return { ok: false }
+    }
+
+    const palette = opts?.palette || { primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' }
+
+    // Generate single HTML document for PDF
+    const htmlContent = await generatePdfHtml(game, objects, objImages, tagToTargets, idToObj, children, palette)
+    
+    // Create temporary HTML file
+    const tempHtmlPath = path.join(os.tmpdir(), `playerdocs-export-${Date.now()}.html`)
+    await fs.writeFile(tempHtmlPath, htmlContent, 'utf8')
+    
+    try {
+      // Convert to PDF using puppeteer-core
+      const puppeteer = await import('puppeteer-core')
+      // Try to find system Chrome/Chromium
+      const possiblePaths = [
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Users\\' + os.userInfo().username + '\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Users\\' + os.userInfo().username + '\\AppData\\Local\\Microsoft\\Edge\\Application\\msedge.exe'
+      ]
+      
+      let executablePath: string | undefined
+      for (const chromePath of possiblePaths) {
+        if (fssync.existsSync(chromePath)) {
+          executablePath = chromePath
+          console.log('[PDF] Found browser:', chromePath)
+          break
+        }
+      }
+      
+      if (!executablePath) {
+        throw new Error('No Chrome/Edge browser found. Please install Google Chrome or Microsoft Edge.')
+      }
+      
+      const browser = await puppeteer.launch({
+        executablePath,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+        headless: true
+      })
+      
+      const page = await browser.newPage()
+      await page.goto(`file://${tempHtmlPath}`, { waitUntil: 'networkidle0' })
+      
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '1in', right: '1in', bottom: '1in', left: '1in' },
+        displayHeaderFooter: true,
+        headerTemplate: '<div style="font-size: 10px; text-align: center; width: 100%; color: #666;">PlayerDocs Campaign Export</div>',
+        footerTemplate: '<div style="font-size: 10px; text-align: center; width: 100%; color: #666;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>'
+      })
+      
+      await browser.close()
+      
+      // Save PDF file
+      await fs.writeFile(filePath, pdfBuffer)
+      await fs.unlink(tempHtmlPath).catch(() => {}) // Clean up temp file
+      
+      return { ok: true, filePath, fileName: path.basename(filePath) }
+    } catch (error) {
+      await fs.unlink(tempHtmlPath).catch(() => {}) // Clean up temp file on error
+      throw error
+    }
   })
 
   // Delete an object and cascade: children, tag_links, orphan link_tags
