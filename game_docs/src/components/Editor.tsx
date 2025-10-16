@@ -5,6 +5,7 @@ import { confirmDialog, toast } from './Confirm'
 import { logger } from '../utils/logger'
 import ShortcutInput from './ShortcutInput'
 
+
 type Campaign = { id: string; name: string }
 
 export const Editor: React.FC = () => {
@@ -17,7 +18,7 @@ export const Editor: React.FC = () => {
   const [catName, setCatName] = useState('')
   const [catType, setCatType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
   const [catErr, setCatErr] = useState<string | null>(null)
-
+  const [catDescription, setCatDescription] = useState<string>('')
   useEffect(() => {
     const id = location.hash.replace(/^#\/editor\//, '')
     if (!id) return
@@ -59,6 +60,13 @@ export const Editor: React.FC = () => {
     y: number
     selText: string
   }>({ visible: false, x: 0, y: 0, selText: '' })
+  const [childCtxMenu, setChildCtxMenu] = useState<{
+    visible: boolean
+    x: number
+    y: number
+    selText: string
+    selId: string
+  }>({ visible: false, x: 0, y: 0, selText: '', selId: '' })
   const [showWizard, setShowWizard] = useState(false)
   const [wizardName, setWizardName] = useState('')
   const [wizardType, setWizardType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
@@ -80,9 +88,11 @@ export const Editor: React.FC = () => {
   const [hoverCard, setHoverCard] = useState<{ visible: boolean; x: number; y: number; name: string; snippet: string; imageUrl: string | null }>({ visible: false, x: 0, y: 0, name: '', snippet: '', imageUrl: null })
   const [imageModal, setImageModal] = useState<{ visible: boolean; dataUrl: string | null }>({ visible: false, dataUrl: null })
   const lastHoverTagRef = useRef<string | null>(null)
+  const hoverDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   // Left-click menu for multi-target tags
   const [tagMenu, setTagMenu] = useState<{ visible: boolean; x: number; y: number; items: Array<{ id: string; name: string; path: string }>; hoverPreview: { id: string; name: string; snippet: string; imageUrl: string | null } | null; source?: 'dropdown' | 'tag' }>({ visible: false, x: 0, y: 0, items: [], hoverPreview: null, source: undefined })
   const ctxMenuRef = useRef<HTMLDivElement | null>(null)
+  const childCtxMenuRef = useRef<HTMLDivElement | null>(null)
   const tagMenuRef = useRef<HTMLDivElement | null>(null)
   const menuButtonRef = useRef<HTMLButtonElement | null>(null)
   const [images, setImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
@@ -92,6 +102,8 @@ export const Editor: React.FC = () => {
   const [picIsDefault, setPicIsDefault] = useState(true)
   const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
   const [showMisc, setShowMisc] = useState(false)
+  const [ctrlKeyPressed, setCtrlKeyPressed] = useState(false)
+  const [hoverDebounce, setHoverDebounce] = useState(300) // milliseconds
 
   // Command palette: commands and parameter flow
   const [isCommandMode, setIsCommandMode] = useState(false)
@@ -173,6 +185,7 @@ export const Editor: React.FC = () => {
     setShowMisc(false)
   }, [activeId, campaign, desc])
 
+
   const handleExportToShare = useCallback(async () => {
     try {
       const res = await window.ipcRenderer.invoke('gamedocs:export-to-share', activeId)
@@ -185,6 +198,18 @@ export const Editor: React.FC = () => {
       toast('Export failed', 'error')
     }
   }, [activeId])
+
+  const writeToClipboard = useCallback(async (text: string) => {
+    try {
+      if (await window.ipcRenderer.invoke('gamedocs:write-to-clipboard', text)) {
+        toast('Email address copied to clipboard', 'success')
+      } else {
+        toast('Failed to copy email address to clipboard', 'error')
+      }
+    } catch {
+      toast('Failed to copy email address to clipboard', 'error')
+    }
+  }, [])
 
   const handleExportToHtml = useCallback(async () => {
     if (!campaign) return
@@ -211,7 +236,62 @@ export const Editor: React.FC = () => {
     }
   }, [campaign])
 
-  
+  const handleExportToPdf = useCallback(async () => {
+    if (!campaign) return
+    try {
+      const cs = getComputedStyle(document.documentElement)
+      const palette = {
+        primary: (cs.getPropertyValue('--pd-primary') || '#6495ED').trim(),
+        surface: (cs.getPropertyValue('--pd-surface') || '#1e1e1e').trim(),
+        text: (cs.getPropertyValue('--pd-text') || '#e5e5e5').trim(),
+        tagBg: (cs.getPropertyValue('--pd-tag-bg') || 'rgba(100,149,237,0.2)').trim(),
+        tagBorder: (cs.getPropertyValue('--pd-tag-border') || '#6495ED').trim(),
+      }
+      const res = await window.ipcRenderer.invoke('gamedocs:export-to-pdf', campaign.id, { palette })
+      if (res && res.ok) {
+        toast('PDF export completed', 'success')
+        
+        // Ask if user wants to open the folder
+        const openFolder = await confirmDialog({ 
+          title: 'PDF Export Complete', 
+          message: `PDF "${res.fileName}" has been saved successfully. Would you like to open the folder where it was saved?`, 
+          variant: 'yes-no' 
+        })
+        
+        if (openFolder) {
+          await window.ipcRenderer.invoke('gamedocs:reveal-path', res.filePath)
+        }
+      } else {
+        toast('Export cancelled', 'info')
+      }
+    } catch (e) {
+      toast('Export to PDF failed', 'error')
+    }
+  }, [campaign])
+
+  const handleCreateBackup = useCallback(async () => {
+    try {
+      const res = await window.ipcRenderer.invoke('gamedocs:create-backup')
+      if (res && res.ok) {
+        toast('Database backup created successfully', 'success')
+        
+        // Ask if user wants to open the folder
+        const openFolder = await confirmDialog({ 
+          title: 'Backup Complete', 
+          message: `Database backup "${res.fileName}" has been created successfully. Would you like to open the folder where it was saved?`, 
+          variant: 'yes-no' 
+        })
+        
+        if (openFolder) {
+          await window.ipcRenderer.invoke('gamedocs:reveal-path', res.filePath)
+        }
+      } else {
+        toast('Backup cancelled', 'info')
+      }
+    } catch (e) {
+      toast('Failed to create backup', 'error')
+    }
+  }, [])
 
   const listOfCommands = [
     { id: 'settings', name: 'Settings', description: 'Open settings modal' },
@@ -243,17 +323,18 @@ export const Editor: React.FC = () => {
 
   const [showEditObject, setShowEditObject] = useState(false)
   const [editName, setEditName] = useState('')
-  const [ownerTags, setOwnerTags] = useState<Array<{ id: string }>>([])
+  const [ownerTags, setOwnerTags] = useState<Array<{ id: string, name: string, object_id: string }>>([])
   const [incomingLinks, setIncomingLinks] = useState<Array<{ tag_id: string; owner_id: string; owner_name: string; owner_path: string }>>([])
   const [showPalette, setShowPalette] = useState(false)
   const [paletteInput, setPaletteInput] = useState('')
   const [paletteResults, setPaletteResults] = useState<{ objects: Array<{ id: string; name: string }>; tags: Array<{ id: string; object_id: string }> }>({ objects: [], tags: [] })
   const [showSettings, setShowSettings] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
   const [customFont, setCustomFont] = useState<{ fontName: string; fontPath: string; fileName: string } | null>(null)
-  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L' })
+  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string, goToParent: string, goToPreviousSibling: string, goToNextSibling: string, linkLastWord: string, showHelp: string, }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+Shift+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L', goToParent: 'Ctrl+ARROWUP', goToPreviousSibling: 'Ctrl+ArrowLeft', goToNextSibling: 'Ctrl+ArrowRight', linkLastWord: 'Ctrl+Shift+L', showHelp: 'Ctrl+H' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
@@ -322,10 +403,20 @@ export const Editor: React.FC = () => {
         command2: savedShortcuts.command2 || 'Ctrl+Shift+K',
         newChild: savedShortcuts.newChild || 'Ctrl+N',
         addImage: savedShortcuts.addImage || 'Ctrl+I',
-        miscStuff: savedShortcuts.miscStuff || 'Ctrl+M',
+        miscStuff: savedShortcuts.miscStuff || 'Ctrl+Shift+M',
         exportShare: savedShortcuts.exportShare || 'Ctrl+E',
-        toggleLock: savedShortcuts.toggleLock || 'Ctrl+L'
+        toggleLock: savedShortcuts.toggleLock || 'Ctrl+L',
+        goToParent: savedShortcuts.goToParent || 'Ctrl+ARROWUP',
+        goToPreviousSibling: savedShortcuts.goToPreviousSibling || 'Ctrl+ArrowLeft',
+        goToNextSibling: savedShortcuts.goToNextSibling || 'Ctrl+ArrowRight',
+        linkLastWord: savedShortcuts.linkLastWord || 'Ctrl+Shift+L',
+        showHelp: savedShortcuts.showHelp || 'Ctrl+H',
       })
+
+      const savedHoverDebounce = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.hoverDebounce').catch(() => null)
+      if (savedHoverDebounce && typeof savedHoverDebounce === 'number') {
+        setHoverDebounce(savedHoverDebounce)
+      }
     })()
   }, [])
 
@@ -425,6 +516,14 @@ span[data-tag] {
   function matchShortcut(e: KeyboardEvent, combo: string): boolean {
     const parts = combo.split('+').map(s => s.trim().toLowerCase())
     const key = parts[parts.length - 1]
+    const wantArrowUp = parts.includes('arrowup')
+    const wantArrowDown = parts.includes('arrowdown')
+    const wantArrowLeft = parts.includes('arrowleft')
+    const wantArrowRight = parts.includes('arrowright')
+    if (wantArrowUp && e.key !== 'ArrowUp') return false
+    if (wantArrowDown && e.key !== 'ArrowDown') return false
+    if (wantArrowLeft && e.key !== 'ArrowLeft') return false
+    if (wantArrowRight && e.key !== 'ArrowRight') return false
     const wantCtrl = parts.includes('ctrl') || parts.includes('control')
     const wantShift = parts.includes('shift')
     const wantAlt = parts.includes('alt')
@@ -433,6 +532,29 @@ span[data-tag] {
     if (wantAlt !== !!e.altKey) return false
     return e.key.toLowerCase() === key
   }
+
+  // Track Ctrl key state
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control') {
+        setCtrlKeyPressed(true)
+      }
+    }
+    
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control') {
+        setCtrlKeyPressed(false)
+      }
+    }
+    
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [])
 
   // Global shortcuts
   useEffect(() => {
@@ -456,9 +578,21 @@ span[data-tag] {
       } else if (matchShortcut(e, shortcuts.editObject)) {
         e.preventDefault(); setTagMenu(m => ({ ...m, visible: false })); setEditName(activeName); setShowEditObject(true)
       } else if (matchShortcut(e, shortcuts.newChild)) {
-        e.preventDefault(); setCatErr(null); setCatName(''); setShowCat(true)
+        e.preventDefault(); setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true)
       } else if (matchShortcut(e, shortcuts.addImage)) {
         e.preventDefault(); setAddPictureModal(true)
+      } else if (matchShortcut(e, shortcuts.miscStuff)) {
+        e.preventDefault(); setShowMisc(true)
+      } else if (matchShortcut(e, shortcuts.goToParent)) {
+        e.preventDefault(); handleGoToParent()
+      } else if (matchShortcut(e, shortcuts.goToPreviousSibling)) {
+        e.preventDefault(); handleGoToPreviousSibling()
+      } else if (matchShortcut(e, shortcuts.goToNextSibling)) {
+        e.preventDefault(); handleGoToNextSibling()
+      } else if (matchShortcut(e, shortcuts.linkLastWord)) {
+        e.preventDefault(); handleLinkLastWord()
+      } else if (matchShortcut(e, shortcuts.showHelp)) {
+        e.preventDefault(); setShowHelp(true)
       } else if (matchShortcut(e, shortcuts.toggleLock)) {
         e.preventDefault();
         if(!activeLocked){
@@ -546,7 +680,7 @@ span[data-tag] {
     switch (cmdId) {
       case 'settings': setShowSettings(true); setShowPalette(false); return
       case 'editObject': if (activeLocked) { toast('Object is locked', 'error'); return } setEditName(activeName); setShowEditObject(true); setShowPalette(false); return
-      case 'newChild': setCatErr(null); setCatName(''); setShowCat(true); setShowPalette(false); return
+      case 'newChild': setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true); setShowPalette(false); return
       case 'addImage': setAddPictureModal(true); setShowPalette(false); return
       case 'miscStuff': setShowMisc(true); setShowPalette(false); return
       case 'exportShare': handleExportToShare(); setShowPalette(false); return
@@ -698,7 +832,7 @@ span[data-tag] {
 
   const handleEditorContextMenu = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
-    console.log('activeLocked', activeLocked)
+    //console.log('activeLocked', activeLocked)
     if (activeLocked) { setCtxMenu(m => ({ ...m, visible: false })); return }
     const sel = window.getSelection()
     if (!sel) return
@@ -744,6 +878,24 @@ span[data-tag] {
     // preload objects for fuzzy
     const rows = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id)
     setAllObjects(rows || [])
+    fuseRef.current = new Fuse(rows || [], { keys: ['name'], threshold: 0.4 })
+    setLinkerMatches((rows || []).slice(0, 10))
+  }, [campaign, ctxMenu.selText])
+
+  const handleAddLinkOpenOnSelectedWord = useCallback(async () => {
+    let existingTag: string | null = null
+    if (selectionRangeRef.current) {
+      const node = selectionRangeRef.current.startContainer as Node
+      let el: HTMLElement | null = (node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : (node.parentElement))
+      while (el) {
+        if (el instanceof HTMLElement && el.hasAttribute('data-tag')) { existingTag = el.getAttribute('data-tag'); break }
+        el = el.parentElement
+      }
+    }
+    setLinkerTagId(existingTag)
+    setLinkerInput(selectionRangeRef.current?.toString() || '')
+    setShowLinker(true)
+    const rows = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id)
     fuseRef.current = new Fuse(rows || [], { keys: ['name'], threshold: 0.4 })
     setLinkerMatches((rows || []).slice(0, 10))
   }, [campaign, ctxMenu.selText])
@@ -867,29 +1019,34 @@ span[data-tag] {
     replaceSelectionWithSpan(label, res.tagId)
   }, [wizardName, wizardType, campaign, activeId])
 
-  const handleCreateCategory = useCallback(async () => {
-    const name = (catName || '').trim()
-    if (!name) { setCatErr('Name is required'); return }
-    try {
-      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name)
-      // Reload children
-      const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
-      setChildren(kids)
-      try {
-        const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
-        setHasPlaces(!!has)
-      } catch {}
-      setShowCat(false)
-    } catch (e: any) {
-      setCatErr(e?.message || 'Failed to create category')
-    }
-  }, [catName, campaign, activeId, root])
-
   const openAddChildModal = useCallback(() => {
     setCatErr(null)
     setCatName('')
+    setCatDescription('')
     setShowCat(true)
   }, [])
+
+  const toSentenceCase = useCallback((str: string) => {
+    return str.charAt(0).toUpperCase() + str.slice(1)
+  }, [])
+
+  const getProperShortcutName = useCallback((key: string) => {
+    //Split the key by capital letters and join them with a space
+    return key.split(/(?=[A-Z])/).map(s => toSentenceCase(s)).join(' ')
+  }, [shortcuts])
+
+  const getProperShortcutValue = useCallback((value: string) => {
+    value = value.replace('ARROWUP', '↑')
+    value = value.replace('ARROWDOWN', '↓')
+    value = value.replace('ARROWLEFT', '←')
+    value = value.replace('ARROWRIGHT', '→')
+    let rx = /\+/g
+    let matches = value.match(rx)
+    if (matches) {
+      value = value.replace(rx, ' + ')
+    }
+    return value
+  }, [getProperShortcutName])
 
   const handleParentClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -905,7 +1062,7 @@ span[data-tag] {
     if (id) selectObject(id, name)
   }, [])
 
-  const handleCtxMenuLeave = useCallback(() => setCtxMenu(m => ({ ...m, visible: false })), [])
+  //const handleCtxMenuLeave = useCallback(() => setCtxMenu(m => ({ ...m, visible: false })), [])
 
   const handleCloseLinker = useCallback(() => setShowLinker(false), [])
 
@@ -922,6 +1079,13 @@ span[data-tag] {
     const m = { id: el.dataset.id!, name: el.dataset.name! }
     handleSelectMatch(m)
   }, [handleSelectMatch])
+
+  const handleShowChildContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>, id: string, name: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setChildCtxMenu(m => ({ ...m, visible: false }))
+    setChildCtxMenu(m => ({ ...m, visible: true, selText: name, selId: id, x: e.clientX, y: e.clientY }))
+  }, [])
 
   async function selectObject(id: string, name: string) {
     if (!id) return
@@ -958,11 +1122,16 @@ span[data-tag] {
   }
 
   const handleCreateChild = useCallback(async () => {
-
+    let newChild = null;
     const name = (catName || '').trim()
+    const description = (catDescription || '').trim()
     if (!name) { setCatErr('Name is required'); return }
     try {
-      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name, catType)
+      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name, catType, description)
+      newChild = await window.ipcRenderer.invoke('gamedocs:get-latest-child', campaign!.id, activeId || root!.id) as { id: string; name: string }
+
+      setCatDescription('')
+      setCatName('')
       // Reload children
       const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
       setChildren(kids)
@@ -975,7 +1144,28 @@ span[data-tag] {
       setCatErr(e?.message || 'Failed to create category')
     }
 
-  }, [catName, catType, campaign, activeId, root])
+
+    return newChild;
+
+  }, [catName, catDescription, catType, campaign, activeId, root])
+
+  const handleCreateChildAndEnter = useCallback(async () => {
+    let newChild = await handleCreateChild()
+
+    if (newChild) {
+      selectObject(newChild.id, newChild.name)
+    }
+  }, [handleCreateChild])
+
+  const handleDeleteChild = useCallback(async () => {
+    // TODO: we need to ask the user for confirmation
+    const ok = await confirmDialog({ title: 'Delete', message: `Delete '${childCtxMenu.selText}' and all descendants?`, variant: 'yes-no' })
+    if (!ok) return
+    await window.ipcRenderer.invoke('gamedocs:delete-object-cascade', childCtxMenu.selId)
+    setChildCtxMenu(m => ({ ...m, visible: false }))
+    const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
+    setChildren(kids)
+  }, [campaign, activeId, root, childCtxMenu.selId])
 
   function insertAtSelection(text: string) {
     // For contentEditable, prefer replacing current Range; fallback to append
@@ -1075,6 +1265,92 @@ span[data-tag] {
     return text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n')
   }
 
+  async function handleGoToParent() {
+    let parent = await window.ipcRenderer.invoke('gamedocs:get-parent', campaign!.id, activeId || root!.id) as { id: string; name: string }
+    console.log('parent->' + JSON.stringify(parent))
+    if (parent) selectObject(parent.id, parent.name)
+  }
+  function handleGoToPreviousSibling() {
+    // TODO: Implement this
+    //if (previousSibling) selectObject(previousSibling.id, previousSibling.name)
+  }
+  function handleGoToNextSibling() {
+    // TODO: Implement this
+    //if (nextSibling) selectObject(nextSibling.id, nextSibling.name)
+  }
+  function handleLinkLastWord() {
+    console.log('handleLinkLastWord')
+    const editor = editorRef.current
+    if (!editor) return
+    
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) return
+    
+    // Get the current range and caret position
+    const currentRange = selection.getRangeAt(0)
+    const caretContainer = currentRange.startContainer
+    const caretOffset = currentRange.startOffset
+    
+    // Find the text node containing the caret
+    let textNode: Text | null = null
+    if (caretContainer.nodeType === Node.TEXT_NODE) {
+      textNode = caretContainer as Text
+    } else {
+      // If caret is in an element, find the text node at the offset
+      const walker = document.createTreeWalker(
+        caretContainer,
+        NodeFilter.SHOW_TEXT,
+        null
+      )
+      let node: Node | null = walker.nextNode()
+      let currentOffset = 0
+      
+      while (node && currentOffset < caretOffset) {
+        const nodeLength = node.textContent?.length || 0
+        if (currentOffset + nodeLength >= caretOffset) {
+          textNode = node as Text
+          break
+        }
+        currentOffset += nodeLength
+        node = walker.nextNode()
+      }
+    }
+    
+    if (!textNode || !textNode.textContent) return
+    
+    const text = textNode.textContent
+    const textOffset = textNode === caretContainer ? caretOffset : (caretOffset - (textNode.textContent?.length || 0))
+    
+    // Find the start of the previous word
+    let wordStart = textOffset
+    while (wordStart > 0 && /[\w\p{L}\p{N}_]/u.test(text[wordStart - 1])) {
+      wordStart--
+    }
+    
+    // Find the end of the word (current position)
+    let wordEnd = textOffset
+    while (wordEnd < text.length && /[\w\p{L}\p{N}_]/u.test(text[wordEnd])) {
+      wordEnd++
+    }
+    
+    // If we found a word, select it
+    if (wordStart < wordEnd) {
+      const newRange = document.createRange()
+      newRange.setStart(textNode, wordStart)
+      newRange.setEnd(textNode, wordEnd)
+      
+      selection.removeAllRanges()
+      selection.addRange(newRange)
+      
+      // Store the range for potential use
+      selectionRangeRef.current = newRange
+
+      handleAddLinkOpenOnSelectedWord()
+      
+      console.log('Selected word:', text.substring(wordStart, wordEnd))
+    }
+  }
+
   async function removeMissingTags(text: string): Promise<string> {
     const tokenRe = /\[\[([^\]|]+)\|([^\]]+)\]\]/g
     let m: RegExpExecArray | null
@@ -1104,6 +1380,47 @@ span[data-tag] {
   if (error) return <div className="pad-16 text-red">{error}</div>
   if (!campaign) return <div className="pad-16">Loading…</div>
 
+  function createOverlayClickHandler(
+    closeFn: React.Dispatch<React.SetStateAction<boolean>>
+  ) {
+    let mouseDownOnOverlay = false
+  
+    return {
+      onMouseDown: (e: React.MouseEvent<HTMLDivElement>) => {
+        mouseDownOnOverlay = e.target === e.currentTarget
+      },
+      onClick: (e: React.MouseEvent<HTMLDivElement>) => {
+        e.stopPropagation()
+        if (mouseDownOnOverlay && e.target === e.currentTarget) {
+          closeFn(false)
+        }
+      }
+    }
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ // ================================================ //
+
+
   return (
     <div className="editor-grid">
       <div className="main_header">
@@ -1121,6 +1438,7 @@ span[data-tag] {
           onClick={(e) => {
             e.preventDefault()
             setCtxMenu(m => ({ ...m, visible: false }))
+            setChildCtxMenu(m => ({ ...m, visible: false }))
             const btn = (e.target as HTMLElement)
             const rect = btn.getBoundingClientRect()
             const padding = 4
@@ -1134,6 +1452,7 @@ span[data-tag] {
               }
               const items: Array<{ id: string; name: string; path: string }> = [
                 { id: '__SETTINGS__', name: 'Settings', path: '' },
+                { id: '__HELP__', name: 'Help', path: '' },
                 { id: '__SEPARATOR_TOP__', name: '', path: '' },
                 { id: '__ADDPICTURE__', name: 'Add picture', path: '' },
               ]
@@ -1154,6 +1473,9 @@ span[data-tag] {
         if (ctxMenu.visible && ctxMenuRef.current && !ctxMenuRef.current.contains(target)) {
           setCtxMenu(m => ({ ...m, visible: false }))
         }
+        if (childCtxMenu.visible && childCtxMenuRef.current && !childCtxMenuRef.current.contains(target)) {
+          setChildCtxMenu(m => ({ ...m, visible: false }))
+        }
         if (tagMenu.visible && tagMenuRef.current && !tagMenuRef.current.contains(target)) {
           setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
         }
@@ -1167,11 +1489,11 @@ span[data-tag] {
                 <a className="jump-to-parent" onClick={(e) => { e.preventDefault(); selectObject(parent.id, parent.name) }}><span className="nowrap">parent <i className="ri-arrow-up-circle-line"></i></span></a>
               )}
               <div className="header_line">{activeName || root.name}</div>
-              <a className="add-child" onClick={() => { setCatErr(null); setCatName(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
+              <a className="add-child" onClick={() => { setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
               <div className="divider-line"></div>
               <div className="menu_items_container" style={{ height: getHeight() }}>
                 {children.map(c => (
-                  <div key={c.id} onClick={() => selectObject(c.id, c.name)} className="child-item">{c.name}</div>
+                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{c.name}</div>
                 ))}
               </div>
             </div>
@@ -1187,14 +1509,20 @@ span[data-tag] {
             suppressContentEditableWarning
             onInput={handleEditorInput}
             onContextMenu={handleEditorContextMenu}
-            onMouseMove={async (e) => {
+            onMouseMove={(e) => {
               const target = e.target as HTMLElement
               const span = target && (target.closest && target.closest('span[data-tag]')) as HTMLElement | null
               if (!span) {
                 lastHoverTagRef.current = null
                 if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
+                // Clear any pending debounce timeout
+                if (hoverDebounceTimeoutRef.current) {
+                  clearTimeout(hoverDebounceTimeoutRef.current)
+                  hoverDebounceTimeoutRef.current = null
+                }
                 return
               }
+              
               // Capture pointer and anchor positions up-front (avoid stale React event after awaits)
               const clientX = (e as any).clientX as number
               const clientY = (e as any).clientY as number
@@ -1203,6 +1531,7 @@ span[data-tag] {
               const anchorY = Math.max(0, Math.min(window.innerHeight, rect.bottom))
               const tagId = span.getAttribute('data-tag') || ''
               if (!tagId) return
+              
               // Only show hover card for single-target tags
               if (lastHoverTagRef.current === tagId && hoverCard.visible) {
                 // Reposition: center horizontally on pointer X; clamp to viewport
@@ -1216,50 +1545,66 @@ span[data-tag] {
                 setHoverCard(h => ({ ...h, x: nx, y: ny }))
                 return
               }
-              lastHoverTagRef.current = tagId
-              const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId).catch(() => []) as Array<{ id: string; name: string; path: string }>
-              if (!Array.isArray(targets) || targets.length !== 1) {
-                if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
-                return
+              
+              // Clear any existing timeout
+              if (hoverDebounceTimeoutRef.current) {
+                clearTimeout(hoverDebounceTimeoutRef.current)
               }
-              const only = targets[0]
-              const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
-              if (!preview) return
-              let imgUrl = (preview as any).thumbDataUrl || null
-              if (!imgUrl || imgUrl == 'data:image/png;base64,' || /^data:[^;]+;base64,?$/i.test(imgUrl as any) || (typeof imgUrl === 'string' && (imgUrl as string).length < 32)) {
-                const primary = (preview as any).thumbPath as (string | undefined)
-                const secondary = (preview as any).imagePath as (string | undefined)
-                if (primary) {
-                  const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
-                  if (resA?.ok) imgUrl = resA.dataUrl
+              
+              // Set new debounced timeout
+              hoverDebounceTimeoutRef.current = setTimeout(async () => {
+                lastHoverTagRef.current = tagId
+                const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId).catch(() => []) as Array<{ id: string; name: string; path: string }>
+                if (!Array.isArray(targets) || targets.length !== 1) {
+                  if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
+                  return
                 }
-                if (!imgUrl && secondary) {
-                  const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
-                  if (resB?.ok) imgUrl = resB.dataUrl
+                const only = targets[0]
+                const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
+                if (!preview) return
+                let imgUrl = (preview as any).thumbDataUrl || null
+                if (!imgUrl || imgUrl == 'data:image/png;base64,' || /^data:[^;]+;base64,?$/i.test(imgUrl as any) || (typeof imgUrl === 'string' && (imgUrl as string).length < 32)) {
+                  const primary = (preview as any).thumbPath as (string | undefined)
+                  const secondary = (preview as any).imagePath as (string | undefined)
+                  if (primary) {
+                    const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
+                    if (resA?.ok) imgUrl = resA.dataUrl
+                  }
+                  if (!imgUrl && secondary) {
+                    const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
+                    if (resB?.ok) imgUrl = resB.dataUrl
+                  }
+                  if (!imgUrl && (preview as any).fileUrl) {
+                    try {
+                      const u = new URL((preview as any).fileUrl)
+                      let p = decodeURIComponent(u.pathname)
+                      if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
+                      const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
+                      if (res2?.ok) imgUrl = res2.dataUrl
+                    } catch {}
+                  }
                 }
-                if (!imgUrl && (preview as any).fileUrl) {
-                  try {
-                    const u = new URL((preview as any).fileUrl)
-                    let p = decodeURIComponent(u.pathname)
-                    if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
-                    const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
-                    if (res2?.ok) imgUrl = res2.dataUrl
-                  } catch {}
+                // Debug dump for hover preview resolution
+                {
+                  const pad = 10
+                  const CARD_W = 300
+                  const baseX = anchorX // Number.isFinite(clientX) ? clientX : anchorX
+                  const baseY = anchorY + 10 + 30 // Number.isFinite(clientY) ? clientY : anchorY
+                  const targetX = baseX - (CARD_W / 2)
+                  const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
+                  const ny = baseY
+                  setHoverCard({ visible: true, x: nx, y: ny, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: imgUrl })
                 }
-              }
-              // Debug dump for hover preview resolution
-              {
-                const pad = 10
-                const CARD_W = 300
-                const baseX = anchorX // Number.isFinite(clientX) ? clientX : anchorX
-                const baseY = anchorY + 10 + 30 // Number.isFinite(clientY) ? clientY : anchorY
-                const targetX = baseX - (CARD_W / 2)
-                const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
-                const ny = baseY
-                setHoverCard({ visible: true, x: nx, y: ny, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: imgUrl })
+              }, hoverDebounce)
+            }}
+            onMouseLeave={() => { 
+              if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
+              // Clear any pending debounce timeout
+              if (hoverDebounceTimeoutRef.current) {
+                clearTimeout(hoverDebounceTimeoutRef.current)
+                hoverDebounceTimeoutRef.current = null
               }
             }}
-            onMouseLeave={() => { if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false })) }}
             onClick={async (e) => {
               const target = e.target as HTMLElement
               const span = target && (target.closest && target.closest('span[data-tag]')) as HTMLElement | null
@@ -1345,7 +1690,7 @@ span[data-tag] {
                 setDesc(htmlToDesc(editorRef.current))
               }
             }}
-            className="editor_content"
+            className={images.length > 0 ? 'editor_content_with_images' : 'editor_content'}
             style={activeLocked ? { opacity: 0.85 } : undefined}
           />
           {images.length > 0 ? (
@@ -1363,6 +1708,14 @@ span[data-tag] {
               {hoverCard.snippet && (
                 <div className="hover-card-snippet">{hoverCard.snippet}</div>
               )}
+            </div>
+          )}
+          {childCtxMenu.visible && (
+            <div className="ctx-menu" style={{ left: childCtxMenu.x, top: childCtxMenu.y }} ref={childCtxMenuRef}>
+              <div className="ctx-menu-section-title">{childCtxMenu.selText}</div>
+              <div className="separator" />
+              {/* <div className="ctx-menu-item" onClick={handleCreateChildAndEnter}>Create Child</div> */}
+              <div className="ctx-menu-item" onClick={handleDeleteChild}>Delete Child</div>
             </div>
           )}
           {ctxMenu.visible && (
@@ -1404,7 +1757,12 @@ span[data-tag] {
                             if (resB?.ok) imgUrl = resB.dataUrl
                           }
                         }
-                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        let rect = null;
+                        try {
+                          rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        } catch {
+                          return
+                        }
                         const pad = 10, CARD_W = 300
                         const baseX = rect.left + Math.min(16, Math.max(0, rect.width / 2))
                         const baseY = rect.bottom + 10
@@ -1477,6 +1835,11 @@ span[data-tag] {
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         return
                       }
+                      if (t.id === '__HELP__') {
+                        setShowHelp(true)
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        return
+                      }
                       if (t.id === '__EDITOBJECT__') {
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         setEditName(activeName)
@@ -1496,12 +1859,14 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true)
                         setActiveLocked(true)
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        window.location.reload();
                         return
                       }
                       if (t.id === '__UNLOCK__') {
                         await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, false)
                         setActiveLocked(false)
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        window.location.reload();
                         return
                       }
                       if (t.id === '__ADDPICTURE__') {
@@ -1540,7 +1905,7 @@ span[data-tag] {
                 <h3 className="mt-0">Misc</h3>
                 <div className="misc-list">
                   <div className="misc-item" onClick={handleExportToShare}>Export to Share</div>
-                  <div className="misc-item" onClick={() => { /* TODO: Export to PDF */ }}>Export to PDF</div>
+                  <div className="misc-item" onClick={handleExportToPdf}>Export to PDF</div>
                   <div className="misc-item" onClick={handleExportToHtml}>Export to HTML</div>
                    {hasPlaces ? (
                      <div className="misc-item" onClick={async () => {
@@ -1551,7 +1916,7 @@ span[data-tag] {
                   {activeLocked ? null : (
                     <div className="misc-item" onClick={handleListAllItems}>List all items</div>
                   )}
-                  <div className="misc-item" onClick={() => { /* TODO: Create Backup */ }}>Create backup</div>
+                  <div className="misc-item" onClick={handleCreateBackup}>Create backup</div>
                 </div>
                 <div className="actions mt-12">
                   <button onClick={() => setShowMisc(false)}>Close</button>
@@ -1562,7 +1927,7 @@ span[data-tag] {
 
           {/* Add Picture modal */}
           {addPictureModal && (
-            <div className="modal-overlay" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setAddPictureModal(false) }}>
+            <div className="modal-overlay" {...createOverlayClickHandler(setAddPictureModal)}>
               <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setAddPictureModal(false) } }}>
                 <h3 className="dialog-title">Add Picture</h3>
                 <div className="grid-gap-10">
@@ -1631,7 +1996,7 @@ span[data-tag] {
 
           {/* Edit Object modal */}
           {showEditObject && (
-            <div className="edit-modal-overlay" onClick={() => setShowEditObject(false)}>
+            <div className="edit-modal-overlay" {...createOverlayClickHandler(setShowEditObject)}>
               <div className="edit-modal-width" onClick={e => e.stopPropagation()}>
                 <div className="edit-modal">
                   <div className="edit-modal-header">
@@ -1671,7 +2036,7 @@ span[data-tag] {
                           <ul className="list-reset">
                             {ownerTags.map(t => (
                               <li key={t.id} className="list-item-row">
-                                <code>{t.id}</code>
+                                <code className="tag-id">{t.id}</code> - <span onClick={async () => { selectObject(t.object_id, t.name); setShowEditObject(false) }} className="tag-name" title={t.name}>{t.name}</span>
                                 <div className="flex-gap-6">
                                   <button title='Delete tag and its links' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-link-tag', t.id); const ot = await window.ipcRenderer.invoke('gamedocs:list-owner-tags', activeId).catch(() => []); setOwnerTags(ot || []) }}>Delete</button>
                                 </div>
@@ -1686,7 +2051,7 @@ span[data-tag] {
                           <ul className="list-reset">
                             {incomingLinks.map(l => (
                               <li key={l.tag_id + l.owner_id} className="list-item-row">
-                                <span title={l.owner_path}>{l.owner_name}</span>
+                                <span className="tag-name" onClick={async () => { selectObject(l.owner_id, l.owner_name); setShowEditObject(false) }} title={l.owner_path}>{l.owner_name}</span>
                                 <div className="flex-gap-6">
                                   <button title='Remove link' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:remove-link-target', l.tag_id, activeId); const inc = await window.ipcRenderer.invoke('gamedocs:list-incoming-links', activeId).catch(() => []); setIncomingLinks(inc || []) }}>Remove</button>
                                 </div>
@@ -1892,9 +2257,46 @@ span[data-tag] {
             </div>
           )}
 
+          {/* Help modal */}
+          {showHelp && (
+            <div className="help-modal-overlay" onKeyDown={e => { if (e.key === 'Escape'){setShowHelp(false);} }} {...createOverlayClickHandler(setShowHelp)}>
+              <div className="help-modal-content">
+                <h3 className="help-title m-0">Help</h3>
+                <div className="help-content"  tabIndex={-1}  >
+                  <p>Keyboard shortcuts:</p>
+                  <ul className="help-list">
+                    {Object.entries(shortcuts).map(([key, value]) => (
+                      <> 
+                      { key !== 'goToPreviousSibling' && key !== 'goToNextSibling' && (
+                        <li className="shortcut-item" key={key}><span className="shortcut-value">{getProperShortcutName(key)}</span>:<span className="shortcut-name">{getProperShortcutValue(value)}</span></li>
+                      )}
+                      </>
+                    ))}
+                  </ul>
+
+                    <div className="help-tips">
+                      <h3 className="help-title m-0">Other tips:</h3>
+                      <p>I made this tool with TTRPGs in mind, but it can be used to document pretty much anything.</p>
+                      <p><span className="shortcut-highlight">Right Click</span> on a word to create and edit links to other objects.</p>
+                      <p>You can connect multiple objects to the same word.</p>
+                      <p>When you have two or more objects linked to the same word, you can <span className="shortcut-highlight">Click</span> the tag to list all linked objects or <span className="shortcut-highlight">Shift + Click</span> to jump to the first linked object.</p>
+                      <p>You can also use the command palette to search for objects and tags.</p>
+                      <p>You can right click on a child object in the side bar to delete it.</p>
+                      <p>When adding a new child, you can press <span className="shortcut-highlight">Enter</span> in the name to create it. You can also press <span className="shortcut-highlight">Ctrl + Enter</span> to create it and jump straight into the new object.</p>
+                      <p>You can press <span className="shortcut-highlight">{getProperShortcutValue(shortcuts.linkLastWord)}</span> to link the last word in the current object to another object.</p>
+                      <p>You can lock and unlock objects to prevent them from being edited. (shortcut: <span className="shortcut-highlight">{getProperShortcutValue(shortcuts.toggleLock)}</span>)</p>
+                      <p>You can press <span className="shortcut-highlight">{getProperShortcutValue(shortcuts.goToParent)}</span> to go to the parent object.</p>
+                      <hr />
+                      <p>You can send me bug reports or feature requests at <a className="email-link" title="Click to email me, right click to copy" href="mailto:bugreports.wolfpaw@gmail.com" onMouseUp={e => { e.preventDefault(); if (e.button === 2) { writeToClipboard('bugreports.wolfpaw@gmail.com'); } }}>bugreports.wolfpaw@gmail.com <i className="ri-cursor-line"></i></a></p>
+                    </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Settings modal */}
           {showSettings && (
-            <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+            <div className="settings-overlay" {...createOverlayClickHandler(setShowSettings)}>
               <div className="settings-width" onClick={e => e.stopPropagation()}>
                 <div className="settings-card">
                   <div className="settings-header">
@@ -1906,6 +2308,7 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.palette', payload)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', fonts)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.hoverDebounce', hoverDebounce)
                         applyPalette(paletteKey, paletteKey === 'custom' ? customColors : null)
                         applyFonts(fonts)
                         setShowSettings(false)
@@ -1941,6 +2344,21 @@ span[data-tag] {
                             <button onClick={() => applyPalette('custom', customColors)}>Preview</button>
                           </div>
                         )}
+                      </div>
+
+                      <div className="settings-group">
+                        <label className="box-title">Hover Settings</label>
+                        <div className="debounce-settings settings-flex-wrap">
+                          <label className="debounce-label">Hover debounce (ms)
+                            <input type="number" min={0} max={2000} step={50}
+                              value={hoverDebounce}
+                              onChange={(e) => { 
+                                const value = parseInt(e.target.value || '300', 10)
+                                setHoverDebounce(value)
+                              }}
+                              className="settings-number" />
+                          </label>
+                        </div>
                       </div>
 
                       <div className="settings-group">
@@ -2015,14 +2433,6 @@ span[data-tag] {
                                   }
                                 }
                               }}>Browse…</button>
-
-                          {/* <button onClick={async () => {
-                            const res = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
-                            if (res?.path) {
-                              // Placeholder: user can install font system-wide; we simply store path for future
-                              await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.customFontPath', { path: res.path })
-                            }
-                          }}>Choose Font File…</button> */}
                         </div>
                       </div>
                     </div>
@@ -2037,9 +2447,13 @@ span[data-tag] {
                         <div className="settings-shortcut-row"><label htmlFor="command2">Command palette </label><ShortcutInput value={shortcuts.command2} onChange={value => setShortcuts(s => ({ ...s, command2: value }))} placeholder='Ctrl+Shift+K' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="newChild">New child </label><ShortcutInput value={shortcuts.newChild} onChange={value => setShortcuts(s => ({ ...s, newChild: value }))} placeholder='Ctrl+N' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="addImage">Add image </label><ShortcutInput value={shortcuts.addImage} onChange={value => setShortcuts(s => ({ ...s, addImage: value }))} placeholder='Ctrl+I' /></div>
-                        <div className="settings-shortcut-row"><label htmlFor="miscStuff">Open Misc stuff </label><ShortcutInput value={shortcuts.miscStuff} onChange={value => setShortcuts(s => ({ ...s, miscStuff: value }))} placeholder='Ctrl+M' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="miscStuff">Open Misc stuff </label><ShortcutInput value={shortcuts.miscStuff} onChange={value => setShortcuts(s => ({ ...s, miscStuff: value }))} placeholder='Ctrl+Shift+M' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="exportShare">Export to Share </label><ShortcutInput value={shortcuts.exportShare} onChange={value => setShortcuts(s => ({ ...s, exportShare: value }))} placeholder='Ctrl+E' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="toggleLock">Toggle lock </label><ShortcutInput value={shortcuts.toggleLock} onChange={value => setShortcuts(s => ({ ...s, toggleLock: value }))} placeholder='Ctrl+L' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="goToParent">Go to parent </label><ShortcutInput value={shortcuts.goToParent} onChange={value => setShortcuts(s => ({ ...s, goToParent: value }))} placeholder='Ctrl+ARROWUP' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="help">Help </label><ShortcutInput value={shortcuts.showHelp} onChange={value => setShortcuts(s => ({ ...s, showHelp: value }))} placeholder='Ctrl+H' /></div>
+                        {/* <div className="settings-shortcut-row"><label htmlFor="goToPreviousSibling">Go to previous sibling </label><ShortcutInput value={shortcuts.goToPreviousSibling} onChange={value => setShortcuts(s => ({ ...s, goToPreviousSibling: value }))} placeholder='Ctrl+ArrowLeft' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="goToNextSibling">Go to next sibling </label><ShortcutInput value={shortcuts.goToNextSibling} onChange={value => setShortcuts(s => ({ ...s, goToNextSibling: value }))} placeholder='Ctrl+ArrowRight' /></div> */}
                       </div>
                     </div>
                   </div>
@@ -2050,13 +2464,17 @@ span[data-tag] {
 
           {/* Add Child modal */}
           {showCat && (
-            <div className="modal-overlay">
+            <div className="modal-overlay" {...createOverlayClickHandler(setShowCat)}>
               <div className="dialog-card w-360">
                 <h3 className="mt-0">Add Child</h3>
                 <div className="grid-gap-8">
                   <label>
                     <div>Name</div>
-                    <input autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { handleCreateChild() } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} className="input-100" />
+                    <input id="catName" autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { if(e.ctrlKey) {handleCreateChildAndEnter()} else {handleCreateChild()} } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} className="input-100" />
+                  </label>
+                  <label>
+                    <div>Description</div>
+                    <textarea onKeyDown={e => { if (e.key === 'Enter') { if(e.ctrlKey) {handleCreateChildAndEnter()} } else if (e.key === 'Escape') { setShowCat(false) } }} value={catDescription} onChange={(e: any) => {setCatDescription((e.target as HTMLTextAreaElement).value);}} className="new-child-description input-100" />
                   </label>
                   <label>
                     <div>Type</div>
@@ -2071,7 +2489,11 @@ span[data-tag] {
                 </div>
                 <div className="actions">
                   <button onClick={() => setShowCat(false)}>Cancel</button>
-                  <button onClick={async () => { handleCreateChild() }}>Create</button>
+                  {ctrlKeyPressed ? (
+                    <button onClick={async () => { handleCreateChildAndEnter() }}>Create and Enter</button>
+                  ) : (
+                    <button onClick={async () => { handleCreateChild() }}>Create</button>
+                  )}
                 </div>
               </div>
             </div>
@@ -2114,7 +2536,7 @@ span[data-tag] {
 
           {/* Link to object modal */}
           {showLinker && (
-            <div className="modal-overlay" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setShowLinker(false) }}>
+            <div className="modal-overlay" {...createOverlayClickHandler(setShowLinker)}>
               <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false) } }}>
                 <h3 className="mt-0">Link to object</h3>
                 <div className="flex-row">

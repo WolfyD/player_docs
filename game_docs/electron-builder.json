@@ -11,7 +11,8 @@
     "db",
     "node_modules/better-sqlite3",
     "node_modules/bindings",
-    "node_modules/sharp"
+    "node_modules/sharp",
+    "node_modules/puppeteer-core"
   ],
   "asarUnpack": [
     "node_modules/better-sqlite3/**/*",

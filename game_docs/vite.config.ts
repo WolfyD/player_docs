@@ -42,6 +42,7 @@ export default defineConfig(({ command }) => {
                   ...Object.keys('dependencies' in pkg ? pkg.dependencies : {}),
                   'better-sqlite3',
                   'sharp',
+                  'puppeteer-core',
                 ],
               },
             },
