@@ -5,6 +5,7 @@ import { confirmDialog, toast } from './Confirm'
 import { logger } from '../utils/logger'
 import ShortcutInput from './ShortcutInput'
 
+
 type Campaign = { id: string; name: string }
 
 export const Editor: React.FC = () => {
@@ -182,6 +183,7 @@ export const Editor: React.FC = () => {
     setShowMisc(false)
   }, [activeId, campaign, desc])
 
+
   const handleExportToShare = useCallback(async () => {
     try {
       const res = await window.ipcRenderer.invoke('gamedocs:export-to-share', activeId)
@@ -194,6 +196,18 @@ export const Editor: React.FC = () => {
       toast('Export failed', 'error')
     }
   }, [activeId])
+
+  const writeToClipboard = useCallback(async (text: string) => {
+    try {
+      if (await window.ipcRenderer.invoke('gamedocs:write-to-clipboard', text)) {
+        toast('Email address copied to clipboard', 'success')
+      } else {
+        toast('Failed to copy email address to clipboard', 'error')
+      }
+    } catch {
+      toast('Failed to copy email address to clipboard', 'error')
+    }
+  }, [])
 
   const handleExportToHtml = useCallback(async () => {
     if (!campaign) return
@@ -307,17 +321,18 @@ export const Editor: React.FC = () => {
 
   const [showEditObject, setShowEditObject] = useState(false)
   const [editName, setEditName] = useState('')
-  const [ownerTags, setOwnerTags] = useState<Array<{ id: string }>>([])
+  const [ownerTags, setOwnerTags] = useState<Array<{ id: string, name: string, object_id: string }>>([])
   const [incomingLinks, setIncomingLinks] = useState<Array<{ tag_id: string; owner_id: string; owner_name: string; owner_path: string }>>([])
   const [showPalette, setShowPalette] = useState(false)
   const [paletteInput, setPaletteInput] = useState('')
   const [paletteResults, setPaletteResults] = useState<{ objects: Array<{ id: string; name: string }>; tags: Array<{ id: string; object_id: string }> }>({ objects: [], tags: [] })
   const [showSettings, setShowSettings] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
   const [customFont, setCustomFont] = useState<{ fontName: string; fontPath: string; fileName: string } | null>(null)
-  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string, goToParent: string, goToPreviousSibling: string, goToNextSibling: string, linkLastWord: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+Shift+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L', goToParent: 'Ctrl+ARROWUP', goToPreviousSibling: 'Ctrl+ArrowLeft', goToNextSibling: 'Ctrl+ArrowRight', linkLastWord: 'Ctrl+Shift+L' })
+  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string, goToParent: string, goToPreviousSibling: string, goToNextSibling: string, linkLastWord: string, showHelp: string, }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+Shift+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L', goToParent: 'Ctrl+ARROWUP', goToPreviousSibling: 'Ctrl+ArrowLeft', goToNextSibling: 'Ctrl+ArrowRight', linkLastWord: 'Ctrl+Shift+L', showHelp: 'Ctrl+H' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
@@ -393,6 +408,7 @@ export const Editor: React.FC = () => {
         goToPreviousSibling: savedShortcuts.goToPreviousSibling || 'Ctrl+ArrowLeft',
         goToNextSibling: savedShortcuts.goToNextSibling || 'Ctrl+ArrowRight',
         linkLastWord: savedShortcuts.linkLastWord || 'Ctrl+Shift+L',
+        showHelp: savedShortcuts.showHelp || 'Ctrl+H',
       })
     })()
   }, [])
@@ -568,6 +584,8 @@ span[data-tag] {
         e.preventDefault(); handleGoToNextSibling()
       } else if (matchShortcut(e, shortcuts.linkLastWord)) {
         e.preventDefault(); handleLinkLastWord()
+      } else if (matchShortcut(e, shortcuts.showHelp)) {
+        e.preventDefault(); setShowHelp(true)
       } else if (matchShortcut(e, shortcuts.toggleLock)) {
         e.preventDefault();
         if(!activeLocked){
@@ -1001,6 +1019,28 @@ span[data-tag] {
     setShowCat(true)
   }, [])
 
+  const toSentenceCase = useCallback((str: string) => {
+    return str.charAt(0).toUpperCase() + str.slice(1)
+  }, [])
+
+  const getProperShortcutName = useCallback((key: string) => {
+    //Split the key by capital letters and join them with a space
+    return key.split(/(?=[A-Z])/).map(s => toSentenceCase(s)).join(' ')
+  }, [shortcuts])
+
+  const getProperShortcutValue = useCallback((value: string) => {
+    value = value.replace('ARROWUP', '↑')
+    value = value.replace('ARROWDOWN', '↓')
+    value = value.replace('ARROWLEFT', '←')
+    value = value.replace('ARROWRIGHT', '→')
+    let rx = /\+/g
+    let matches = value.match(rx)
+    if (matches) {
+      value = value.replace(rx, ' + ')
+    }
+    return value
+  }, [getProperShortcutName])
+
   const handleParentClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     if (parent) selectObject(parent.id, parent.name)
@@ -1333,6 +1373,47 @@ span[data-tag] {
   if (error) return <div className="pad-16 text-red">{error}</div>
   if (!campaign) return <div className="pad-16">Loading…</div>
 
+  function createOverlayClickHandler(
+    closeFn: React.Dispatch<React.SetStateAction<boolean>>
+  ) {
+    let mouseDownOnOverlay = false
+  
+    return {
+      onMouseDown: (e: React.MouseEvent<HTMLDivElement>) => {
+        mouseDownOnOverlay = e.target === e.currentTarget
+      },
+      onClick: (e: React.MouseEvent<HTMLDivElement>) => {
+        e.stopPropagation()
+        if (mouseDownOnOverlay && e.target === e.currentTarget) {
+          closeFn(false)
+        }
+      }
+    }
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ // ================================================ //
+
+
   return (
     <div className="editor-grid">
       <div className="main_header">
@@ -1364,6 +1445,7 @@ span[data-tag] {
               }
               const items: Array<{ id: string; name: string; path: string }> = [
                 { id: '__SETTINGS__', name: 'Settings', path: '' },
+                { id: '__HELP__', name: 'Help', path: '' },
                 { id: '__SEPARATOR_TOP__', name: '', path: '' },
                 { id: '__ADDPICTURE__', name: 'Add picture', path: '' },
               ]
@@ -1723,6 +1805,11 @@ span[data-tag] {
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         return
                       }
+                      if (t.id === '__HELP__') {
+                        setShowHelp(true)
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        return
+                      }
                       if (t.id === '__EDITOBJECT__') {
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                         setEditName(activeName)
@@ -1810,7 +1897,7 @@ span[data-tag] {
 
           {/* Add Picture modal */}
           {addPictureModal && (
-            <div className="modal-overlay" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setAddPictureModal(false) }}>
+            <div className="modal-overlay" {...createOverlayClickHandler(setAddPictureModal)}>
               <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setAddPictureModal(false) } }}>
                 <h3 className="dialog-title">Add Picture</h3>
                 <div className="grid-gap-10">
@@ -1879,7 +1966,7 @@ span[data-tag] {
 
           {/* Edit Object modal */}
           {showEditObject && (
-            <div className="edit-modal-overlay" onClick={() => setShowEditObject(false)}>
+            <div className="edit-modal-overlay" {...createOverlayClickHandler(setShowEditObject)}>
               <div className="edit-modal-width" onClick={e => e.stopPropagation()}>
                 <div className="edit-modal">
                   <div className="edit-modal-header">
@@ -1919,7 +2006,7 @@ span[data-tag] {
                           <ul className="list-reset">
                             {ownerTags.map(t => (
                               <li key={t.id} className="list-item-row">
-                                <code>{t.id}</code>
+                                <code className="tag-id">{t.id}</code> - <span onClick={async () => { selectObject(t.object_id, t.name); setShowEditObject(false) }} className="tag-name" title={t.name}>{t.name}</span>
                                 <div className="flex-gap-6">
                                   <button title='Delete tag and its links' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-link-tag', t.id); const ot = await window.ipcRenderer.invoke('gamedocs:list-owner-tags', activeId).catch(() => []); setOwnerTags(ot || []) }}>Delete</button>
                                 </div>
@@ -2140,6 +2227,43 @@ span[data-tag] {
             </div>
           )}
 
+          {/* Help modal */}
+          {showHelp && (
+            <div className="help-modal-overlay" onKeyDown={e => { if (e.key === 'Escape'){setShowHelp(false);} }} {...createOverlayClickHandler(setShowHelp)}>
+              <div className="help-modal-content">
+                <h3 className="help-title m-0">Help</h3>
+                <div className="help-content"  tabIndex={-1}  >
+                  <p>Keyboard shortcuts:</p>
+                  <ul className="help-list">
+                    {Object.entries(shortcuts).map(([key, value]) => (
+                      <> 
+                      { key !== 'goToPreviousSibling' && key !== 'goToNextSibling' && (
+                        <li className="shortcut-item" key={key}><span className="shortcut-value">{getProperShortcutName(key)}</span>:<span className="shortcut-name">{getProperShortcutValue(value)}</span></li>
+                      )}
+                      </>
+                    ))}
+                  </ul>
+
+                    <div className="help-tips">
+                      <h3 className="help-title m-0">Other tips:</h3>
+                      <p>I made this tool with TTRPGs in mind, but it can be used to document pretty much anything.</p>
+                      <p><span className="shortcut-highlight">Right Click</span> on a word to create and edit links to other objects.</p>
+                      <p>You can connect multiple objects to the same word.</p>
+                      <p>When you have two or more objects linked to the same word, you can <span className="shortcut-highlight">Click</span> the tag to list all linked objects or <span className="shortcut-highlight">Shift + Click</span> to jump to the first linked object.</p>
+                      <p>You can also use the command palette to search for objects and tags.</p>
+                      <p>You can right click on a child object in the side bar to delete it.</p>
+                      <p>When adding a new child, you can press <span className="shortcut-highlight">Enter</span> in the name to create it. You can also press <span className="shortcut-highlight">Ctrl + Enter</span> to create it and jump straight into the new object.</p>
+                      <p>You can press <span className="shortcut-highlight">{getProperShortcutValue(shortcuts.linkLastWord)}</span> to link the last word in the current object to another object.</p>
+                      <p>You can lock and unlock objects to prevent them from being edited. (shortcut: <span className="shortcut-highlight">{getProperShortcutValue(shortcuts.toggleLock)}</span>)</p>
+                      <p>You can press <span className="shortcut-highlight">{getProperShortcutValue(shortcuts.goToParent)}</span> to go to the parent object.</p>
+                      <hr />
+                      <p>You can send me bug reports or feature requests at <a className="email-link" title="Click to email me, right click to copy" href="mailto:bugreports.wolfpaw@gmail.com" onMouseUp={e => { e.preventDefault(); if (e.button === 2) { writeToClipboard('bugreports.wolfpaw@gmail.com'); } }}>bugreports.wolfpaw@gmail.com <i className="ri-cursor-line"></i></a></p>
+                    </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Settings modal */}
           {showSettings && (
             <div className="settings-overlay" onClick={() => setShowSettings(false)}>
@@ -2263,14 +2387,6 @@ span[data-tag] {
                                   }
                                 }
                               }}>Browse…</button>
-
-                          {/* <button onClick={async () => {
-                            const res = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
-                            if (res?.path) {
-                              // Placeholder: user can install font system-wide; we simply store path for future
-                              await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.customFontPath', { path: res.path })
-                            }
-                          }}>Choose Font File…</button> */}
                         </div>
                       </div>
                     </div>
@@ -2301,7 +2417,7 @@ span[data-tag] {
 
           {/* Add Child modal */}
           {showCat && (
-            <div className="modal-overlay" onClick={e => { e.stopPropagation(); if (e.target === e.currentTarget) setShowCat(false) }}>
+            <div className="modal-overlay" {...createOverlayClickHandler(setShowCat)}>
               <div className="dialog-card w-360">
                 <h3 className="mt-0">Add Child</h3>
                 <div className="grid-gap-8">
@@ -2311,7 +2427,7 @@ span[data-tag] {
                   </label>
                   <label>
                     <div>Description</div>
-                    <textarea onKeyDown={e => { if (e.key === 'Enter') { if(e.ctrlKey) {handleCreateChildAndEnter()} } else if (e.key === 'Escape') { setShowCat(false) } }} value={catDescription} onChange={(e: any) => {setCatDescription((e.target as HTMLTextAreaElement).value);}} className="input-100" />
+                    <textarea onKeyDown={e => { if (e.key === 'Enter') { if(e.ctrlKey) {handleCreateChildAndEnter()} } else if (e.key === 'Escape') { setShowCat(false) } }} value={catDescription} onChange={(e: any) => {setCatDescription((e.target as HTMLTextAreaElement).value);}} className="new-child-description input-100" />
                   </label>
                   <label>
                     <div>Type</div>
@@ -2373,7 +2489,7 @@ span[data-tag] {
 
           {/* Link to object modal */}
           {showLinker && (
-            <div className="modal-overlay" onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setShowLinker(false) }}>
+            <div className="modal-overlay" {...createOverlayClickHandler(setShowLinker)}>
               <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false) } }}>
                 <h3 className="mt-0">Link to object</h3>
                 <div className="flex-row">

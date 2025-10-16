@@ -13,7 +13,7 @@ import crypto from 'node:crypto'
 import sharp from 'sharp'
 import { exec } from 'child_process';
 import { platform } from 'os';
-
+import { clipboard } from 'electron';
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -147,6 +147,19 @@ function validateWindowBounds(savedBounds: { x: number; y: number; width: number
     height: defaultHeight
   }
 }
+
+function copyToClipboard(text: string) {
+  try {
+    clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+ipcMain.handle('gamedocs:write-to-clipboard', async (_evt, text: string) => {
+  return copyToClipboard(text)
+})
 
 function escapeHtml(text: string): string {
   return String(text)
@@ -1524,9 +1537,9 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
-    const tags = db.prepare('SELECT id FROM link_tags WHERE object_id = ? AND deleted_at IS NULL').all(ownerObjectId)
+    const tags = db.prepare('SELECT o.name, o.id as object_id, tl.tag_id as id FROM objects o LEFT JOIN tag_links tl on (tl.object_id = o.id) WHERE tl.tag_id IN (SELECT id FROM link_tags WHERE object_id = ? ) AND o.deleted_at IS NULL').all(ownerObjectId) as Array<{ id: string; name: string; object_id: string }>
     db.close()
-    return tags as Array<{ id: string }>
+    return tags as Array<{ id: string; name: string; object_id: string }>
   })
 
   // List incoming links pointing to this object
