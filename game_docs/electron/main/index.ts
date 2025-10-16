@@ -1051,6 +1051,17 @@ app.whenReady().then(async () => {
     return rows as Array<{ id: string; name: string; type: string }>
   })
 
+  ipcMain.handle('gamedocs:get-latest-child', async (_evt, gameId: string, parentId: string | null) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db); cleanupLinkData(db, gameId); cleanupMissingImages(db, gameId) } catch {}
+    const row = db.prepare('SELECT id, name FROM objects WHERE game_id = ? AND parent_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1').get(gameId, parentId)
+    db.close()
+    return row as { id: string; name: string }
+  })
+
   // Create a new object and link it to a tag
   ipcMain.handle('gamedocs:create-object-and-link-tag', async (_evt, gameId: string, parentId: string | null, ownerObjectId: string, name: string, type: string | null) => {
     if (!projectDirCache) throw new Error('No project directory configured')

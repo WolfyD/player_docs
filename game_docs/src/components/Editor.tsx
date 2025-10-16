@@ -1018,12 +1018,14 @@ span[data-tag] {
   }
 
   const handleCreateChild = useCallback(async () => {
-
+    let newChild = null;
     const name = (catName || '').trim()
     const description = (catDescription || '').trim()
     if (!name) { setCatErr('Name is required'); return }
     try {
       await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name, catType, description)
+      newChild = await window.ipcRenderer.invoke('gamedocs:get-latest-child', campaign!.id, activeId || root!.id) as { id: string; name: string }
+
       setCatDescription('')
       setCatName('')
       // Reload children
@@ -1038,7 +1040,18 @@ span[data-tag] {
       setCatErr(e?.message || 'Failed to create category')
     }
 
+
+    return newChild;
+
   }, [catName, catDescription, catType, campaign, activeId, root])
+
+  const handleCreateChildAndEnter = useCallback(async () => {
+    let newChild = await handleCreateChild()
+
+    if (newChild) {
+      selectObject(newChild.id, newChild.name)
+    }
+  }, [handleCreateChild])
 
   function insertAtSelection(text: string) {
     // For contentEditable, prefer replacing current Range; fallback to append
@@ -2142,7 +2155,7 @@ span[data-tag] {
                 <div className="grid-gap-8">
                   <label>
                     <div>Name</div>
-                    <input id="catName" autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { handleCreateChild() } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} className="input-100" />
+                    <input id="catName" autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { if(e.ctrlKey) {handleCreateChildAndEnter()} else {handleCreateChild()} } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} className="input-100" />
                   </label>
                   <label>
                     <div>Description</div>
