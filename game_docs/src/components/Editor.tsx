@@ -59,6 +59,13 @@ export const Editor: React.FC = () => {
     y: number
     selText: string
   }>({ visible: false, x: 0, y: 0, selText: '' })
+  const [childCtxMenu, setChildCtxMenu] = useState<{
+    visible: boolean
+    x: number
+    y: number
+    selText: string
+    selId: string
+  }>({ visible: false, x: 0, y: 0, selText: '', selId: '' })
   const [showWizard, setShowWizard] = useState(false)
   const [wizardName, setWizardName] = useState('')
   const [wizardType, setWizardType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
@@ -83,6 +90,7 @@ export const Editor: React.FC = () => {
   // Left-click menu for multi-target tags
   const [tagMenu, setTagMenu] = useState<{ visible: boolean; x: number; y: number; items: Array<{ id: string; name: string; path: string }>; hoverPreview: { id: string; name: string; snippet: string; imageUrl: string | null } | null; source?: 'dropdown' | 'tag' }>({ visible: false, x: 0, y: 0, items: [], hoverPreview: null, source: undefined })
   const ctxMenuRef = useRef<HTMLDivElement | null>(null)
+  const childCtxMenuRef = useRef<HTMLDivElement | null>(null)
   const tagMenuRef = useRef<HTMLDivElement | null>(null)
   const menuButtonRef = useRef<HTMLButtonElement | null>(null)
   const [images, setImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
@@ -92,6 +100,7 @@ export const Editor: React.FC = () => {
   const [picIsDefault, setPicIsDefault] = useState(true)
   const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
   const [showMisc, setShowMisc] = useState(false)
+  const [ctrlKeyPressed, setCtrlKeyPressed] = useState(false)
 
   // Command palette: commands and parameter flow
   const [isCommandMode, setIsCommandMode] = useState(false)
@@ -308,7 +317,7 @@ export const Editor: React.FC = () => {
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
   const [customFont, setCustomFont] = useState<{ fontName: string; fontPath: string; fileName: string } | null>(null)
-  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string, goToParent: string, goToPreviousSibling: string, goToNextSibling: string, linkLastWord: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+Shift+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L', goToParent: 'Ctrl+ArrowUp', goToPreviousSibling: 'Ctrl+ArrowLeft', goToNextSibling: 'Ctrl+ArrowRight', linkLastWord: 'Ctrl+Shift+L' })
+  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string, goToParent: string, goToPreviousSibling: string, goToNextSibling: string, linkLastWord: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+Shift+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L', goToParent: 'Ctrl+ARROWUP', goToPreviousSibling: 'Ctrl+ArrowLeft', goToNextSibling: 'Ctrl+ArrowRight', linkLastWord: 'Ctrl+Shift+L' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
@@ -380,7 +389,7 @@ export const Editor: React.FC = () => {
         miscStuff: savedShortcuts.miscStuff || 'Ctrl+Shift+M',
         exportShare: savedShortcuts.exportShare || 'Ctrl+E',
         toggleLock: savedShortcuts.toggleLock || 'Ctrl+L',
-        goToParent: savedShortcuts.goToParent || 'Ctrl+ArrowUp',
+        goToParent: savedShortcuts.goToParent || 'Ctrl+ARROWUP',
         goToPreviousSibling: savedShortcuts.goToPreviousSibling || 'Ctrl+ArrowLeft',
         goToNextSibling: savedShortcuts.goToNextSibling || 'Ctrl+ArrowRight',
         linkLastWord: savedShortcuts.linkLastWord || 'Ctrl+Shift+L',
@@ -500,6 +509,29 @@ span[data-tag] {
     if (wantAlt !== !!e.altKey) return false
     return e.key.toLowerCase() === key
   }
+
+  // Track Ctrl key state
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control') {
+        setCtrlKeyPressed(true)
+      }
+    }
+    
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control') {
+        setCtrlKeyPressed(false)
+      }
+    }
+    
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [])
 
   // Global shortcuts
   useEffect(() => {
@@ -775,7 +807,7 @@ span[data-tag] {
 
   const handleEditorContextMenu = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
-    console.log('activeLocked', activeLocked)
+    //console.log('activeLocked', activeLocked)
     if (activeLocked) { setCtxMenu(m => ({ ...m, visible: false })); return }
     const sel = window.getSelection()
     if (!sel) return
@@ -821,6 +853,24 @@ span[data-tag] {
     // preload objects for fuzzy
     const rows = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id)
     setAllObjects(rows || [])
+    fuseRef.current = new Fuse(rows || [], { keys: ['name'], threshold: 0.4 })
+    setLinkerMatches((rows || []).slice(0, 10))
+  }, [campaign, ctxMenu.selText])
+
+  const handleAddLinkOpenOnSelectedWord = useCallback(async () => {
+    let existingTag: string | null = null
+    if (selectionRangeRef.current) {
+      const node = selectionRangeRef.current.startContainer as Node
+      let el: HTMLElement | null = (node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : (node.parentElement))
+      while (el) {
+        if (el instanceof HTMLElement && el.hasAttribute('data-tag')) { existingTag = el.getAttribute('data-tag'); break }
+        el = el.parentElement
+      }
+    }
+    setLinkerTagId(existingTag)
+    setLinkerInput(selectionRangeRef.current?.toString() || '')
+    setShowLinker(true)
+    const rows = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id)
     fuseRef.current = new Fuse(rows || [], { keys: ['name'], threshold: 0.4 })
     setLinkerMatches((rows || []).slice(0, 10))
   }, [campaign, ctxMenu.selText])
@@ -965,7 +1015,7 @@ span[data-tag] {
     if (id) selectObject(id, name)
   }, [])
 
-  const handleCtxMenuLeave = useCallback(() => setCtxMenu(m => ({ ...m, visible: false })), [])
+  //const handleCtxMenuLeave = useCallback(() => setCtxMenu(m => ({ ...m, visible: false })), [])
 
   const handleCloseLinker = useCallback(() => setShowLinker(false), [])
 
@@ -982,6 +1032,13 @@ span[data-tag] {
     const m = { id: el.dataset.id!, name: el.dataset.name! }
     handleSelectMatch(m)
   }, [handleSelectMatch])
+
+  const handleShowChildContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>, id: string, name: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setChildCtxMenu(m => ({ ...m, visible: false }))
+    setChildCtxMenu(m => ({ ...m, visible: true, selText: name, selId: id, x: e.clientX, y: e.clientY }))
+  }, [])
 
   async function selectObject(id: string, name: string) {
     if (!id) return
@@ -1052,6 +1109,16 @@ span[data-tag] {
       selectObject(newChild.id, newChild.name)
     }
   }, [handleCreateChild])
+
+  const handleDeleteChild = useCallback(async () => {
+    // TODO: we need to ask the user for confirmation
+    const ok = await confirmDialog({ title: 'Delete', message: `Delete '${childCtxMenu.selText}' and all descendants?`, variant: 'yes-no' })
+    if (!ok) return
+    await window.ipcRenderer.invoke('gamedocs:delete-object-cascade', childCtxMenu.selId)
+    setChildCtxMenu(m => ({ ...m, visible: false }))
+    const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
+    setChildren(kids)
+  }, [campaign, activeId, root, childCtxMenu.selId])
 
   function insertAtSelection(text: string) {
     // For contentEditable, prefer replacing current Range; fallback to append
@@ -1157,17 +1224,83 @@ span[data-tag] {
     if (parent) selectObject(parent.id, parent.name)
   }
   function handleGoToPreviousSibling() {
-    if (previousSibling) selectObject(previousSibling.id, previousSibling.name)
+    // TODO: Implement this
+    //if (previousSibling) selectObject(previousSibling.id, previousSibling.name)
   }
   function handleGoToNextSibling() {
-    if (nextSibling) selectObject(nextSibling.id, nextSibling.name)
+    // TODO: Implement this
+    //if (nextSibling) selectObject(nextSibling.id, nextSibling.name)
   }
   function handleLinkLastWord() {
-    const selRange = selectionRangeRef.current
-    const el = editorRef.current
-    if (el && selRange) {
-      selRange.deleteContents()
-      selRange.insertNode(document.createTextNode('[[last word|last_word]]'))
+    console.log('handleLinkLastWord')
+    const editor = editorRef.current
+    if (!editor) return
+    
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) return
+    
+    // Get the current range and caret position
+    const currentRange = selection.getRangeAt(0)
+    const caretContainer = currentRange.startContainer
+    const caretOffset = currentRange.startOffset
+    
+    // Find the text node containing the caret
+    let textNode: Text | null = null
+    if (caretContainer.nodeType === Node.TEXT_NODE) {
+      textNode = caretContainer as Text
+    } else {
+      // If caret is in an element, find the text node at the offset
+      const walker = document.createTreeWalker(
+        caretContainer,
+        NodeFilter.SHOW_TEXT,
+        null
+      )
+      let node: Node | null = walker.nextNode()
+      let currentOffset = 0
+      
+      while (node && currentOffset < caretOffset) {
+        const nodeLength = node.textContent?.length || 0
+        if (currentOffset + nodeLength >= caretOffset) {
+          textNode = node as Text
+          break
+        }
+        currentOffset += nodeLength
+        node = walker.nextNode()
+      }
+    }
+    
+    if (!textNode || !textNode.textContent) return
+    
+    const text = textNode.textContent
+    const textOffset = textNode === caretContainer ? caretOffset : (caretOffset - (textNode.textContent?.length || 0))
+    
+    // Find the start of the previous word
+    let wordStart = textOffset
+    while (wordStart > 0 && /[\w\p{L}\p{N}_]/u.test(text[wordStart - 1])) {
+      wordStart--
+    }
+    
+    // Find the end of the word (current position)
+    let wordEnd = textOffset
+    while (wordEnd < text.length && /[\w\p{L}\p{N}_]/u.test(text[wordEnd])) {
+      wordEnd++
+    }
+    
+    // If we found a word, select it
+    if (wordStart < wordEnd) {
+      const newRange = document.createRange()
+      newRange.setStart(textNode, wordStart)
+      newRange.setEnd(textNode, wordEnd)
+      
+      selection.removeAllRanges()
+      selection.addRange(newRange)
+      
+      // Store the range for potential use
+      selectionRangeRef.current = newRange
+
+      handleAddLinkOpenOnSelectedWord()
+      
+      console.log('Selected word:', text.substring(wordStart, wordEnd))
     }
   }
 
@@ -1217,6 +1350,7 @@ span[data-tag] {
           onClick={(e) => {
             e.preventDefault()
             setCtxMenu(m => ({ ...m, visible: false }))
+            setChildCtxMenu(m => ({ ...m, visible: false }))
             const btn = (e.target as HTMLElement)
             const rect = btn.getBoundingClientRect()
             const padding = 4
@@ -1250,6 +1384,9 @@ span[data-tag] {
         if (ctxMenu.visible && ctxMenuRef.current && !ctxMenuRef.current.contains(target)) {
           setCtxMenu(m => ({ ...m, visible: false }))
         }
+        if (childCtxMenu.visible && childCtxMenuRef.current && !childCtxMenuRef.current.contains(target)) {
+          setChildCtxMenu(m => ({ ...m, visible: false }))
+        }
         if (tagMenu.visible && tagMenuRef.current && !tagMenuRef.current.contains(target)) {
           setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
         }
@@ -1267,7 +1404,7 @@ span[data-tag] {
               <div className="divider-line"></div>
               <div className="menu_items_container" style={{ height: getHeight() }}>
                 {children.map(c => (
-                  <div key={c.id} onClick={() => selectObject(c.id, c.name)} className="child-item">{c.name}</div>
+                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{c.name}</div>
                 ))}
               </div>
             </div>
@@ -1441,7 +1578,7 @@ span[data-tag] {
                 setDesc(htmlToDesc(editorRef.current))
               }
             }}
-            className="editor_content"
+            className={images.length > 0 ? 'editor_content_with_images' : 'editor_content'}
             style={activeLocked ? { opacity: 0.85 } : undefined}
           />
           {images.length > 0 ? (
@@ -1459,6 +1596,14 @@ span[data-tag] {
               {hoverCard.snippet && (
                 <div className="hover-card-snippet">{hoverCard.snippet}</div>
               )}
+            </div>
+          )}
+          {childCtxMenu.visible && (
+            <div className="ctx-menu" style={{ left: childCtxMenu.x, top: childCtxMenu.y }} ref={childCtxMenuRef}>
+              <div className="ctx-menu-section-title">{childCtxMenu.selText}</div>
+              <div className="separator" />
+              {/* <div className="ctx-menu-item" onClick={handleCreateChildAndEnter}>Create Child</div> */}
+              <div className="ctx-menu-item" onClick={handleDeleteChild}>Delete Child</div>
             </div>
           )}
           {ctxMenu.visible && (
@@ -1500,7 +1645,12 @@ span[data-tag] {
                             if (resB?.ok) imgUrl = resB.dataUrl
                           }
                         }
-                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        let rect = null;
+                        try {
+                          rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        } catch {
+                          return
+                        }
                         const pad = 10, CARD_W = 300
                         const baseX = rect.left + Math.min(16, Math.max(0, rect.width / 2))
                         const baseY = rect.bottom + 10
@@ -1592,12 +1742,14 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true)
                         setActiveLocked(true)
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        window.location.reload();
                         return
                       }
                       if (t.id === '__UNLOCK__') {
                         await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, false)
                         setActiveLocked(false)
                         setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        window.location.reload();
                         return
                       }
                       if (t.id === '__ADDPICTURE__') {
@@ -2136,9 +2288,9 @@ span[data-tag] {
                         <div className="settings-shortcut-row"><label htmlFor="miscStuff">Open Misc stuff </label><ShortcutInput value={shortcuts.miscStuff} onChange={value => setShortcuts(s => ({ ...s, miscStuff: value }))} placeholder='Ctrl+Shift+M' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="exportShare">Export to Share </label><ShortcutInput value={shortcuts.exportShare} onChange={value => setShortcuts(s => ({ ...s, exportShare: value }))} placeholder='Ctrl+E' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="toggleLock">Toggle lock </label><ShortcutInput value={shortcuts.toggleLock} onChange={value => setShortcuts(s => ({ ...s, toggleLock: value }))} placeholder='Ctrl+L' /></div>
-                        <div className="settings-shortcut-row"><label htmlFor="goToParent">Go to parent </label><ShortcutInput value={shortcuts.goToParent} onChange={value => setShortcuts(s => ({ ...s, goToParent: value }))} placeholder='Ctrl+ArrowUp' /></div>
-                        <div className="settings-shortcut-row"><label htmlFor="goToPreviousSibling">Go to previous sibling </label><ShortcutInput value={shortcuts.goToPreviousSibling} onChange={value => setShortcuts(s => ({ ...s, goToPreviousSibling: value }))} placeholder='Ctrl+ArrowLeft' /></div>
-                        <div className="settings-shortcut-row"><label htmlFor="goToNextSibling">Go to next sibling </label><ShortcutInput value={shortcuts.goToNextSibling} onChange={value => setShortcuts(s => ({ ...s, goToNextSibling: value }))} placeholder='Ctrl+ArrowRight' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="goToParent">Go to parent </label><ShortcutInput value={shortcuts.goToParent} onChange={value => setShortcuts(s => ({ ...s, goToParent: value }))} placeholder='Ctrl+ARROWUP' /></div>
+                        {/* <div className="settings-shortcut-row"><label htmlFor="goToPreviousSibling">Go to previous sibling </label><ShortcutInput value={shortcuts.goToPreviousSibling} onChange={value => setShortcuts(s => ({ ...s, goToPreviousSibling: value }))} placeholder='Ctrl+ArrowLeft' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="goToNextSibling">Go to next sibling </label><ShortcutInput value={shortcuts.goToNextSibling} onChange={value => setShortcuts(s => ({ ...s, goToNextSibling: value }))} placeholder='Ctrl+ArrowRight' /></div> */}
                       </div>
                     </div>
                   </div>
@@ -2159,7 +2311,7 @@ span[data-tag] {
                   </label>
                   <label>
                     <div>Description</div>
-                    <textarea value={catDescription} onChange={(e: any) => {setCatDescription((e.target as HTMLTextAreaElement).value);}} className="input-100" />
+                    <textarea onKeyDown={e => { if (e.key === 'Enter') { if(e.ctrlKey) {handleCreateChildAndEnter()} } else if (e.key === 'Escape') { setShowCat(false) } }} value={catDescription} onChange={(e: any) => {setCatDescription((e.target as HTMLTextAreaElement).value);}} className="input-100" />
                   </label>
                   <label>
                     <div>Type</div>
@@ -2174,7 +2326,11 @@ span[data-tag] {
                 </div>
                 <div className="actions">
                   <button onClick={() => setShowCat(false)}>Cancel</button>
-                  <button onClick={async () => { handleCreateChild() }}>Create</button>
+                  {ctrlKeyPressed ? (
+                    <button onClick={async () => { handleCreateChildAndEnter() }}>Create and Enter</button>
+                  ) : (
+                    <button onClick={async () => { handleCreateChild() }}>Create</button>
+                  )}
                 </div>
               </div>
             </div>
