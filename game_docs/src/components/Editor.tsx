@@ -17,7 +17,7 @@ export const Editor: React.FC = () => {
   const [catName, setCatName] = useState('')
   const [catType, setCatType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
   const [catErr, setCatErr] = useState<string | null>(null)
-
+  const [catDescription, setCatDescription] = useState<string>('')
   useEffect(() => {
     const id = location.hash.replace(/^#\/editor\//, '')
     if (!id) return
@@ -308,7 +308,7 @@ export const Editor: React.FC = () => {
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
   const [customFont, setCustomFont] = useState<{ fontName: string; fontPath: string; fileName: string } | null>(null)
-  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L' })
+  const [shortcuts, setShortcuts] = useState<{ settings: string; editObject: string; command: string; command2: string; newChild: string; addImage: string, miscStuff: string, exportShare: string, toggleLock: string, goToParent: string, goToPreviousSibling: string, goToNextSibling: string, linkLastWord: string }>({ settings: 'F1', editObject: 'F2', command: 'Ctrl+K', command2: 'Ctrl+Shift+K', newChild: 'Ctrl+N', addImage: 'Ctrl+I', miscStuff: 'Ctrl+Shift+M', exportShare: 'Ctrl+E', toggleLock: 'Ctrl+L', goToParent: 'Ctrl+ArrowUp', goToPreviousSibling: 'Ctrl+ArrowLeft', goToNextSibling: 'Ctrl+ArrowRight', linkLastWord: 'Ctrl+Shift+L' })
   useEffect(() => {
     if (!root || !campaign) return
     selectObject(root.id, root.name)
@@ -377,9 +377,13 @@ export const Editor: React.FC = () => {
         command2: savedShortcuts.command2 || 'Ctrl+Shift+K',
         newChild: savedShortcuts.newChild || 'Ctrl+N',
         addImage: savedShortcuts.addImage || 'Ctrl+I',
-        miscStuff: savedShortcuts.miscStuff || 'Ctrl+M',
+        miscStuff: savedShortcuts.miscStuff || 'Ctrl+Shift+M',
         exportShare: savedShortcuts.exportShare || 'Ctrl+E',
-        toggleLock: savedShortcuts.toggleLock || 'Ctrl+L'
+        toggleLock: savedShortcuts.toggleLock || 'Ctrl+L',
+        goToParent: savedShortcuts.goToParent || 'Ctrl+ArrowUp',
+        goToPreviousSibling: savedShortcuts.goToPreviousSibling || 'Ctrl+ArrowLeft',
+        goToNextSibling: savedShortcuts.goToNextSibling || 'Ctrl+ArrowRight',
+        linkLastWord: savedShortcuts.linkLastWord || 'Ctrl+Shift+L',
       })
     })()
   }, [])
@@ -480,6 +484,14 @@ span[data-tag] {
   function matchShortcut(e: KeyboardEvent, combo: string): boolean {
     const parts = combo.split('+').map(s => s.trim().toLowerCase())
     const key = parts[parts.length - 1]
+    const wantArrowUp = parts.includes('arrowup')
+    const wantArrowDown = parts.includes('arrowdown')
+    const wantArrowLeft = parts.includes('arrowleft')
+    const wantArrowRight = parts.includes('arrowright')
+    if (wantArrowUp && e.key !== 'ArrowUp') return false
+    if (wantArrowDown && e.key !== 'ArrowDown') return false
+    if (wantArrowLeft && e.key !== 'ArrowLeft') return false
+    if (wantArrowRight && e.key !== 'ArrowRight') return false
     const wantCtrl = parts.includes('ctrl') || parts.includes('control')
     const wantShift = parts.includes('shift')
     const wantAlt = parts.includes('alt')
@@ -511,9 +523,19 @@ span[data-tag] {
       } else if (matchShortcut(e, shortcuts.editObject)) {
         e.preventDefault(); setTagMenu(m => ({ ...m, visible: false })); setEditName(activeName); setShowEditObject(true)
       } else if (matchShortcut(e, shortcuts.newChild)) {
-        e.preventDefault(); setCatErr(null); setCatName(''); setShowCat(true)
+        e.preventDefault(); setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true)
       } else if (matchShortcut(e, shortcuts.addImage)) {
         e.preventDefault(); setAddPictureModal(true)
+      } else if (matchShortcut(e, shortcuts.miscStuff)) {
+        e.preventDefault(); setShowMisc(true)
+      } else if (matchShortcut(e, shortcuts.goToParent)) {
+        e.preventDefault(); handleGoToParent()
+      } else if (matchShortcut(e, shortcuts.goToPreviousSibling)) {
+        e.preventDefault(); handleGoToPreviousSibling()
+      } else if (matchShortcut(e, shortcuts.goToNextSibling)) {
+        e.preventDefault(); handleGoToNextSibling()
+      } else if (matchShortcut(e, shortcuts.linkLastWord)) {
+        e.preventDefault(); handleLinkLastWord()
       } else if (matchShortcut(e, shortcuts.toggleLock)) {
         e.preventDefault();
         if(!activeLocked){
@@ -601,7 +623,7 @@ span[data-tag] {
     switch (cmdId) {
       case 'settings': setShowSettings(true); setShowPalette(false); return
       case 'editObject': if (activeLocked) { toast('Object is locked', 'error'); return } setEditName(activeName); setShowEditObject(true); setShowPalette(false); return
-      case 'newChild': setCatErr(null); setCatName(''); setShowCat(true); setShowPalette(false); return
+      case 'newChild': setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true); setShowPalette(false); return
       case 'addImage': setAddPictureModal(true); setShowPalette(false); return
       case 'miscStuff': setShowMisc(true); setShowPalette(false); return
       case 'exportShare': handleExportToShare(); setShowPalette(false); return
@@ -922,27 +944,10 @@ span[data-tag] {
     replaceSelectionWithSpan(label, res.tagId)
   }, [wizardName, wizardType, campaign, activeId])
 
-  const handleCreateCategory = useCallback(async () => {
-    const name = (catName || '').trim()
-    if (!name) { setCatErr('Name is required'); return }
-    try {
-      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name)
-      // Reload children
-      const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
-      setChildren(kids)
-      try {
-        const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
-        setHasPlaces(!!has)
-      } catch {}
-      setShowCat(false)
-    } catch (e: any) {
-      setCatErr(e?.message || 'Failed to create category')
-    }
-  }, [catName, campaign, activeId, root])
-
   const openAddChildModal = useCallback(() => {
     setCatErr(null)
     setCatName('')
+    setCatDescription('')
     setShowCat(true)
   }, [])
 
@@ -1015,9 +1020,12 @@ span[data-tag] {
   const handleCreateChild = useCallback(async () => {
 
     const name = (catName || '').trim()
+    const description = (catDescription || '').trim()
     if (!name) { setCatErr('Name is required'); return }
     try {
-      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name, catType)
+      await window.ipcRenderer.invoke('gamedocs:create-category', campaign!.id, activeId || root!.id, name, catType, description)
+      setCatDescription('')
+      setCatName('')
       // Reload children
       const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
       setChildren(kids)
@@ -1030,7 +1038,7 @@ span[data-tag] {
       setCatErr(e?.message || 'Failed to create category')
     }
 
-  }, [catName, catType, campaign, activeId, root])
+  }, [catName, catDescription, catType, campaign, activeId, root])
 
   function insertAtSelection(text: string) {
     // For contentEditable, prefer replacing current Range; fallback to append
@@ -1130,6 +1138,26 @@ span[data-tag] {
     return text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n')
   }
 
+  async function handleGoToParent() {
+    let parent = await window.ipcRenderer.invoke('gamedocs:get-parent', campaign!.id, activeId || root!.id) as { id: string; name: string }
+    console.log('parent->' + JSON.stringify(parent))
+    if (parent) selectObject(parent.id, parent.name)
+  }
+  function handleGoToPreviousSibling() {
+    if (previousSibling) selectObject(previousSibling.id, previousSibling.name)
+  }
+  function handleGoToNextSibling() {
+    if (nextSibling) selectObject(nextSibling.id, nextSibling.name)
+  }
+  function handleLinkLastWord() {
+    const selRange = selectionRangeRef.current
+    const el = editorRef.current
+    if (el && selRange) {
+      selRange.deleteContents()
+      selRange.insertNode(document.createTextNode('[[last word|last_word]]'))
+    }
+  }
+
   async function removeMissingTags(text: string): Promise<string> {
     const tokenRe = /\[\[([^\]|]+)\|([^\]]+)\]\]/g
     let m: RegExpExecArray | null
@@ -1222,7 +1250,7 @@ span[data-tag] {
                 <a className="jump-to-parent" onClick={(e) => { e.preventDefault(); selectObject(parent.id, parent.name) }}><span className="nowrap">parent <i className="ri-arrow-up-circle-line"></i></span></a>
               )}
               <div className="header_line">{activeName || root.name}</div>
-              <a className="add-child" onClick={() => { setCatErr(null); setCatName(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
+              <a className="add-child" onClick={() => { setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
               <div className="divider-line"></div>
               <div className="menu_items_container" style={{ height: getHeight() }}>
                 {children.map(c => (
@@ -2092,9 +2120,12 @@ span[data-tag] {
                         <div className="settings-shortcut-row"><label htmlFor="command2">Command palette </label><ShortcutInput value={shortcuts.command2} onChange={value => setShortcuts(s => ({ ...s, command2: value }))} placeholder='Ctrl+Shift+K' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="newChild">New child </label><ShortcutInput value={shortcuts.newChild} onChange={value => setShortcuts(s => ({ ...s, newChild: value }))} placeholder='Ctrl+N' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="addImage">Add image </label><ShortcutInput value={shortcuts.addImage} onChange={value => setShortcuts(s => ({ ...s, addImage: value }))} placeholder='Ctrl+I' /></div>
-                        <div className="settings-shortcut-row"><label htmlFor="miscStuff">Open Misc stuff </label><ShortcutInput value={shortcuts.miscStuff} onChange={value => setShortcuts(s => ({ ...s, miscStuff: value }))} placeholder='Ctrl+M' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="miscStuff">Open Misc stuff </label><ShortcutInput value={shortcuts.miscStuff} onChange={value => setShortcuts(s => ({ ...s, miscStuff: value }))} placeholder='Ctrl+Shift+M' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="exportShare">Export to Share </label><ShortcutInput value={shortcuts.exportShare} onChange={value => setShortcuts(s => ({ ...s, exportShare: value }))} placeholder='Ctrl+E' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="toggleLock">Toggle lock </label><ShortcutInput value={shortcuts.toggleLock} onChange={value => setShortcuts(s => ({ ...s, toggleLock: value }))} placeholder='Ctrl+L' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="goToParent">Go to parent </label><ShortcutInput value={shortcuts.goToParent} onChange={value => setShortcuts(s => ({ ...s, goToParent: value }))} placeholder='Ctrl+ArrowUp' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="goToPreviousSibling">Go to previous sibling </label><ShortcutInput value={shortcuts.goToPreviousSibling} onChange={value => setShortcuts(s => ({ ...s, goToPreviousSibling: value }))} placeholder='Ctrl+ArrowLeft' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="goToNextSibling">Go to next sibling </label><ShortcutInput value={shortcuts.goToNextSibling} onChange={value => setShortcuts(s => ({ ...s, goToNextSibling: value }))} placeholder='Ctrl+ArrowRight' /></div>
                       </div>
                     </div>
                   </div>
@@ -2105,13 +2136,17 @@ span[data-tag] {
 
           {/* Add Child modal */}
           {showCat && (
-            <div className="modal-overlay">
+            <div className="modal-overlay" onClick={e => { e.stopPropagation(); if (e.target === e.currentTarget) setShowCat(false) }}>
               <div className="dialog-card w-360">
                 <h3 className="mt-0">Add Child</h3>
                 <div className="grid-gap-8">
                   <label>
                     <div>Name</div>
-                    <input autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { handleCreateChild() } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} className="input-100" />
+                    <input id="catName" autoFocus value={catName} onKeyDown={e => { if (e.key === 'Enter') { handleCreateChild() } else if (e.key === 'Escape') { setShowCat(false) } }} onChange={e => setCatName(e.target.value)} className="input-100" />
+                  </label>
+                  <label>
+                    <div>Description</div>
+                    <textarea value={catDescription} onChange={(e: any) => {setCatDescription((e.target as HTMLTextAreaElement).value);}} className="input-100" />
                   </label>
                   <label>
                     <div>Type</div>

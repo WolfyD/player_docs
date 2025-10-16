@@ -910,6 +910,7 @@ app.whenReady().then(async () => {
     return true
   })
 
+  // Focus the editor window and select an object
   ipcMain.handle('gamedocs:focus-editor-select', async (_evt, gameId: string, objectId: string) => {
     // Ensure editor window exists and is routed to this game, then send select message when ready
     const routeHash = `/editor/${encodeURIComponent(gameId)}`
@@ -935,6 +936,7 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Create a new campaign
   ipcMain.handle('gamedocs:create-campaign', async (_evt, name: string, dbName: 'player_docs.sql3' | 'player_docs.db' = 'player_docs.db') => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const campaignsRoot = path.join(projectDirCache, 'games')
@@ -983,6 +985,7 @@ app.whenReady().then(async () => {
     return true
   })
 
+  // Get the campaign by ID
   ipcMain.handle('gamedocs:get-campaign', async (_evt, gameId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
@@ -995,6 +998,7 @@ app.whenReady().then(async () => {
     return row as { id: string; name: string }
   })
 
+  // Get the root object for a campaign
   ipcMain.handle('gamedocs:get-root', async (_evt, gameId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
@@ -1016,6 +1020,21 @@ app.whenReady().then(async () => {
     return row as { id: string; name: string; type: string }
   })
 
+  // Get the parent of an object
+  ipcMain.handle('gamedocs:get-parent', async (_evt, gameId: string, objectId: string) => {
+    console.log('gameId->' + gameId + ' objectId->' + objectId)
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db); cleanupLinkData(db, gameId); cleanupMissingImages(db, gameId) } catch {}
+    const parentId = db.prepare('SELECT parent_id FROM objects WHERE game_id = ? AND id = ? AND deleted_at IS NULL').get(gameId, objectId) as { parent_id?: string } | undefined
+    const row = db.prepare('SELECT id, name FROM objects WHERE game_id = ? AND id = ? AND deleted_at IS NULL').get(gameId, parentId?.parent_id || '')
+    db.close()
+    return row as { id: string; name: string }
+  })
+
+  // List the children of an object
   ipcMain.handle('gamedocs:list-children', async (_evt, gameId: string, parentId: string | null) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
@@ -1032,6 +1051,7 @@ app.whenReady().then(async () => {
     return rows as Array<{ id: string; name: string; type: string }>
   })
 
+  // Create a new object and link it to a tag
   ipcMain.handle('gamedocs:create-object-and-link-tag', async (_evt, gameId: string, parentId: string | null, ownerObjectId: string, name: string, type: string | null) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
@@ -1055,7 +1075,10 @@ app.whenReady().then(async () => {
     return { objectId, tagId }
   })
 
-  ipcMain.handle('gamedocs:create-category', async (_evt, gameId: string, parentId: string, name: string, objType: string | null = null) => {
+  // Create a new category
+  ipcMain.handle('gamedocs:create-category', async (_evt, gameId: string, parentId: string, name: string, objType: string | null = null, description: string = '') => {
+    const safeDescription = (description || '').trim()
+    console.log('safeDescription->' + safeDescription)
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
@@ -1068,12 +1091,13 @@ app.whenReady().then(async () => {
     const allowed = new Set(['Place', 'Person', 'Lore', 'Other'])
     const t = (objType || 'Other')
     const safeType = allowed.has(t) ? t : 'Other'
-    db.prepare('INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)')
-      .run(newId, gameId, name, safeType, parentId, '', now, now)
+    db.prepare('INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(newId, gameId, name, safeType, parentId, safeDescription, now, now, null)
     db.close()
     return { id: newId, name }
   })
 
+  // List the objects for fuzzy search
   ipcMain.handle('gamedocs:list-objects-for-fuzzy', async (_evt, gameId: string, limit = 2000) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
@@ -1085,6 +1109,7 @@ app.whenReady().then(async () => {
     return rows as Array<{ id: string; name: string; parent_id: string | null }>
   })
 
+  // Get objects by name with paths
   ipcMain.handle('gamedocs:get-objects-by-name-with-paths', async (_evt, gameId: string, name: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
@@ -1110,6 +1135,7 @@ app.whenReady().then(async () => {
     try { return JSON.parse(row.setting_value) } catch { return null }
   })
 
+  // Settings: set key-value JSON
   ipcMain.handle('gamedocs:set-setting', async (_evt, key: string, value: any) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
