@@ -185,6 +185,7 @@ button {
   position: fixed;
   background: #202020;
   border: 1px solid #333;
+  color: #e5e5e5;
   border-radius: 6px;
   padding: 6px;
   z-index: 16;
@@ -239,7 +240,7 @@ button {
 .flex-gap-8 { display: flex; gap: 8px; }
 .input-100 { width: 100%; }
 .boxed { border: 1px solid #333; border-radius: 8px; padding: 10px; }
-.box-title { font-weight: 600; margin-bottom: 6px; }
+.box-title { font-weight: 600; margin-bottom: 6px; cursor: default; user-select: none; text-decoration: underline; text-decoration-color: #6495ED; }
 .muted { color: #888; }
 .list-reset { list-style: none; margin: 0; padding: 0; }
 .list-item-row { display: flex; justify-content: space-between; padding: 4px 0; gap: 8px; }
@@ -294,6 +295,7 @@ button {
 .settings-shortcut-row { display: flex; flex-direction: row; gap: 20px; margin-left: 20px; }
 .settings-shortcut-row label { width: 200px; text-align: left; }
 .settings-shortcut-row input { width: 150px; }
+.debounce-settings { display: flex; flex-direction: column; gap: 6px; }
 
 .help-modal-overlay { padding-top: 60px; position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; justify-items: center; justify-self: center; z-index: 50; width: 100%; height: 100%; }
 .help-modal-content { padding-top: 20px; display: flex; flex-direction: column; gap: 10px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px;  width: 50%; min-width: 900px; max-width: 92vw; }

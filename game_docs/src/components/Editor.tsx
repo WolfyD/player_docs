@@ -88,6 +88,7 @@ export const Editor: React.FC = () => {
   const [hoverCard, setHoverCard] = useState<{ visible: boolean; x: number; y: number; name: string; snippet: string; imageUrl: string | null }>({ visible: false, x: 0, y: 0, name: '', snippet: '', imageUrl: null })
   const [imageModal, setImageModal] = useState<{ visible: boolean; dataUrl: string | null }>({ visible: false, dataUrl: null })
   const lastHoverTagRef = useRef<string | null>(null)
+  const hoverDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   // Left-click menu for multi-target tags
   const [tagMenu, setTagMenu] = useState<{ visible: boolean; x: number; y: number; items: Array<{ id: string; name: string; path: string }>; hoverPreview: { id: string; name: string; snippet: string; imageUrl: string | null } | null; source?: 'dropdown' | 'tag' }>({ visible: false, x: 0, y: 0, items: [], hoverPreview: null, source: undefined })
   const ctxMenuRef = useRef<HTMLDivElement | null>(null)
@@ -102,6 +103,7 @@ export const Editor: React.FC = () => {
   const [picSource, setPicSource] = useState<{ type: 'file' | 'url'; value: string }>({ type: 'file', value: '' })
   const [showMisc, setShowMisc] = useState(false)
   const [ctrlKeyPressed, setCtrlKeyPressed] = useState(false)
+  const [hoverDebounce, setHoverDebounce] = useState(300) // milliseconds
 
   // Command palette: commands and parameter flow
   const [isCommandMode, setIsCommandMode] = useState(false)
@@ -410,6 +412,11 @@ export const Editor: React.FC = () => {
         linkLastWord: savedShortcuts.linkLastWord || 'Ctrl+Shift+L',
         showHelp: savedShortcuts.showHelp || 'Ctrl+H',
       })
+
+      const savedHoverDebounce = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.hoverDebounce').catch(() => null)
+      if (savedHoverDebounce && typeof savedHoverDebounce === 'number') {
+        setHoverDebounce(savedHoverDebounce)
+      }
     })()
   }, [])
 
@@ -1502,14 +1509,20 @@ span[data-tag] {
             suppressContentEditableWarning
             onInput={handleEditorInput}
             onContextMenu={handleEditorContextMenu}
-            onMouseMove={async (e) => {
+            onMouseMove={(e) => {
               const target = e.target as HTMLElement
               const span = target && (target.closest && target.closest('span[data-tag]')) as HTMLElement | null
               if (!span) {
                 lastHoverTagRef.current = null
                 if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
+                // Clear any pending debounce timeout
+                if (hoverDebounceTimeoutRef.current) {
+                  clearTimeout(hoverDebounceTimeoutRef.current)
+                  hoverDebounceTimeoutRef.current = null
+                }
                 return
               }
+              
               // Capture pointer and anchor positions up-front (avoid stale React event after awaits)
               const clientX = (e as any).clientX as number
               const clientY = (e as any).clientY as number
@@ -1518,6 +1531,7 @@ span[data-tag] {
               const anchorY = Math.max(0, Math.min(window.innerHeight, rect.bottom))
               const tagId = span.getAttribute('data-tag') || ''
               if (!tagId) return
+              
               // Only show hover card for single-target tags
               if (lastHoverTagRef.current === tagId && hoverCard.visible) {
                 // Reposition: center horizontally on pointer X; clamp to viewport
@@ -1531,50 +1545,66 @@ span[data-tag] {
                 setHoverCard(h => ({ ...h, x: nx, y: ny }))
                 return
               }
-              lastHoverTagRef.current = tagId
-              const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId).catch(() => []) as Array<{ id: string; name: string; path: string }>
-              if (!Array.isArray(targets) || targets.length !== 1) {
-                if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
-                return
+              
+              // Clear any existing timeout
+              if (hoverDebounceTimeoutRef.current) {
+                clearTimeout(hoverDebounceTimeoutRef.current)
               }
-              const only = targets[0]
-              const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
-              if (!preview) return
-              let imgUrl = (preview as any).thumbDataUrl || null
-              if (!imgUrl || imgUrl == 'data:image/png;base64,' || /^data:[^;]+;base64,?$/i.test(imgUrl as any) || (typeof imgUrl === 'string' && (imgUrl as string).length < 32)) {
-                const primary = (preview as any).thumbPath as (string | undefined)
-                const secondary = (preview as any).imagePath as (string | undefined)
-                if (primary) {
-                  const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
-                  if (resA?.ok) imgUrl = resA.dataUrl
+              
+              // Set new debounced timeout
+              hoverDebounceTimeoutRef.current = setTimeout(async () => {
+                lastHoverTagRef.current = tagId
+                const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId).catch(() => []) as Array<{ id: string; name: string; path: string }>
+                if (!Array.isArray(targets) || targets.length !== 1) {
+                  if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
+                  return
                 }
-                if (!imgUrl && secondary) {
-                  const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
-                  if (resB?.ok) imgUrl = resB.dataUrl
+                const only = targets[0]
+                const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
+                if (!preview) return
+                let imgUrl = (preview as any).thumbDataUrl || null
+                if (!imgUrl || imgUrl == 'data:image/png;base64,' || /^data:[^;]+;base64,?$/i.test(imgUrl as any) || (typeof imgUrl === 'string' && (imgUrl as string).length < 32)) {
+                  const primary = (preview as any).thumbPath as (string | undefined)
+                  const secondary = (preview as any).imagePath as (string | undefined)
+                  if (primary) {
+                    const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
+                    if (resA?.ok) imgUrl = resA.dataUrl
+                  }
+                  if (!imgUrl && secondary) {
+                    const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
+                    if (resB?.ok) imgUrl = resB.dataUrl
+                  }
+                  if (!imgUrl && (preview as any).fileUrl) {
+                    try {
+                      const u = new URL((preview as any).fileUrl)
+                      let p = decodeURIComponent(u.pathname)
+                      if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
+                      const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
+                      if (res2?.ok) imgUrl = res2.dataUrl
+                    } catch {}
+                  }
                 }
-                if (!imgUrl && (preview as any).fileUrl) {
-                  try {
-                    const u = new URL((preview as any).fileUrl)
-                    let p = decodeURIComponent(u.pathname)
-                    if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
-                    const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
-                    if (res2?.ok) imgUrl = res2.dataUrl
-                  } catch {}
+                // Debug dump for hover preview resolution
+                {
+                  const pad = 10
+                  const CARD_W = 300
+                  const baseX = anchorX // Number.isFinite(clientX) ? clientX : anchorX
+                  const baseY = anchorY + 10 + 30 // Number.isFinite(clientY) ? clientY : anchorY
+                  const targetX = baseX - (CARD_W / 2)
+                  const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
+                  const ny = baseY
+                  setHoverCard({ visible: true, x: nx, y: ny, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: imgUrl })
                 }
-              }
-              // Debug dump for hover preview resolution
-              {
-                const pad = 10
-                const CARD_W = 300
-                const baseX = anchorX // Number.isFinite(clientX) ? clientX : anchorX
-                const baseY = anchorY + 10 + 30 // Number.isFinite(clientY) ? clientY : anchorY
-                const targetX = baseX - (CARD_W / 2)
-                const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
-                const ny = baseY
-                setHoverCard({ visible: true, x: nx, y: ny, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: imgUrl })
+              }, hoverDebounce)
+            }}
+            onMouseLeave={() => { 
+              if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
+              // Clear any pending debounce timeout
+              if (hoverDebounceTimeoutRef.current) {
+                clearTimeout(hoverDebounceTimeoutRef.current)
+                hoverDebounceTimeoutRef.current = null
               }
             }}
-            onMouseLeave={() => { if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false })) }}
             onClick={async (e) => {
               const target = e.target as HTMLElement
               const span = target && (target.closest && target.closest('span[data-tag]')) as HTMLElement | null
@@ -2021,7 +2051,7 @@ span[data-tag] {
                           <ul className="list-reset">
                             {incomingLinks.map(l => (
                               <li key={l.tag_id + l.owner_id} className="list-item-row">
-                                <span title={l.owner_path}>{l.owner_name}</span>
+                                <span className="tag-name" onClick={async () => { selectObject(l.owner_id, l.owner_name); setShowEditObject(false) }} title={l.owner_path}>{l.owner_name}</span>
                                 <div className="flex-gap-6">
                                   <button title='Remove link' onClick={async () => { await window.ipcRenderer.invoke('gamedocs:remove-link-target', l.tag_id, activeId); const inc = await window.ipcRenderer.invoke('gamedocs:list-incoming-links', activeId).catch(() => []); setIncomingLinks(inc || []) }}>Remove</button>
                                 </div>
@@ -2266,7 +2296,7 @@ span[data-tag] {
 
           {/* Settings modal */}
           {showSettings && (
-            <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+            <div className="settings-overlay" {...createOverlayClickHandler(setShowSettings)}>
               <div className="settings-width" onClick={e => e.stopPropagation()}>
                 <div className="settings-card">
                   <div className="settings-header">
@@ -2278,6 +2308,7 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.palette', payload)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', fonts)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.hoverDebounce', hoverDebounce)
                         applyPalette(paletteKey, paletteKey === 'custom' ? customColors : null)
                         applyFonts(fonts)
                         setShowSettings(false)
@@ -2313,6 +2344,21 @@ span[data-tag] {
                             <button onClick={() => applyPalette('custom', customColors)}>Preview</button>
                           </div>
                         )}
+                      </div>
+
+                      <div className="settings-group">
+                        <label className="box-title">Hover Settings</label>
+                        <div className="debounce-settings settings-flex-wrap">
+                          <label className="debounce-label">Hover debounce (ms)
+                            <input type="number" min={0} max={2000} step={50}
+                              value={hoverDebounce}
+                              onChange={(e) => { 
+                                const value = parseInt(e.target.value || '300', 10)
+                                setHoverDebounce(value)
+                              }}
+                              className="settings-number" />
+                          </label>
+                        </div>
                       </div>
 
                       <div className="settings-group">
@@ -2405,6 +2451,7 @@ span[data-tag] {
                         <div className="settings-shortcut-row"><label htmlFor="exportShare">Export to Share </label><ShortcutInput value={shortcuts.exportShare} onChange={value => setShortcuts(s => ({ ...s, exportShare: value }))} placeholder='Ctrl+E' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="toggleLock">Toggle lock </label><ShortcutInput value={shortcuts.toggleLock} onChange={value => setShortcuts(s => ({ ...s, toggleLock: value }))} placeholder='Ctrl+L' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="goToParent">Go to parent </label><ShortcutInput value={shortcuts.goToParent} onChange={value => setShortcuts(s => ({ ...s, goToParent: value }))} placeholder='Ctrl+ARROWUP' /></div>
+                        <div className="settings-shortcut-row"><label htmlFor="help">Help </label><ShortcutInput value={shortcuts.showHelp} onChange={value => setShortcuts(s => ({ ...s, showHelp: value }))} placeholder='Ctrl+H' /></div>
                         {/* <div className="settings-shortcut-row"><label htmlFor="goToPreviousSibling">Go to previous sibling </label><ShortcutInput value={shortcuts.goToPreviousSibling} onChange={value => setShortcuts(s => ({ ...s, goToPreviousSibling: value }))} placeholder='Ctrl+ArrowLeft' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="goToNextSibling">Go to next sibling </label><ShortcutInput value={shortcuts.goToNextSibling} onChange={value => setShortcuts(s => ({ ...s, goToNextSibling: value }))} placeholder='Ctrl+ArrowRight' /></div> */}
                       </div>
