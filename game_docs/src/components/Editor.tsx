@@ -2682,7 +2682,7 @@ span[data-tag] {
                             replaceSelectionWithSpan(linkerInput || pc.name, tid as string)
                             setShowLinker(false)
                           }}
-                        >{pc.path}</li>
+                        dangerouslySetInnerHTML={{ __html: pc.path }}></li>
                       ))}
                     </ul>
                   </div>
