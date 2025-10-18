@@ -80,6 +80,7 @@ export const Editor: React.FC = () => {
   const [linkerInput, setLinkerInput] = useState('')
   const [linkerMatches, setLinkerMatches] = useState<Array<{ id: string; name: string; path?: string }>>([])
   const [linkerTagId, setLinkerTagId] = useState<string | null>(null)
+  const [linkerSelIndex, setLinkerSelIndex] = useState(0)
   const [allObjects, setAllObjects] = useState<Array<{ id: string; name: string; parent_id: string | null }>>([])
   const [pathChoices, setPathChoices] = useState<Array<{ id: string; name: string; path: string }>>([])
   const fuseRef = useRef<Fuse<any> | null>(null)
@@ -112,6 +113,7 @@ export const Editor: React.FC = () => {
   const [selectedCommand, setSelectedCommand] = useState<any | null>(null)
   const [paletteSelIndex, setPaletteSelIndex] = useState(0)
   const paletteResultsRef = useRef<HTMLDivElement | null>(null)
+  const linkerResultsRef = useRef<HTMLDivElement | null>(null)
 
   // Test function to manually trigger missing image cleanup
   const handleTestImageCleanup = useCallback(async () => {
@@ -662,6 +664,9 @@ span[data-tag] {
     if (cmdParamMode && selectedCommand) setPaletteSelIndex(0)
   }, [paletteInput, cmdParamMode, selectedCommand])
 
+  // Reset linker selection index when results change
+  useEffect(() => { setLinkerSelIndex(0) }, [linkerMatches.length, pathChoices.length])
+
   // Keep the highlighted item in view
   useEffect(() => {
     if (!showPalette) return
@@ -675,6 +680,20 @@ span[data-tag] {
       el.scrollIntoView({ block: 'nearest' })
     }
   }, [showPalette, paletteSelIndex, isCommandMode, cmdParamMode, filteredCommands.length, paletteResults.objects.length, paletteResults.tags.length])
+
+  // Keep the highlighted item in view for linker
+  useEffect(() => {
+    if (!showLinker) return
+    const container = linkerResultsRef.current
+    if (!container) return
+    const items = Array.from(container.querySelectorAll<HTMLLIElement>('.list-item-click'))
+    if (items.length === 0) return
+    const idx = Math.min(Math.max(0, linkerSelIndex), items.length - 1)
+    const el = items[idx]
+    if (el && typeof (el as any).scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' })
+    }
+  }, [showLinker, linkerSelIndex])
 
   function runCommand(cmdId: string) {
     switch (cmdId) {
@@ -2585,16 +2604,38 @@ span[data-tag] {
                       const res = fuse.search(v).map(r => r.item).slice(0, 10)
                       setLinkerMatches(res)
                     }
+                  }} onKeyDown={e => {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault()
+                      const totalItems = pathChoices.length > 0 ? pathChoices.length : linkerMatches.length
+                      setLinkerSelIndex(i => Math.min(i + 1, Math.max(0, totalItems - 1)))
+                    }
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      setLinkerSelIndex(i => Math.max(0, i - 1))
+                    }
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      const container = linkerResultsRef.current
+                      if (!container) return
+                      const items = Array.from(container.querySelectorAll<HTMLLIElement>('.list-item-click'))
+                      if (items.length === 0) return
+                      const idx = Math.min(Math.max(0, linkerSelIndex), items.length - 1)
+                      const el = items[idx]
+                      if (el) {
+                        el.click()
+                      }
+                    }
                   }} className="flex-1" placeholder={'Search or type new name'} />
                   {linkerTagId ? <span title='Existing link'>🔗</span> : <span title='New item'>⎇</span>}
                 </div>
 
                 {/* Path choices */}
                 {pathChoices.length > 0 ? (
-                  <div className="overflow-x-hidden mt-10 maxh-260 border-top">
+                  <div className="overflow-x-hidden mt-10 maxh-260 border-top" ref={linkerResultsRef as any}>
                     <ul className="list-reset">
-                      {pathChoices.map(pc => (
-                        <li key={pc.id} className="list-item-click"
+                      {pathChoices.map((pc, idx) => (
+                        <li key={pc.id} className="list-item-click" style={{ background: idx === linkerSelIndex ? '#333' : undefined }}
                           onClick={async () => {
                             let tid = linkerTagId
                             if (!tid) {
@@ -2611,13 +2652,13 @@ span[data-tag] {
                     </ul>
                   </div>
                 ) : (
-                  <div className="overflow-x-hidden mt-10 maxh-260 border-top">
+                  <div className="overflow-x-hidden mt-10 maxh-260 border-top" ref={linkerResultsRef as any}>
                     {linkerMatches.length === 0 ? (
                       <div className="muted pad-8">No objects</div>
                     ) : (
                       <ul className="list-reset">
-                        {linkerMatches.map(m => (
-                          <li key={m.id} className="list-item-click"
+                        {linkerMatches.map((m, idx) => (
+                          <li key={m.id} className="list-item-click" style={{ background: idx === linkerSelIndex ? '#333' : undefined }}
                             onClick={async () => {
                               // Check if multiple with same name
                               const same = await window.ipcRenderer.invoke('gamedocs:get-objects-by-name-with-paths', campaign!.id, m.name)
