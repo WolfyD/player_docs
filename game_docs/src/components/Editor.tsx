@@ -420,6 +420,11 @@ export const Editor: React.FC = () => {
       if (savedHoverDebounce && typeof savedHoverDebounce === 'number') {
         setHoverDebounce(savedHoverDebounce)
       }
+
+      const savedSidebarWidth = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.sidebarWidth').catch(() => null)
+      if (savedSidebarWidth && typeof savedSidebarWidth === 'number') {
+        setSidebarWidth(savedSidebarWidth)
+      }
     })()
   }, [])
 
@@ -1420,11 +1425,11 @@ span[data-tag] {
 
   function getIconForType(type: string) {
     switch (type) {
-      case 'Place': return <span className="icon-container"><i className="ri-map-line"></i></span>
+      case 'Place': return <span className="icon-container"><i className="ri-map-pin-2-line"></i></span>
       case 'Person': return <span className="icon-container"><i className="ri-user-line"></i></span>
-      case 'Lore': return <span className="icon-container"><i className="ri-book-line"></i></span>
+      case 'Lore': return <span className="icon-container"><i className="ri-quill-pen-ai-line"></i></span>
       default:
-      case 'Other': return <span className="icon-container"><i className="ri-question-line"></i></span>
+      case 'Other': return <span className="icon-container"><i className="ri-route-line"></i></span>
     }
   }
 
@@ -1511,7 +1516,7 @@ span[data-tag] {
         }
       }}>
         {/* Sidebar */}
-        <div className="sidebar">
+        <div className="sidebar" style={{ width: `${sidebarWidth}px` }}>
           <div className="sidebar-title"></div>
           {root && (
             <div>
@@ -1531,7 +1536,7 @@ span[data-tag] {
         </div>
 
         {/* Main panel: interactive editor (root description for now) */}
-        <div className="editor_container" style={{ position: 'relative' }}>
+        <div className="editor_container" style={{ position: 'relative', marginLeft: `${sidebarWidth - 180}px` }}>
           {activeLocked && (<div className="lock-badge" title="Locked"><i className="ri-lock-2-fill"></i></div>)}
           <div
             ref={editorRef}
@@ -2374,6 +2379,7 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', fonts)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.hoverDebounce', hoverDebounce)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.sidebarWidth', sidebarWidth)
                         applyPalette(paletteKey, paletteKey === 'custom' ? customColors : null)
                         applyFonts(fonts)
                         setShowSettings(false)
@@ -2432,9 +2438,12 @@ span[data-tag] {
                           <label className="debounce-label">Sidebar width (px)
                             <input type="number" min={200} max={500} step={10}
                               value={sidebarWidth}
-                              onChange={(e) => { 
+                              onChange={async (e) => { 
                                 const value = parseInt(e.target.value || '200', 10)
                                 setSidebarWidth(value)
+                                try {
+                                  await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.sidebarWidth', value)
+                                } catch {}
                               }}
                               className="settings-number" />
                           </label>

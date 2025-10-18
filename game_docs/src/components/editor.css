@@ -565,4 +565,4 @@ select option { background-color: #1e1e1e; color: #e5e5e5; }
 .list-item-delete:hover { color: #f06262c5; }
 
 .overflow-x-hidden { overflow-x: hidden; }
-.icon-container { width: 16px; height: 16px; opacity: 0.3; font-size: 16px; float: left; margin-top: 7px; }
+.icon-container { width: 16px; height: 16px; opacity: 0.3; font-size: 16px; float: right; margin-top: 7px; }
