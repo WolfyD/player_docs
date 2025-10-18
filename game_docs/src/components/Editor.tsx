@@ -18,6 +18,7 @@ export const Editor: React.FC = () => {
   const [catName, setCatName] = useState('')
   const [catType, setCatType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
   const [catErr, setCatErr] = useState<string | null>(null)
+  const [sidebarWidth, setSidebarWidth] = useState(200)
   const [catDescription, setCatDescription] = useState<string>('')
   useEffect(() => {
     const id = location.hash.replace(/^#\/editor\//, '')
@@ -1417,6 +1418,16 @@ span[data-tag] {
     }
   }
 
+  function getIconForType(type: string) {
+    switch (type) {
+      case 'Place': return <span className="icon-container"><i className="ri-map-line"></i></span>
+      case 'Person': return <span className="icon-container"><i className="ri-user-line"></i></span>
+      case 'Lore': return <span className="icon-container"><i className="ri-book-line"></i></span>
+      default:
+      case 'Other': return <span className="icon-container"><i className="ri-question-line"></i></span>
+    }
+  }
+
 
 
 
@@ -1512,7 +1523,7 @@ span[data-tag] {
               <div className="divider-line"></div>
               <div className="menu_items_container" style={{ height: getHeight() }}>
                 {children.map(c => (
-                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{c.name}</div>
+                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{getIconForType(c.type)}{c.name}</div>
                 ))}
               </div>
             </div>
@@ -2416,6 +2427,21 @@ span[data-tag] {
                       </div>
 
                       <div className="settings-group">
+                        <label className="box-title">Sidebar Settings</label>
+                        <div className="debounce-settings settings-flex-wrap">
+                          <label className="debounce-label">Sidebar width (px)
+                            <input type="number" min={200} max={500} step={10}
+                              value={sidebarWidth}
+                              onChange={(e) => { 
+                                const value = parseInt(e.target.value || '200', 10)
+                                setSidebarWidth(value)
+                              }}
+                              className="settings-number" />
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-group">
                         <label className="box-title">Fonts</label>
                         <div className="settings-flex-wrap">
                           <label className="w-260" style={{ flex: '1 1 260px' }}>Family
@@ -2442,11 +2468,11 @@ span[data-tag] {
                             value={fonts.weight}
                             onChange={(e) => { const f = { ...fonts, weight: parseInt(e.target.value || '400', 10) }; setFonts(f); applyFonts(f) }}
                             className="settings-number" /></label>
-                          <label>Text Color <input type="color"
+                          {/* <label>Text Color <input type="color"
                             value={fonts.color}
-                            onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label>
+                            onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label> */}
                           
-                          <button title="Choose font file" onClick={async () => {
+                          <button className="font-browse-button" title="Choose font file" onClick={async () => {
                                 const pick = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
                                 if (pick?.path) {
                                   // Copy font file to project folder

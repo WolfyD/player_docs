@@ -109,6 +109,10 @@ button {
   cursor: pointer;
 }
 
+.child-item:hover {
+  color: #c781ccc5 !important;
+}
+
 .editor_container { padding: 16px; }
 
 .editor_content_with_images {
@@ -295,7 +299,76 @@ button {
 .settings-shortcut-row { display: flex; flex-direction: row; gap: 20px; margin-left: 20px; }
 .settings-shortcut-row label { width: 200px; text-align: left; }
 .settings-shortcut-row input { width: 150px; }
+.font-browse-button {padding: 0 8px !important; height: 2em !important; font-size: 20px !important; margin-top: 1.65em;}
+
 .debounce-settings { display: flex; flex-direction: column; gap: 6px; }
+
+/* Improve spacing and hierarchy in left column */
+.settings-col {
+  flex: 1;
+  max-width: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px; /* increased for breathing room */
+}
+
+/* Make each group more visually distinct */
+.settings-group {
+  padding: 10px 12px;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+}
+
+/* Headings for each section */
+.settings-group > .box-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  opacity: 0.9;
+  text-transform: uppercase;
+  font-size: 0.9em;
+}
+
+/* Palette grid cleanup */
+.settings-custom-palette label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-size: 0.85em;
+  gap: 4px;
+}
+
+/* Make font controls align more neatly */
+.settings-flex-wrap label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 140px;
+}
+
+.settings-flex-wrap input,
+.settings-flex-wrap select {
+  width: 100%;
+}
+
+/* Buttons should stand out and align better */
+.settings-group button {
+  align-self: flex-start;
+  background: #333;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.settings-group button:hover {
+  background: #444;
+}
+
+
+
+
 
 .help-modal-overlay { padding-top: 60px; position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: flex-start; justify-content: center; justify-items: center; justify-self: center; z-index: 50; width: 100%; height: 100%; }
 .help-modal-content { padding-top: 20px; display: flex; flex-direction: column; gap: 10px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px;  width: 50%; min-width: 900px; max-width: 92vw; }
@@ -492,3 +565,4 @@ select option { background-color: #1e1e1e; color: #e5e5e5; }
 .list-item-delete:hover { color: #f06262c5; }
 
 .overflow-x-hidden { overflow-x: hidden; }
+.icon-container { width: 16px; height: 16px; opacity: 0.3; font-size: 16px; float: left; margin-top: 7px; }
