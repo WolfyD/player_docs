@@ -956,17 +956,17 @@ span[data-tag] {
     setCtxMenu(m => ({ ...m, visible: false }))
   }, [])
 
-  const handleLinkerInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value
-    setLinkerInput(v)
-    setPathChoices([])
-    if (!v.trim()) { setLinkerMatches(allObjects.slice(0, 10)); return }
-    const fuse = fuseRef.current
-    if (fuse) {
-      const res = fuse.search(v).map(r => r.item).slice(0, 10)
-      setLinkerMatches(res)
-    }
-  }, [allObjects])
+  // const handleLinkerInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  //   const v = e.target.value
+  //   setLinkerInput(v)
+  //   setPathChoices([])
+  //   if (!v.trim()) { setLinkerMatches(allObjects.slice(0, 10)); return }
+  //   const fuse = fuseRef.current
+  //   if (fuse) {
+  //     const res = fuse.search(v).map(r => r.item).slice(0, 10)
+  //     setLinkerMatches(res)
+  //   }
+  // }, [allObjects])
 
   const handleSelectPathChoice = useCallback(async (pc: { id: string; name: string; path: string }) => {
     const createdNew = !linkerTagId
@@ -1005,26 +1005,26 @@ span[data-tag] {
     setShowLinker(false)
   }, [campaign, linkerInput, linkerTagId])
 
-  const handleWizardCreate = useCallback(async () => {
-    const label = (wizardName || '').trim()
-    if (!label) return
-    const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
-    const ownerId = activeId || rootObj.id
-    const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, ownerId, label, (wizardType || null))
-    setShowWizard(false)
-    try {
-      const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
-      setHasPlaces(!!has)
-    } catch {}
-    replaceSelectionWithSpan(label, res.tagId)
-  }, [wizardName, wizardType, campaign, activeId])
+  // const handleWizardCreate = useCallback(async () => {
+  //   const label = (wizardName || '').trim()
+  //   if (!label) return
+  //   const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
+  //   const ownerId = activeId || rootObj.id
+  //   const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, ownerId, label, (wizardType || null))
+  //   setShowWizard(false)
+  //   try {
+  //     const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
+  //     setHasPlaces(!!has)
+  //   } catch {}
+  //   replaceSelectionWithSpan(label, res.tagId)
+  // }, [wizardName, wizardType, campaign, activeId])
 
-  const openAddChildModal = useCallback(() => {
-    setCatErr(null)
-    setCatName('')
-    setCatDescription('')
-    setShowCat(true)
-  }, [])
+  // const openAddChildModal = useCallback(() => {
+  //   setCatErr(null)
+  //   setCatName('')
+  //   setCatDescription('')
+  //   setShowCat(true)
+  // }, [])
 
   const toSentenceCase = useCallback((str: string) => {
     return str.charAt(0).toUpperCase() + str.slice(1)
@@ -1048,37 +1048,37 @@ span[data-tag] {
     return value
   }, [getProperShortcutName])
 
-  const handleParentClick = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    if (parent) selectObject(parent.id, parent.name)
-  }, [parent])
+  // const handleParentClick = useCallback((e: React.MouseEvent) => {
+  //   e.preventDefault()
+  //   if (parent) selectObject(parent.id, parent.name)
+  // }, [parent])
 
-  const handleMenuItemsClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement
-    const item = target.closest('[data-oid]') as HTMLElement | null
-    if (!item) return
-    const id = item.getAttribute('data-oid') || ''
-    const name = item.getAttribute('data-oname') || ''
-    if (id) selectObject(id, name)
-  }, [])
+  // const handleMenuItemsClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+  //   const target = e.target as HTMLElement
+  //   const item = target.closest('[data-oid]') as HTMLElement | null
+  //   if (!item) return
+  //   const id = item.getAttribute('data-oid') || ''
+  //   const name = item.getAttribute('data-oname') || ''
+  //   if (id) selectObject(id, name)
+  // }, [])
 
   //const handleCtxMenuLeave = useCallback(() => setCtxMenu(m => ({ ...m, visible: false })), [])
 
-  const handleCloseLinker = useCallback(() => setShowLinker(false), [])
+  // const handleCloseLinker = useCallback(() => setShowLinker(false), [])
 
-  const handlePathChoicesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
-    const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
-    if (!el) return
-    const pc = { id: el.dataset.id!, name: el.dataset.name!, path: el.dataset.path! }
-    handleSelectPathChoice(pc)
-  }, [handleSelectPathChoice])
+  // const handlePathChoicesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
+  //   const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
+  //   if (!el) return
+  //   const pc = { id: el.dataset.id!, name: el.dataset.name!, path: el.dataset.path! }
+  //   handleSelectPathChoice(pc)
+  // }, [handleSelectPathChoice])
 
-  const handleMatchesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
-    const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
-    if (!el) return
-    const m = { id: el.dataset.id!, name: el.dataset.name! }
-    handleSelectMatch(m)
-  }, [handleSelectMatch])
+  // const handleMatchesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
+  //   const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
+  //   if (!el) return
+  //   const m = { id: el.dataset.id!, name: el.dataset.name! }
+  //   handleSelectMatch(m)
+  // }, [handleSelectMatch])
 
   const handleShowChildContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>, id: string, name: string) => {
     e.preventDefault()
@@ -1167,32 +1167,32 @@ span[data-tag] {
     setChildren(kids)
   }, [campaign, activeId, root, childCtxMenu.selId])
 
-  function insertAtSelection(text: string) {
-    // For contentEditable, prefer replacing current Range; fallback to append
-    const selRange = selectionRangeRef.current
-    const el = editorRef.current
-    if (el && selRange) {
-      selRange.deleteContents()
-      selRange.insertNode(document.createTextNode(text))
-      const txt = el.innerText
-      setDesc(txt)
-      return
-    }
-    setDesc(prev => (prev ? prev + text : text))
-  }
+  // function insertAtSelection(text: string) {
+  //   // For contentEditable, prefer replacing current Range; fallback to append
+  //   const selRange = selectionRangeRef.current
+  //   const el = editorRef.current
+  //   if (el && selRange) {
+  //     selRange.deleteContents()
+  //     selRange.insertNode(document.createTextNode(text))
+  //     const txt = el.innerText
+  //     setDesc(txt)
+  //     return
+  //   }
+  //   setDesc(prev => (prev ? prev + text : text))
+  // }
 
-  function replaceSelectionWith(text: string) {
-    const selRange = selectionRangeRef.current
-    const el = editorRef.current
-    if (el && selRange) {
-      selRange.deleteContents()
-      selRange.insertNode(document.createTextNode(text))
-      const txt = el.innerText
-      setDesc(txt)
-      return
-    }
-    insertAtSelection(text)
-  }
+  // function replaceSelectionWith(text: string) {
+  //   const selRange = selectionRangeRef.current
+  //   const el = editorRef.current
+  //   if (el && selRange) {
+  //     selRange.deleteContents()
+  //     selRange.insertNode(document.createTextNode(text))
+  //     const txt = el.innerText
+  //     setDesc(txt)
+  //     return
+  //   }
+  //   insertAtSelection(text)
+  // }
 
   // removed erroneous function shadowing setAddPictureModal
 
@@ -2163,7 +2163,20 @@ span[data-tag] {
                       }
                       if (e.key === 'ArrowDown') {
                         e.preventDefault()
-                        setPaletteSelIndex(i => i + 1)
+                        if (isCommandMode) {
+                          if (cmdParamMode && selectedCommand) {
+                            const meta = getParamMeta(selectedCommand)
+                            const choices: any[] = meta.choices || []
+                            const term = paletteInput.trim().toLowerCase()
+                            const filtered = choices.filter(ch => String(ch).toLowerCase().includes(term))
+                            setPaletteSelIndex(i => Math.min(i + 1, Math.max(0, filtered.length - 1)))
+                          } else {
+                            setPaletteSelIndex(i => Math.min(i + 1, Math.max(0, filteredCommands.length - 1)))
+                          }
+                        } else {
+                          const totalItems = paletteResults.objects.length + paletteResults.tags.length
+                          setPaletteSelIndex(i => Math.min(i + 1, Math.max(0, totalItems - 1)))
+                        }
                       }
                       if (e.key === 'ArrowUp') {
                         e.preventDefault()
@@ -2177,6 +2190,25 @@ span[data-tag] {
                           const hasParam = !!(cmd as any).parameters
                           if (!hasParam) runCommand(cmd.id)
                           else beginParamMode(cmd)
+                        }
+                      }
+                      if (e.key === 'Enter' && !isCommandMode) {
+                        // Handle Enter for search mode
+                        const totalItems = paletteResults.objects.length + paletteResults.tags.length
+                        if (totalItems > 0) {
+                          const idx = Math.min(Math.max(0, paletteSelIndex), totalItems - 1)
+                          if (idx < paletteResults.objects.length) {
+                            // Select object
+                            const obj = paletteResults.objects[idx]
+                            setShowPalette(false)
+                            selectObject(obj.id, obj.name)
+                          } else {
+                            // Select tag
+                            const tagIdx = idx - paletteResults.objects.length
+                            const tag = paletteResults.tags[tagIdx]
+                            setShowPalette(false)
+                            // For now, just close palette - could implement tag navigation later
+                          }
                         }
                       }
                     }}
@@ -2225,17 +2257,20 @@ span[data-tag] {
                         {paletteResults.objects.length > 0 && (
                           <div className="pad-8">
                             <div className="palette-section-title">Objects</div>
-                            {paletteResults.objects.map(o => (
-                              <div key={o.id} className="palette-item" onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
+                            {paletteResults.objects.map((o, idx) => (
+                              <div key={o.id} className="palette-item" style={{ background: idx === paletteSelIndex ? '#333' : undefined }} onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
                             ))}
                           </div>
                         )}
                         {paletteResults.tags.length > 0 && (
                           <div className="pad-8">
                             <div className="palette-section-title">Tags</div>
-                            {paletteResults.tags.map(t => (
-                              <div key={t.id} className="palette-item" onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
-                            ))}
+                            {paletteResults.tags.map((t, idx) => {
+                              const globalIdx = paletteResults.objects.length + idx
+                              return (
+                                <div key={t.id} className="palette-item" style={{ background: globalIdx === paletteSelIndex ? '#333' : undefined }} onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
+                              )
+                            })}
                           </div>
                         )}
                       </>
@@ -2556,7 +2591,7 @@ span[data-tag] {
 
                 {/* Path choices */}
                 {pathChoices.length > 0 ? (
-                  <div className="mt-10 maxh-260 border-top">
+                  <div className="overflow-x-hidden mt-10 maxh-260 border-top">
                     <ul className="list-reset">
                       {pathChoices.map(pc => (
                         <li key={pc.id} className="list-item-click"
@@ -2576,7 +2611,7 @@ span[data-tag] {
                     </ul>
                   </div>
                 ) : (
-                  <div className="mt-10 maxh-260 border-top">
+                  <div className="overflow-x-hidden mt-10 maxh-260 border-top">
                     {linkerMatches.length === 0 ? (
                       <div className="muted pad-8">No objects</div>
                     ) : (
