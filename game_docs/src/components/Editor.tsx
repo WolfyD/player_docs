@@ -1237,13 +1237,110 @@ span[data-tag] {
       selRange.deleteContents()
       selRange.insertNode(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore focus to editor and position cursor after the new link
+      el.focus()
+
+      // if (caret.hasNextOnSameLine()) {
+      //   caret.moveRightIfSameLine()
+      //   // return
+      //   toast('hasNextCharOnSameLine', 'info');
+      //   return;
+      // }
+      
+      // Create a text node with a space after the span to ensure cursor is outside the tag
+      const textNode = document.createTextNode(' ')
+      span.parentNode?.insertBefore(textNode, span.nextSibling)
+      
+      const newRange = document.createRange()
+      newRange.setStart(textNode, 1) // Position after the space
+      newRange.collapse(true)
+      const selection = window.getSelection()
+      if (selection) {
+        selection.removeAllRanges()
+        selection.addRange(newRange)
+        selectionRangeRef.current = newRange
+      }
       return
     }
     if (el) {
       el.appendChild(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore focus to editor and position cursor after the new link
+      el.focus()
+      
+      // Create a text node with a space after the span to ensure cursor is outside the tag
+      const textNode = document.createTextNode(' ')
+      span.parentNode?.insertBefore(textNode, span.nextSibling)
+      
+      const newRange = document.createRange()
+      newRange.setStart(textNode, 1) // Position after the space
+      newRange.collapse(true)
+      const selection = window.getSelection()
+      if (selection) {
+        selection.removeAllRanges()
+        selection.addRange(newRange)
+        selectionRangeRef.current = newRange
+      }
     }
   }
+
+  function moveCaretRight() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+  
+    const range = sel.getRangeAt(0);
+    const node = range.endContainer;
+    const offset = range.endOffset;
+  
+    if (node.nodeType !== Node.TEXT_NODE) return;
+    if (offset >= (node.textContent?.length || 0)) return;
+  
+    const newRange = document.createRange();
+    newRange.setStart(node, offset + 1);
+    newRange.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+  }
+  
+  
+  
+
+  function hasNextCharOnSameLine() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return false;
+  
+    const range = sel.getRangeAt(0);
+    const node = range.endContainer;
+    const offset = range.endOffset;
+  
+    if (node.nodeType !== Node.TEXT_NODE) return false;
+  
+    const textNode = node as Text;
+    if (offset >= textNode.length) return false;
+  
+    // Current caret position
+    const baseRange = range.cloneRange();
+    baseRange.collapse(true);
+    const baseRect = baseRange.getBoundingClientRect();
+  
+    // Range of next character
+    const nextRange = range.cloneRange();
+    nextRange.setStart(textNode, offset);
+    nextRange.setEnd(textNode, offset + 1);
+    const nextRect = nextRange.getBoundingClientRect();
+  
+    if (!baseRect || !nextRect) return false;
+  
+    // Different line if y changed noticeably or x "wrapped around"
+    const yDiff = Math.abs(baseRect.top - nextRect.top);
+    const wrapped = nextRect.left < baseRect.left - 2; // jumped back to start of line
+  
+    return yDiff < 1 && !wrapped;
+  }
+  
+  
 
   function descToHtml(text: string): string {
     // Convert [[label|tag_xxx]] tokens to span elements
