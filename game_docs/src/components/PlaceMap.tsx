@@ -237,7 +237,11 @@ const PlaceMap: React.FC = () => {
     }
     const onClick = (e: MouseEvent) => {
       const hit = hitAt(e.clientX, e.clientY)
-      if (hit) (window as any).ipcRenderer.invoke('gamedocs:focus-editor-select', gameId, hit.id)
+      if (hit) {
+        // Temporarily disabled due to editor selection bug
+        // (window as any).ipcRenderer.invoke('gamedocs:focus-editor-select', gameId, hit.id)
+        console.log(`Map node clicked: ${hit.id} - ${hit.name} (click handling disabled)`)
+      }
     }
     const onMove2 = (e: MouseEvent) => {
       const hit = hitAt(e.clientX, e.clientY)
