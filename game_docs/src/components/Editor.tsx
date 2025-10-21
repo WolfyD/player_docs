@@ -1144,6 +1144,40 @@ span[data-tag] {
     } else {
       setParent(null)
     }
+    editorRef?.current?.focus()
+    // move the caret to the end of the editor
+    requestAnimationFrame(() => {
+      if (editorRef.current) {
+        const sel = window.getSelection()
+        if (sel) {
+          const range = document.createRange()
+          // Find the last text node or element in the editor
+          const walker = document.createTreeWalker(
+            editorRef.current,
+            NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+            null
+          )
+          let lastNode = editorRef.current
+          let node
+          while (node = walker.nextNode()) {
+            lastNode = node
+          }
+          
+          // Position the range at the end of the last node
+          if (lastNode.nodeType === Node.TEXT_NODE) {
+            range.setStart(lastNode, lastNode.textContent?.length || 0)
+          } else {
+            range.selectNodeContents(lastNode)
+            range.collapse(false) // false = collapse to end
+          }
+          
+          range.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(range)
+          selectionRangeRef.current = range
+        }
+      }
+    })
   }
 
   const handleCreateChild = useCallback(async () => {

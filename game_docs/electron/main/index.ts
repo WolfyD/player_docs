@@ -627,6 +627,7 @@ async function createEditorWindow(title: string, routeHash: string) {
     baseOptions.height = validatedBounds.height
     baseOptions.x = validatedBounds.x
     baseOptions.y = validatedBounds.y
+    baseOptions.autoHideMenuBar = true
   }
   editorWin = new BrowserWindow(baseOptions)
   editorWin.webContents.on('did-finish-load', () => {
@@ -781,6 +782,7 @@ async function createWindow() {
     mainOpts.height = validatedBounds.height
     mainOpts.x = validatedBounds.x
     mainOpts.y = validatedBounds.y
+    mainOpts.autoHideMenuBar = true
   }
   win = new BrowserWindow(mainOpts)
   if (savedMain) {
@@ -885,6 +887,7 @@ app.whenReady().then(async () => {
       opts.height = validatedBounds.height
       opts.x = validatedBounds.x
       opts.y = validatedBounds.y
+      opts.autoHideMenuBar = true
     }
     if (mapWin && !mapWin.isDestroyed()) {
       mapWin.focus()
