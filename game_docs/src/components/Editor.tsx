@@ -18,6 +18,7 @@ export const Editor: React.FC = () => {
   const [catName, setCatName] = useState('')
   const [catType, setCatType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
   const [catErr, setCatErr] = useState<string | null>(null)
+  const [sidebarWidth, setSidebarWidth] = useState(200)
   const [catDescription, setCatDescription] = useState<string>('')
   useEffect(() => {
     const id = location.hash.replace(/^#\/editor\//, '')
@@ -80,6 +81,8 @@ export const Editor: React.FC = () => {
   const [linkerInput, setLinkerInput] = useState('')
   const [linkerMatches, setLinkerMatches] = useState<Array<{ id: string; name: string; path?: string }>>([])
   const [linkerTagId, setLinkerTagId] = useState<string | null>(null)
+  const [linkerSelIndex, setLinkerSelIndex] = useState(0)
+  const [isLinkLastWordMode, setIsLinkLastWordMode] = useState(false)
   const [allObjects, setAllObjects] = useState<Array<{ id: string; name: string; parent_id: string | null }>>([])
   const [pathChoices, setPathChoices] = useState<Array<{ id: string; name: string; path: string }>>([])
   const fuseRef = useRef<Fuse<any> | null>(null)
@@ -112,6 +115,7 @@ export const Editor: React.FC = () => {
   const [selectedCommand, setSelectedCommand] = useState<any | null>(null)
   const [paletteSelIndex, setPaletteSelIndex] = useState(0)
   const paletteResultsRef = useRef<HTMLDivElement | null>(null)
+  const linkerResultsRef = useRef<HTMLDivElement | null>(null)
 
   // Test function to manually trigger missing image cleanup
   const handleTestImageCleanup = useCallback(async () => {
@@ -417,6 +421,11 @@ export const Editor: React.FC = () => {
       if (savedHoverDebounce && typeof savedHoverDebounce === 'number') {
         setHoverDebounce(savedHoverDebounce)
       }
+
+      const savedSidebarWidth = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.sidebarWidth').catch(() => null)
+      if (savedSidebarWidth && typeof savedSidebarWidth === 'number') {
+        setSidebarWidth(savedSidebarWidth)
+      }
     })()
   }, [])
 
@@ -662,6 +671,9 @@ span[data-tag] {
     if (cmdParamMode && selectedCommand) setPaletteSelIndex(0)
   }, [paletteInput, cmdParamMode, selectedCommand])
 
+  // Reset linker selection index when results change
+  useEffect(() => { setLinkerSelIndex(0) }, [linkerMatches.length, pathChoices.length])
+
   // Keep the highlighted item in view
   useEffect(() => {
     if (!showPalette) return
@@ -675,6 +687,20 @@ span[data-tag] {
       el.scrollIntoView({ block: 'nearest' })
     }
   }, [showPalette, paletteSelIndex, isCommandMode, cmdParamMode, filteredCommands.length, paletteResults.objects.length, paletteResults.tags.length])
+
+  // Keep the highlighted item in view for linker
+  useEffect(() => {
+    if (!showLinker) return
+    const container = linkerResultsRef.current
+    if (!container) return
+    const items = Array.from(container.querySelectorAll<HTMLLIElement>('.list-item-click'))
+    if (items.length === 0) return
+    const idx = Math.min(Math.max(0, linkerSelIndex), items.length - 1)
+    const el = items[idx]
+    if (el && typeof (el as any).scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' })
+    }
+  }, [showLinker, linkerSelIndex])
 
   function runCommand(cmdId: string) {
     switch (cmdId) {
@@ -874,6 +900,7 @@ span[data-tag] {
     }
     setLinkerTagId(existingTag)
     setLinkerInput(ctxMenu.selText.trim())
+    setIsLinkLastWordMode(false) // Reset flag for right-click linking
     setShowLinker(true)
     // preload objects for fuzzy
     const rows = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id)
@@ -956,17 +983,17 @@ span[data-tag] {
     setCtxMenu(m => ({ ...m, visible: false }))
   }, [])
 
-  const handleLinkerInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value
-    setLinkerInput(v)
-    setPathChoices([])
-    if (!v.trim()) { setLinkerMatches(allObjects.slice(0, 10)); return }
-    const fuse = fuseRef.current
-    if (fuse) {
-      const res = fuse.search(v).map(r => r.item).slice(0, 10)
-      setLinkerMatches(res)
-    }
-  }, [allObjects])
+  // const handleLinkerInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  //   const v = e.target.value
+  //   setLinkerInput(v)
+  //   setPathChoices([])
+  //   if (!v.trim()) { setLinkerMatches(allObjects.slice(0, 10)); return }
+  //   const fuse = fuseRef.current
+  //   if (fuse) {
+  //     const res = fuse.search(v).map(r => r.item).slice(0, 10)
+  //     setLinkerMatches(res)
+  //   }
+  // }, [allObjects])
 
   const handleSelectPathChoice = useCallback(async (pc: { id: string; name: string; path: string }) => {
     const createdNew = !linkerTagId
@@ -979,10 +1006,10 @@ span[data-tag] {
     if (!tid) return
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, pc.id)
     if (createdNew) {
-    replaceSelectionWithSpan(linkerInput || pc.name, tid)
+    replaceSelectionWithSpan(linkerInput || pc.name, tid, isLinkLastWordMode)
     }
     setShowLinker(false)
-  }, [campaign, linkerInput, linkerTagId])
+  }, [campaign, linkerInput, linkerTagId, isLinkLastWordMode])
 
   const handleSelectMatch = useCallback(async (m: { id: string; name: string }) => {
     const same = await window.ipcRenderer.invoke('gamedocs:get-objects-by-name-with-paths', campaign!.id, m.name)
@@ -1000,31 +1027,31 @@ span[data-tag] {
     if (!tid) return
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, m.id)
     if (createdNew) {
-    replaceSelectionWithSpan(linkerInput || m.name, tid)
+    replaceSelectionWithSpan(linkerInput || m.name, tid, isLinkLastWordMode)
     }
     setShowLinker(false)
-  }, [campaign, linkerInput, linkerTagId])
+  }, [campaign, linkerInput, linkerTagId, isLinkLastWordMode])
 
-  const handleWizardCreate = useCallback(async () => {
-    const label = (wizardName || '').trim()
-    if (!label) return
-    const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
-    const ownerId = activeId || rootObj.id
-    const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, ownerId, label, (wizardType || null))
-    setShowWizard(false)
-    try {
-      const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
-      setHasPlaces(!!has)
-    } catch {}
-    replaceSelectionWithSpan(label, res.tagId)
-  }, [wizardName, wizardType, campaign, activeId])
+  // const handleWizardCreate = useCallback(async () => {
+  //   const label = (wizardName || '').trim()
+  //   if (!label) return
+  //   const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
+  //   const ownerId = activeId || rootObj.id
+  //   const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, ownerId, label, (wizardType || null))
+  //   setShowWizard(false)
+  //   try {
+  //     const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign!.id).catch(() => false)
+  //     setHasPlaces(!!has)
+  //   } catch {}
+  //   replaceSelectionWithSpan(label, res.tagId)
+  // }, [wizardName, wizardType, campaign, activeId])
 
-  const openAddChildModal = useCallback(() => {
-    setCatErr(null)
-    setCatName('')
-    setCatDescription('')
-    setShowCat(true)
-  }, [])
+  // const openAddChildModal = useCallback(() => {
+  //   setCatErr(null)
+  //   setCatName('')
+  //   setCatDescription('')
+  //   setShowCat(true)
+  // }, [])
 
   const toSentenceCase = useCallback((str: string) => {
     return str.charAt(0).toUpperCase() + str.slice(1)
@@ -1048,37 +1075,37 @@ span[data-tag] {
     return value
   }, [getProperShortcutName])
 
-  const handleParentClick = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    if (parent) selectObject(parent.id, parent.name)
-  }, [parent])
+  // const handleParentClick = useCallback((e: React.MouseEvent) => {
+  //   e.preventDefault()
+  //   if (parent) selectObject(parent.id, parent.name)
+  // }, [parent])
 
-  const handleMenuItemsClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement
-    const item = target.closest('[data-oid]') as HTMLElement | null
-    if (!item) return
-    const id = item.getAttribute('data-oid') || ''
-    const name = item.getAttribute('data-oname') || ''
-    if (id) selectObject(id, name)
-  }, [])
+  // const handleMenuItemsClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+  //   const target = e.target as HTMLElement
+  //   const item = target.closest('[data-oid]') as HTMLElement | null
+  //   if (!item) return
+  //   const id = item.getAttribute('data-oid') || ''
+  //   const name = item.getAttribute('data-oname') || ''
+  //   if (id) selectObject(id, name)
+  // }, [])
 
   //const handleCtxMenuLeave = useCallback(() => setCtxMenu(m => ({ ...m, visible: false })), [])
 
-  const handleCloseLinker = useCallback(() => setShowLinker(false), [])
+  // const handleCloseLinker = useCallback(() => setShowLinker(false), [])
 
-  const handlePathChoicesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
-    const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
-    if (!el) return
-    const pc = { id: el.dataset.id!, name: el.dataset.name!, path: el.dataset.path! }
-    handleSelectPathChoice(pc)
-  }, [handleSelectPathChoice])
+  // const handlePathChoicesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
+  //   const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
+  //   if (!el) return
+  //   const pc = { id: el.dataset.id!, name: el.dataset.name!, path: el.dataset.path! }
+  //   handleSelectPathChoice(pc)
+  // }, [handleSelectPathChoice])
 
-  const handleMatchesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
-    const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
-    if (!el) return
-    const m = { id: el.dataset.id!, name: el.dataset.name! }
-    handleSelectMatch(m)
-  }, [handleSelectMatch])
+  // const handleMatchesClick = useCallback((e: React.MouseEvent<HTMLUListElement>) => {
+  //   const el = (e.target as HTMLElement).closest('li[data-id]') as HTMLElement | null
+  //   if (!el) return
+  //   const m = { id: el.dataset.id!, name: el.dataset.name! }
+  //   handleSelectMatch(m)
+  // }, [handleSelectMatch])
 
   const handleShowChildContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>, id: string, name: string) => {
     e.preventDefault()
@@ -1119,6 +1146,40 @@ span[data-tag] {
     } else {
       setParent(null)
     }
+    editorRef?.current?.focus()
+    // move the caret to the end of the editor
+    requestAnimationFrame(() => {
+      if (editorRef.current) {
+        const sel = window.getSelection()
+        if (sel) {
+          const range = document.createRange()
+          // Find the last text node or element in the editor
+          const walker = document.createTreeWalker(
+            editorRef.current,
+            NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+            null
+          )
+          let lastNode: Node = editorRef.current
+          let node
+          while (node = walker.nextNode()) {
+            lastNode = node
+          }
+          
+          // Position the range at the end of the last node
+          if (lastNode.nodeType === Node.TEXT_NODE) {
+            range.setStart(lastNode, lastNode.textContent?.length || 0)
+          } else {
+            range.selectNodeContents(lastNode)
+            range.collapse(false) // false = collapse to end
+          }
+          
+          range.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(range)
+          selectionRangeRef.current = range
+        }
+      }
+    })
   }
 
   const handleCreateChild = useCallback(async () => {
@@ -1167,36 +1228,36 @@ span[data-tag] {
     setChildren(kids)
   }, [campaign, activeId, root, childCtxMenu.selId])
 
-  function insertAtSelection(text: string) {
-    // For contentEditable, prefer replacing current Range; fallback to append
-    const selRange = selectionRangeRef.current
-    const el = editorRef.current
-    if (el && selRange) {
-      selRange.deleteContents()
-      selRange.insertNode(document.createTextNode(text))
-      const txt = el.innerText
-      setDesc(txt)
-      return
-    }
-    setDesc(prev => (prev ? prev + text : text))
-  }
+  // function insertAtSelection(text: string) {
+  //   // For contentEditable, prefer replacing current Range; fallback to append
+  //   const selRange = selectionRangeRef.current
+  //   const el = editorRef.current
+  //   if (el && selRange) {
+  //     selRange.deleteContents()
+  //     selRange.insertNode(document.createTextNode(text))
+  //     const txt = el.innerText
+  //     setDesc(txt)
+  //     return
+  //   }
+  //   setDesc(prev => (prev ? prev + text : text))
+  // }
 
-  function replaceSelectionWith(text: string) {
-    const selRange = selectionRangeRef.current
-    const el = editorRef.current
-    if (el && selRange) {
-      selRange.deleteContents()
-      selRange.insertNode(document.createTextNode(text))
-      const txt = el.innerText
-      setDesc(txt)
-      return
-    }
-    insertAtSelection(text)
-  }
+  // function replaceSelectionWith(text: string) {
+  //   const selRange = selectionRangeRef.current
+  //   const el = editorRef.current
+  //   if (el && selRange) {
+  //     selRange.deleteContents()
+  //     selRange.insertNode(document.createTextNode(text))
+  //     const txt = el.innerText
+  //     setDesc(txt)
+  //     return
+  //   }
+  //   insertAtSelection(text)
+  // }
 
   // removed erroneous function shadowing setAddPictureModal
 
-  function replaceSelectionWithSpan(label: string, tagId: string) {
+  function replaceSelectionWithSpan(label: string, tagId: string, addSpaceAfter: boolean = false) {
     const selRange = selectionRangeRef.current
     const el = editorRef.current
     const span = document.createElement('span')
@@ -1212,13 +1273,116 @@ span[data-tag] {
       selRange.deleteContents()
       selRange.insertNode(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore focus to editor and position cursor after the new link
+      el.focus()
+
+      if (addSpaceAfter) {
+        // Create a text node with a space after the span to ensure cursor is outside the tag
+        const textNode = document.createTextNode(' ')
+        span.parentNode?.insertBefore(textNode, span.nextSibling)
+        
+        const newRange = document.createRange()
+        newRange.setStart(textNode, 1) // Position after the space
+        newRange.collapse(true)
+        const selection = window.getSelection()
+        if (selection) {
+          selection.removeAllRanges()
+          selection.addRange(newRange)
+          selectionRangeRef.current = newRange
+        }
+      } else {
+        // Position cursor right after the span without adding extra space
+        const newRange = document.createRange()
+        newRange.setStartAfter(span)
+        newRange.collapse(true)
+        const selection = window.getSelection()
+        if (selection) {
+          selection.removeAllRanges()
+          selection.addRange(newRange)
+          selectionRangeRef.current = newRange
+        }
+      }
       return
     }
     if (el) {
       el.appendChild(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore focus to editor and position cursor after the new link
+      el.focus()
+      
+      // Create a text node with a space after the span to ensure cursor is outside the tag
+      const textNode = document.createTextNode(' ')
+      span.parentNode?.insertBefore(textNode, span.nextSibling)
+      
+      const newRange = document.createRange()
+      newRange.setStart(textNode, 1) // Position after the space
+      newRange.collapse(true)
+      const selection = window.getSelection()
+      if (selection) {
+        selection.removeAllRanges()
+        selection.addRange(newRange)
+        selectionRangeRef.current = newRange
+      }
     }
   }
+
+  function moveCaretRight() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+  
+    const range = sel.getRangeAt(0);
+    const node = range.endContainer;
+    const offset = range.endOffset;
+  
+    if (node.nodeType !== Node.TEXT_NODE) return;
+    if (offset >= (node.textContent?.length || 0)) return;
+  
+    const newRange = document.createRange();
+    newRange.setStart(node, offset + 1);
+    newRange.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+  }
+  
+  
+  
+
+  function hasNextCharOnSameLine() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return false;
+  
+    const range = sel.getRangeAt(0);
+    const node = range.endContainer;
+    const offset = range.endOffset;
+  
+    if (node.nodeType !== Node.TEXT_NODE) return false;
+  
+    const textNode = node as Text;
+    if (offset >= textNode.length) return false;
+  
+    // Current caret position
+    const baseRange = range.cloneRange();
+    baseRange.collapse(true);
+    const baseRect = baseRange.getBoundingClientRect();
+  
+    // Range of next character
+    const nextRange = range.cloneRange();
+    nextRange.setStart(textNode, offset);
+    nextRange.setEnd(textNode, offset + 1);
+    const nextRect = nextRange.getBoundingClientRect();
+  
+    if (!baseRect || !nextRect) return false;
+  
+    // Different line if y changed noticeably or x "wrapped around"
+    const yDiff = Math.abs(baseRect.top - nextRect.top);
+    const wrapped = nextRect.left < baseRect.left - 2; // jumped back to start of line
+  
+    return yDiff < 1 && !wrapped;
+  }
+  
+  
 
   function descToHtml(text: string): string {
     // Convert [[label|tag_xxx]] tokens to span elements
@@ -1345,6 +1509,7 @@ span[data-tag] {
       // Store the range for potential use
       selectionRangeRef.current = newRange
 
+      setIsLinkLastWordMode(true)
       handleAddLinkOpenOnSelectedWord()
       
       console.log('Selected word:', text.substring(wordStart, wordEnd))
@@ -1395,6 +1560,16 @@ span[data-tag] {
           closeFn(false)
         }
       }
+    }
+  }
+
+  function getIconForType(type: string) {
+    switch (type) {
+      case 'Place': return <span className="icon-container"><i className="ri-map-pin-2-line"></i></span>
+      case 'Person': return <span className="icon-container"><i className="ri-user-line"></i></span>
+      case 'Lore': return <span className="icon-container"><i className="ri-quill-pen-ai-line"></i></span>
+      default:
+      case 'Other': return <span className="icon-container"><i className="ri-route-line"></i></span>
     }
   }
 
@@ -1481,7 +1656,7 @@ span[data-tag] {
         }
       }}>
         {/* Sidebar */}
-        <div className="sidebar">
+        <div className="sidebar" style={{ width: `${sidebarWidth}px` }}>
           <div className="sidebar-title"></div>
           {root && (
             <div>
@@ -1493,7 +1668,7 @@ span[data-tag] {
               <div className="divider-line"></div>
               <div className="menu_items_container" style={{ height: getHeight() }}>
                 {children.map(c => (
-                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{c.name}</div>
+                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{getIconForType(c.type)}{c.name}</div>
                 ))}
               </div>
             </div>
@@ -1501,7 +1676,7 @@ span[data-tag] {
         </div>
 
         {/* Main panel: interactive editor (root description for now) */}
-        <div className="editor_container" style={{ position: 'relative' }}>
+        <div className="editor_container" style={{ position: 'relative', marginLeft: `${sidebarWidth - 180}px` }}>
           {activeLocked && (<div className="lock-badge" title="Locked"><i className="ri-lock-2-fill"></i></div>)}
           <div
             ref={editorRef}
@@ -2163,7 +2338,20 @@ span[data-tag] {
                       }
                       if (e.key === 'ArrowDown') {
                         e.preventDefault()
-                        setPaletteSelIndex(i => i + 1)
+                        if (isCommandMode) {
+                          if (cmdParamMode && selectedCommand) {
+                            const meta = getParamMeta(selectedCommand)
+                            const choices: any[] = meta.choices || []
+                            const term = paletteInput.trim().toLowerCase()
+                            const filtered = choices.filter(ch => String(ch).toLowerCase().includes(term))
+                            setPaletteSelIndex(i => Math.min(i + 1, Math.max(0, filtered.length - 1)))
+                          } else {
+                            setPaletteSelIndex(i => Math.min(i + 1, Math.max(0, filteredCommands.length - 1)))
+                          }
+                        } else {
+                          const totalItems = paletteResults.objects.length + paletteResults.tags.length
+                          setPaletteSelIndex(i => Math.min(i + 1, Math.max(0, totalItems - 1)))
+                        }
                       }
                       if (e.key === 'ArrowUp') {
                         e.preventDefault()
@@ -2177,6 +2365,25 @@ span[data-tag] {
                           const hasParam = !!(cmd as any).parameters
                           if (!hasParam) runCommand(cmd.id)
                           else beginParamMode(cmd)
+                        }
+                      }
+                      if (e.key === 'Enter' && !isCommandMode) {
+                        // Handle Enter for search mode
+                        const totalItems = paletteResults.objects.length + paletteResults.tags.length
+                        if (totalItems > 0) {
+                          const idx = Math.min(Math.max(0, paletteSelIndex), totalItems - 1)
+                          if (idx < paletteResults.objects.length) {
+                            // Select object
+                            const obj = paletteResults.objects[idx]
+                            setShowPalette(false)
+                            selectObject(obj.id, obj.name)
+                          } else {
+                            // Select tag
+                            const tagIdx = idx - paletteResults.objects.length
+                            const tag = paletteResults.tags[tagIdx]
+                            setShowPalette(false)
+                            // For now, just close palette - could implement tag navigation later
+                          }
                         }
                       }
                     }}
@@ -2225,17 +2432,20 @@ span[data-tag] {
                         {paletteResults.objects.length > 0 && (
                           <div className="pad-8">
                             <div className="palette-section-title">Objects</div>
-                            {paletteResults.objects.map(o => (
-                              <div key={o.id} className="palette-item" onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
+                            {paletteResults.objects.map((o, idx) => (
+                              <div key={o.id} className="palette-item" style={{ background: idx === paletteSelIndex ? '#333' : undefined }} onClick={() => { setShowPalette(false); selectObject(o.id, o.name) }}>{o.name}</div>
                             ))}
                           </div>
                         )}
                         {paletteResults.tags.length > 0 && (
                           <div className="pad-8">
                             <div className="palette-section-title">Tags</div>
-                            {paletteResults.tags.map(t => (
-                              <div key={t.id} className="palette-item" onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
-                            ))}
+                            {paletteResults.tags.map((t, idx) => {
+                              const globalIdx = paletteResults.objects.length + idx
+                              return (
+                                <div key={t.id} className="palette-item" style={{ background: globalIdx === paletteSelIndex ? '#333' : undefined }} onClick={() => { setShowPalette(false); /* could show tag usage or navigate owner */ }}>{t.id}</div>
+                              )
+                            })}
                           </div>
                         )}
                       </>
@@ -2309,6 +2519,7 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.fonts', fonts)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.hoverDebounce', hoverDebounce)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.sidebarWidth', sidebarWidth)
                         applyPalette(paletteKey, paletteKey === 'custom' ? customColors : null)
                         applyFonts(fonts)
                         setShowSettings(false)
@@ -2362,6 +2573,24 @@ span[data-tag] {
                       </div>
 
                       <div className="settings-group">
+                        <label className="box-title">Sidebar Settings</label>
+                        <div className="debounce-settings settings-flex-wrap">
+                          <label className="debounce-label">Sidebar width (px)
+                            <input type="number" min={200} max={500} step={10}
+                              value={sidebarWidth}
+                              onChange={async (e) => { 
+                                const value = parseInt(e.target.value || '200', 10)
+                                setSidebarWidth(value)
+                                try {
+                                  await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.sidebarWidth', value)
+                                } catch {}
+                              }}
+                              className="settings-number" />
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-group">
                         <label className="box-title">Fonts</label>
                         <div className="settings-flex-wrap">
                           <label className="w-260" style={{ flex: '1 1 260px' }}>Family
@@ -2388,11 +2617,11 @@ span[data-tag] {
                             value={fonts.weight}
                             onChange={(e) => { const f = { ...fonts, weight: parseInt(e.target.value || '400', 10) }; setFonts(f); applyFonts(f) }}
                             className="settings-number" /></label>
-                          <label>Text Color <input type="color"
+                          {/* <label>Text Color <input type="color"
                             value={fonts.color}
-                            onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label>
+                            onChange={(e) => { const f = { ...fonts, color: e.target.value }; setFonts(f); applyFonts(f) }} /></label> */}
                           
-                          <button title="Choose font file" onClick={async () => {
+                          <button className="font-browse-button" title="Choose font file" onClick={async () => {
                                 const pick = await window.ipcRenderer.invoke('gamedocs:choose-font-file').catch(() => null)
                                 if (pick?.path) {
                                   // Copy font file to project folder
@@ -2527,7 +2756,7 @@ span[data-tag] {
                     const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
                   const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, label, (wizardType as string))
                     setShowWizard(false)
-                  replaceSelectionWithSpan(label, res.tagId)
+                  replaceSelectionWithSpan(label, res.tagId, true)
                   }}>Create</button>
                 </div>
               </div>
@@ -2536,8 +2765,8 @@ span[data-tag] {
 
           {/* Link to object modal */}
           {showLinker && (
-            <div className="modal-overlay" {...createOverlayClickHandler(setShowLinker)}>
-              <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false) } }}>
+            <div className="modal-overlay" {...createOverlayClickHandler(() => { setShowLinker(false); setIsLinkLastWordMode(false) })}>
+              <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false); setIsLinkLastWordMode(false) } }}>
                 <h3 className="mt-0">Link to object</h3>
                 <div className="flex-row">
                   <input value={linkerInput} autoFocus onChange={async e => {
@@ -2550,16 +2779,38 @@ span[data-tag] {
                       const res = fuse.search(v).map(r => r.item).slice(0, 10)
                       setLinkerMatches(res)
                     }
+                  }} onKeyDown={e => {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault()
+                      const totalItems = pathChoices.length > 0 ? pathChoices.length : linkerMatches.length
+                      setLinkerSelIndex(i => Math.min(i + 1, Math.max(0, totalItems - 1)))
+                    }
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      setLinkerSelIndex(i => Math.max(0, i - 1))
+                    }
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      const container = linkerResultsRef.current
+                      if (!container) return
+                      const items = Array.from(container.querySelectorAll<HTMLLIElement>('.list-item-click'))
+                      if (items.length === 0) return
+                      const idx = Math.min(Math.max(0, linkerSelIndex), items.length - 1)
+                      const el = items[idx]
+                      if (el) {
+                        el.click()
+                      }
+                    }
                   }} className="flex-1" placeholder={'Search or type new name'} />
                   {linkerTagId ? <span title='Existing link'>🔗</span> : <span title='New item'>⎇</span>}
                 </div>
 
                 {/* Path choices */}
                 {pathChoices.length > 0 ? (
-                  <div className="mt-10 maxh-260 border-top">
+                  <div className="overflow-x-hidden mt-10 maxh-260 border-top" ref={linkerResultsRef as any}>
                     <ul className="list-reset">
-                      {pathChoices.map(pc => (
-                        <li key={pc.id} className="list-item-click"
+                      {pathChoices.map((pc, idx) => (
+                        <li key={pc.id} className="list-item-click" style={{ background: idx === linkerSelIndex ? '#333' : undefined }}
                           onClick={async () => {
                             let tid = linkerTagId
                             if (!tid) {
@@ -2568,21 +2819,21 @@ span[data-tag] {
                               setLinkerTagId(tid)
                             }
                             await window.ipcRenderer.invoke('gamedocs:add-link-target', tid as string, pc.id)
-                            replaceSelectionWithSpan(linkerInput || pc.name, tid as string)
+                            replaceSelectionWithSpan(linkerInput || pc.name, tid as string, isLinkLastWordMode)
                             setShowLinker(false)
                           }}
-                        >{pc.path}</li>
+                        dangerouslySetInnerHTML={{ __html: pc.path }}></li>
                       ))}
                     </ul>
                   </div>
                 ) : (
-                  <div className="mt-10 maxh-260 border-top">
+                  <div className="overflow-x-hidden mt-10 maxh-260 border-top" ref={linkerResultsRef as any}>
                     {linkerMatches.length === 0 ? (
                       <div className="muted pad-8">No objects</div>
                     ) : (
                       <ul className="list-reset">
-                        {linkerMatches.map(m => (
-                          <li key={m.id} className="list-item-click"
+                        {linkerMatches.map((m, idx) => (
+                          <li key={m.id} className="list-item-click" style={{ background: idx === linkerSelIndex ? '#333' : undefined }}
                             onClick={async () => {
                               // Check if multiple with same name
                               const same = await window.ipcRenderer.invoke('gamedocs:get-objects-by-name-with-paths', campaign!.id, m.name)
@@ -2597,7 +2848,7 @@ span[data-tag] {
                                 setLinkerTagId(tid)
                               }
                               await window.ipcRenderer.invoke('gamedocs:add-link-target', tid as string, m.id)
-                              replaceSelectionWithSpan(linkerInput || m.name, tid as string)
+                              replaceSelectionWithSpan(linkerInput || m.name, tid as string, isLinkLastWordMode)
                               setShowLinker(false)
                             }}
                           >{m.name}</li>
@@ -2609,7 +2860,7 @@ span[data-tag] {
 
                 {/* Close button */}
                 <div className="actions">
-                  <button onClick={() => setShowLinker(false)}>Close</button>
+                  <button onClick={() => { setShowLinker(false); setIsLinkLastWordMode(false) }}>Close</button>
                 </div>
               </div>
             </div>
