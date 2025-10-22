@@ -82,6 +82,7 @@ export const Editor: React.FC = () => {
   const [linkerMatches, setLinkerMatches] = useState<Array<{ id: string; name: string; path?: string }>>([])
   const [linkerTagId, setLinkerTagId] = useState<string | null>(null)
   const [linkerSelIndex, setLinkerSelIndex] = useState(0)
+  const [isLinkLastWordMode, setIsLinkLastWordMode] = useState(false)
   const [allObjects, setAllObjects] = useState<Array<{ id: string; name: string; parent_id: string | null }>>([])
   const [pathChoices, setPathChoices] = useState<Array<{ id: string; name: string; path: string }>>([])
   const fuseRef = useRef<Fuse<any> | null>(null)
@@ -899,6 +900,7 @@ span[data-tag] {
     }
     setLinkerTagId(existingTag)
     setLinkerInput(ctxMenu.selText.trim())
+    setIsLinkLastWordMode(false) // Reset flag for right-click linking
     setShowLinker(true)
     // preload objects for fuzzy
     const rows = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id)
@@ -1004,10 +1006,10 @@ span[data-tag] {
     if (!tid) return
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, pc.id)
     if (createdNew) {
-    replaceSelectionWithSpan(linkerInput || pc.name, tid)
+    replaceSelectionWithSpan(linkerInput || pc.name, tid, isLinkLastWordMode)
     }
     setShowLinker(false)
-  }, [campaign, linkerInput, linkerTagId])
+  }, [campaign, linkerInput, linkerTagId, isLinkLastWordMode])
 
   const handleSelectMatch = useCallback(async (m: { id: string; name: string }) => {
     const same = await window.ipcRenderer.invoke('gamedocs:get-objects-by-name-with-paths', campaign!.id, m.name)
@@ -1025,10 +1027,10 @@ span[data-tag] {
     if (!tid) return
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, m.id)
     if (createdNew) {
-    replaceSelectionWithSpan(linkerInput || m.name, tid)
+    replaceSelectionWithSpan(linkerInput || m.name, tid, isLinkLastWordMode)
     }
     setShowLinker(false)
-  }, [campaign, linkerInput, linkerTagId])
+  }, [campaign, linkerInput, linkerTagId, isLinkLastWordMode])
 
   // const handleWizardCreate = useCallback(async () => {
   //   const label = (wizardName || '').trim()
@@ -1157,7 +1159,7 @@ span[data-tag] {
             NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
             null
           )
-          let lastNode = editorRef.current
+          let lastNode: Node = editorRef.current
           let node
           while (node = walker.nextNode()) {
             lastNode = node
@@ -1255,7 +1257,7 @@ span[data-tag] {
 
   // removed erroneous function shadowing setAddPictureModal
 
-  function replaceSelectionWithSpan(label: string, tagId: string) {
+  function replaceSelectionWithSpan(label: string, tagId: string, addSpaceAfter: boolean = false) {
     const selRange = selectionRangeRef.current
     const el = editorRef.current
     const span = document.createElement('span')
@@ -1275,25 +1277,31 @@ span[data-tag] {
       // Restore focus to editor and position cursor after the new link
       el.focus()
 
-      // if (caret.hasNextOnSameLine()) {
-      //   caret.moveRightIfSameLine()
-      //   // return
-      //   toast('hasNextCharOnSameLine', 'info');
-      //   return;
-      // }
-      
-      // Create a text node with a space after the span to ensure cursor is outside the tag
-      const textNode = document.createTextNode(' ')
-      span.parentNode?.insertBefore(textNode, span.nextSibling)
-      
-      const newRange = document.createRange()
-      newRange.setStart(textNode, 1) // Position after the space
-      newRange.collapse(true)
-      const selection = window.getSelection()
-      if (selection) {
-        selection.removeAllRanges()
-        selection.addRange(newRange)
-        selectionRangeRef.current = newRange
+      if (addSpaceAfter) {
+        // Create a text node with a space after the span to ensure cursor is outside the tag
+        const textNode = document.createTextNode(' ')
+        span.parentNode?.insertBefore(textNode, span.nextSibling)
+        
+        const newRange = document.createRange()
+        newRange.setStart(textNode, 1) // Position after the space
+        newRange.collapse(true)
+        const selection = window.getSelection()
+        if (selection) {
+          selection.removeAllRanges()
+          selection.addRange(newRange)
+          selectionRangeRef.current = newRange
+        }
+      } else {
+        // Position cursor right after the span without adding extra space
+        const newRange = document.createRange()
+        newRange.setStartAfter(span)
+        newRange.collapse(true)
+        const selection = window.getSelection()
+        if (selection) {
+          selection.removeAllRanges()
+          selection.addRange(newRange)
+          selectionRangeRef.current = newRange
+        }
       }
       return
     }
@@ -1501,6 +1509,7 @@ span[data-tag] {
       // Store the range for potential use
       selectionRangeRef.current = newRange
 
+      setIsLinkLastWordMode(true)
       handleAddLinkOpenOnSelectedWord()
       
       console.log('Selected word:', text.substring(wordStart, wordEnd))
@@ -2747,7 +2756,7 @@ span[data-tag] {
                     const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
                   const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, label, (wizardType as string))
                     setShowWizard(false)
-                  replaceSelectionWithSpan(label, res.tagId)
+                  replaceSelectionWithSpan(label, res.tagId, true)
                   }}>Create</button>
                 </div>
               </div>
@@ -2756,8 +2765,8 @@ span[data-tag] {
 
           {/* Link to object modal */}
           {showLinker && (
-            <div className="modal-overlay" {...createOverlayClickHandler(setShowLinker)}>
-              <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false) } }}>
+            <div className="modal-overlay" {...createOverlayClickHandler(() => { setShowLinker(false); setIsLinkLastWordMode(false) })}>
+              <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false); setIsLinkLastWordMode(false) } }}>
                 <h3 className="mt-0">Link to object</h3>
                 <div className="flex-row">
                   <input value={linkerInput} autoFocus onChange={async e => {
@@ -2810,7 +2819,7 @@ span[data-tag] {
                               setLinkerTagId(tid)
                             }
                             await window.ipcRenderer.invoke('gamedocs:add-link-target', tid as string, pc.id)
-                            replaceSelectionWithSpan(linkerInput || pc.name, tid as string)
+                            replaceSelectionWithSpan(linkerInput || pc.name, tid as string, isLinkLastWordMode)
                             setShowLinker(false)
                           }}
                         dangerouslySetInnerHTML={{ __html: pc.path }}></li>
@@ -2839,7 +2848,7 @@ span[data-tag] {
                                 setLinkerTagId(tid)
                               }
                               await window.ipcRenderer.invoke('gamedocs:add-link-target', tid as string, m.id)
-                              replaceSelectionWithSpan(linkerInput || m.name, tid as string)
+                              replaceSelectionWithSpan(linkerInput || m.name, tid as string, isLinkLastWordMode)
                               setShowLinker(false)
                             }}
                           >{m.name}</li>
@@ -2851,7 +2860,7 @@ span[data-tag] {
 
                 {/* Close button */}
                 <div className="actions">
-                  <button onClick={() => setShowLinker(false)}>Close</button>
+                  <button onClick={() => { setShowLinker(false); setIsLinkLastWordMode(false) }}>Close</button>
                 </div>
               </div>
             </div>
