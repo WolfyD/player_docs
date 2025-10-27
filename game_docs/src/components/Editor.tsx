@@ -340,6 +340,13 @@ export const Editor: React.FC = () => {
   const [possibleParents, setPossibleParents] = useState<Array<{ id: string; name: string; path: string }>>([])
   const [parentSearchInput, setParentSearchInput] = useState('')
   const [filteredParents, setFilteredParents] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [showBulkMoveModal, setShowBulkMoveModal] = useState(false)
+  const [allObjectsForBulk, setAllObjectsForBulk] = useState<Array<{ id: string; name: string; path: string; parent_id: string | null }>>([])
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
+  const [bulkNameFilter, setBulkNameFilter] = useState('')
+  const [bulkParentFilter, setBulkParentFilter] = useState('')
+  const [includeDescendants, setIncludeDescendants] = useState(false)
+  const [filteredBulkItems, setFilteredBulkItems] = useState<Array<{ id: string; name: string; path: string; parent_id: string | null }>>([])
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
@@ -589,6 +596,7 @@ span[data-tag] {
         setShowSettings(false)
         setShowEditObject(false)
         setShowMoveModal(false)
+        setShowBulkMoveModal(false)
       } else if (matchShortcut(e, shortcuts.settings)) {
         e.preventDefault(); setShowSettings(true)
       } else if (matchShortcut(e, shortcuts.editObject)) {
@@ -980,6 +988,92 @@ span[data-tag] {
     setFilteredParents([])
   }, [])
 
+  const handleBulkMoveOpen = useCallback(async () => {
+    // Get all objects for bulk move
+    const allObjects = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id).catch(() => [])
+    
+    // Convert to the format we need with paths
+    const objectsWithPaths = allObjects.map((obj: any) => ({
+      id: obj.id,
+      name: obj.name,
+      path: obj.name, // For now, just use the name as the path
+      parent_id: obj.parent_id
+    }))
+    
+    setAllObjectsForBulk(objectsWithPaths)
+    setFilteredBulkItems(objectsWithPaths)
+    setSelectedItems(new Set())
+    setBulkNameFilter('')
+    setBulkParentFilter('')
+    setIncludeDescendants(false)
+    setShowBulkMoveModal(true)
+  }, [campaign])
+
+  const handleBulkMoveCancel = useCallback(() => {
+    setShowBulkMoveModal(false)
+    setSelectedItems(new Set())
+    setBulkNameFilter('')
+    setBulkParentFilter('')
+    setIncludeDescendants(false)
+    setAllObjectsForBulk([])
+    setFilteredBulkItems([])
+  }, [])
+
+  const handleBulkMoveNext = useCallback(() => {
+    if (selectedItems.size === 0) return
+    
+    // Get the selected items
+    const selectedObjects = allObjectsForBulk.filter(obj => selectedItems.has(obj.id))
+    
+    // Close bulk modal and open move modal
+    setShowBulkMoveModal(false)
+    setMoveItems(selectedObjects.map(obj => ({ id: obj.id, name: obj.name, path: obj.path })))
+    
+    // Get possible parents (exclude all selected items and their descendants)
+    const excludedIds = new Set<string>()
+    
+    // Build parent-child map
+    const parentChildMap = new Map<string, string[]>()
+    for (const obj of allObjectsForBulk) {
+      if (obj.parent_id) {
+        if (!parentChildMap.has(obj.parent_id)) {
+          parentChildMap.set(obj.parent_id, [])
+        }
+        parentChildMap.get(obj.parent_id)!.push(obj.id)
+      }
+    }
+    
+    // Find all descendants of selected items
+    const findAllDescendants = (itemId: string): string[] => {
+      const descendants: string[] = []
+      const children = parentChildMap.get(itemId) || []
+      
+      for (const childId of children) {
+        descendants.push(childId)
+        descendants.push(...findAllDescendants(childId))
+      }
+      
+      return descendants
+    }
+    
+    // Add all selected items and their descendants to excluded list
+    for (const selectedId of selectedItems) {
+      excludedIds.add(selectedId)
+      const descendants = findAllDescendants(selectedId)
+      descendants.forEach(descId => excludedIds.add(descId))
+    }
+    
+    // Filter possible parents
+    const possibleParents = allObjectsForBulk.filter(obj => !excludedIds.has(obj.id))
+      .map(obj => ({ id: obj.id, name: obj.name, path: obj.path }))
+    
+    setPossibleParents(possibleParents)
+    setFilteredParents(possibleParents)
+    setSelectedParent(null)
+    setParentSearchInput('')
+    setShowMoveModal(true)
+  }, [selectedItems, allObjectsForBulk])
+
   // Filter parents based on search input
   useEffect(() => {
     if (!parentSearchInput.trim()) {
@@ -993,6 +1087,72 @@ span[data-tag] {
       setFilteredParents(filtered)
     }
   }, [parentSearchInput, possibleParents])
+
+  // Filter bulk items based on name and parent filters
+  useEffect(() => {
+    let filtered = allObjectsForBulk
+
+    // Apply name filter
+    if (bulkNameFilter.trim()) {
+      const nameTerm = bulkNameFilter.toLowerCase()
+      filtered = filtered.filter(item => 
+        item.name.toLowerCase().includes(nameTerm)
+      )
+    }
+
+    // Apply parent filter
+    if (bulkParentFilter.trim()) {
+      const parentTerm = bulkParentFilter.toLowerCase()
+      
+      // Build parent-child map for hierarchy traversal
+      const parentChildMap = new Map<string, string[]>()
+      for (const obj of allObjectsForBulk) {
+        if (obj.parent_id) {
+          if (!parentChildMap.has(obj.parent_id)) {
+            parentChildMap.set(obj.parent_id, [])
+          }
+          parentChildMap.get(obj.parent_id)!.push(obj.id)
+        }
+      }
+      
+      // Find all descendants of items matching the parent term
+      const findAllDescendants = (itemId: string): string[] => {
+        const descendants: string[] = []
+        const children = parentChildMap.get(itemId) || []
+        
+        for (const childId of children) {
+          descendants.push(childId)
+          descendants.push(...findAllDescendants(childId))
+        }
+        
+        return descendants
+      }
+      
+      // Find items that match the parent term
+      const matchingParents = allObjectsForBulk.filter(obj => 
+        obj.name.toLowerCase().includes(parentTerm)
+      )
+      
+      if (includeDescendants) {
+        // Include all descendants of matching parents
+        const allDescendantIds = new Set<string>()
+        for (const parent of matchingParents) {
+          const descendants = findAllDescendants(parent.id)
+          descendants.forEach(descId => allDescendantIds.add(descId))
+        }
+        
+        filtered = filtered.filter(item => allDescendantIds.has(item.id))
+      } else {
+        // Filter by direct parent only
+        const matchingParentIds = new Set(matchingParents.map(p => p.id))
+        filtered = filtered.filter(item => 
+          item.parent_id && matchingParentIds.has(item.parent_id)
+        )
+      }
+    }
+
+    setFilteredBulkItems(filtered)
+  }, [bulkNameFilter, bulkParentFilter, includeDescendants, allObjectsForBulk])
 
   const handleEditChildOpen = useCallback(() => {
     console.log('handleEditChildOpen', childCtxMenu)
@@ -1746,6 +1906,7 @@ span[data-tag] {
               items.push({ id: activeLocked ? '__UNLOCK__' : '__LOCK__', name: activeLocked ? 'Unlock object' : 'Lock object', path: '' })
               items.push({ id: '__SEPARATOR_MIDDLE__', name: '', path: '' })
               items.push({ id: '__MISC_STUFF__', name: 'Misc stuff', path: '' })
+              items.push({ id: '__BULK_MOVE_ITEMS__', name: 'Bulk move items', path: '' })
               items.push({ id: '__SEPARATOR_BOTTOM__', name: '', path: '' })
               if (!activeLocked) items.push({ id: '__DELETE__', name: 'Delete', path: '' })
               return { visible: true, x, y, items, hoverPreview: null, source: 'dropdown' }
@@ -2165,6 +2326,10 @@ span[data-tag] {
                       }
               if (t.id === '__MISC_STUFF__') {
                 setShowMisc(true)
+                setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                return
+              } else if (t.id === '__BULK_MOVE_ITEMS__') {
+                handleBulkMoveOpen()
                 setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                 return
               }
@@ -2975,6 +3140,100 @@ span[data-tag] {
                 {/* Close button */}
                 <div className="actions">
                   <button onClick={() => { setShowLinker(false); setIsLinkLastWordMode(false) }}>Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Bulk Move modal */}
+          {showBulkMoveModal && (
+            <div className="bulk-move-overlay" onClick={handleBulkMoveCancel}>
+              <div className="bulk-move-width" onClick={e => e.stopPropagation()}>
+                <div className="bulk-move-card">
+                  <div className="bulk-move-header">
+                    <h3 className="m-0">Select Items to Move</h3>
+                    <div className="flex-gap-8">
+                      <button onClick={handleBulkMoveCancel}>Cancel</button>
+                      <button 
+                        onClick={handleBulkMoveNext}
+                        disabled={selectedItems.size === 0}
+                        style={{ opacity: selectedItems.size > 0 ? 1 : 0.5 }}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bulk-move-filters">
+                    <div className="bulk-filter-row">
+                      <input
+                        type="text"
+                        className="bulk-filter-input"
+                        placeholder="Filter by name..."
+                        value={bulkNameFilter}
+                        onChange={(e) => setBulkNameFilter(e.target.value)}
+                      />
+                      <input
+                        type="text"
+                        className="bulk-filter-input"
+                        placeholder="Filter by parent..."
+                        value={bulkParentFilter}
+                        onChange={(e) => setBulkParentFilter(e.target.value)}
+                      />
+                    </div>
+                    <div className="bulk-filter-options">
+                      <label className="bulk-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={includeDescendants}
+                          onChange={(e) => setIncludeDescendants(e.target.checked)}
+                        />
+                        Include descendants (not just direct children)
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="bulk-move-content">
+                    <div className="bulk-items-list">
+                      {filteredBulkItems.map(item => (
+                        <div key={item.id} className="bulk-item-row">
+                          <input
+                            type="checkbox"
+                            className="bulk-item-checkbox"
+                            checked={selectedItems.has(item.id)}
+                            onChange={(e) => {
+                              const newSelected = new Set(selectedItems)
+                              if (e.target.checked) {
+                                newSelected.add(item.id)
+                              } else {
+                                newSelected.delete(item.id)
+                              }
+                              setSelectedItems(newSelected)
+                            }}
+                          />
+                          <div className="bulk-item-info">
+                            <div className="bulk-item-name">{item.name}</div>
+                            <div className="bulk-item-id">{item.id}</div>
+                          </div>
+                        </div>
+                      ))}
+                      {filteredBulkItems.length === 0 && (
+                        <div className="bulk-no-results">No items found matching filters</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedItems.size > 0 && (
+                    <div className="bulk-selected-summary">
+                      <div className="bulk-summary-title">Selected Items ({selectedItems.size}):</div>
+                      <div className="bulk-summary-list">
+                        {Array.from(selectedItems).map(itemId => {
+                          const item = allObjectsForBulk.find(obj => obj.id === itemId)
+                          return item ? item.name : null
+                        }).filter(Boolean).join(', ')}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
