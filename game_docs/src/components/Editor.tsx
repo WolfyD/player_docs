@@ -98,6 +98,7 @@ export const Editor: React.FC = () => {
   const childCtxMenuRef = useRef<HTMLDivElement | null>(null)
   const tagMenuRef = useRef<HTMLDivElement | null>(null)
   const menuButtonRef = useRef<HTMLButtonElement | null>(null)
+  const childItemMouseStateRef = useRef<Map<string, { mouseDownOnItem: boolean; hasMoved: boolean; startX: number; startY: number; startItemId: string }>>(new Map())
   const [images, setImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
   const [editImages, setEditImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
   const [addPictureModal, setAddPictureModal] = useState(false)
@@ -1972,10 +1973,101 @@ span[data-tag] {
               <div className="header_line">{activeName || root.name}</div>
               <a className="add-child" onClick={() => { setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
               <div className="divider-line"></div>
-              <div className="menu_items_container" style={{ height: getHeight() }}>
-                {children.map(c => (
-                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{getIconForType(c.type)}{c.name}</div>
-                ))}
+              <div 
+                className="menu_items_container" 
+                style={{ height: getHeight() }}
+                onMouseDown={(e) => {
+                  //console.log('🖱️ MouseDown on container', e.target)
+                  const target = e.target as HTMLElement
+                  const childItem = target.closest('.child-item') as HTMLElement
+                  //console.log('🎯 Found child item:', childItem)
+                  if (childItem) {
+                    const childId = childItem.getAttribute('data-child-id')
+                    //console.log('🆔 Child ID:', childId)
+                    if (childId) {
+                      const state = childItemMouseStateRef.current.get(childId) || { mouseDownOnItem: false, hasMoved: false, startX: 0, startY: 0, startItemId: '' }
+                      //console.log('📊 Previous state:', state)
+                      state.mouseDownOnItem = true
+                      state.hasMoved = false
+                      state.startX = e.clientX
+                      state.startY = e.clientY
+                      state.startItemId = childId
+                      childItemMouseStateRef.current.set(childId, state)
+                      //console.log('✅ Set new state:', state, 'start position:', e.clientX, e.clientY, 'start item:', childId)
+                    }
+                  }
+                }}
+                onMouseMove={(e) => {
+                  const target = e.target as HTMLElement
+                  const childItem = target.closest('.child-item') as HTMLElement
+                  if (childItem) {
+                    const childId = childItem.getAttribute('data-child-id')
+                    if (childId) {
+                      const state = childItemMouseStateRef.current.get(childId)
+                      if (state && state.mouseDownOnItem) {
+                        const deltaX = Math.abs(e.clientX - state.startX)
+                        const deltaY = Math.abs(e.clientY - state.startY)
+                        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+                        
+                        // Only consider it a drag if moved more than 5 pixels
+                        if (distance > 5) {
+                          //console.log('🚀 Mouse moved significantly - marking as dragged for:', childId, 'distance:', distance.toFixed(1))
+                          state.hasMoved = true
+                        }
+                      }
+                    }
+                  }
+                }}
+                onMouseUp={(e) => {
+                  //console.log('🖱️ MouseUp on container', e.target, 'button:', e.button)
+                  const target = e.target as HTMLElement
+                  const childItem = target.closest('.child-item') as HTMLElement
+                  //console.log('🎯 Found child item:', childItem)
+                  if (childItem) {
+                    const childId = childItem.getAttribute('data-child-id')
+                    //console.log('🆔 Child ID:', childId)
+                    if (childId) {
+                      const state = childItemMouseStateRef.current.get(childId)
+                      //console.log('📊 Current state:', state)
+                      
+                      // Check if mouse down and mouse up happened on the same item
+                      const sameItem = state && state.startItemId === childId
+                      //console.log('🔍 Same item check:', sameItem, 'start:', state?.startItemId, 'end:', childId)
+                      
+                      if (state && state.mouseDownOnItem && sameItem) {
+                        //console.log('🎉 CLICK DETECTED! Executing action for:', childId)
+                        if(e.button == 0){ 
+                          //console.log('👆 Left click - selecting object')
+                          selectObject(childId, childItem.textContent || '') 
+                        } else if(e.button == 2){ 
+                          //console.log('👆 Right click - showing context menu')
+                          handleShowChildContextMenu(e, childId, childItem.textContent || '') 
+                        }
+                      } else {
+                        //console.log('❌ Click ignored - mouseDownOnItem:', state?.mouseDownOnItem, 'sameItem:', sameItem)
+                      }
+                      if (state) {
+                        //console.log('🔄 Resetting state for:', childId)
+                        state.mouseDownOnItem = false
+                        state.hasMoved = false
+                        state.startItemId = ''
+                      }
+                    }
+                  }
+                }}
+              >
+                {children.map(c => {
+                  //console.log('🔄 Rendering child item:', c.id, c.name)
+                  return (
+                    <div 
+                      key={c.id} 
+                      className="child-item"
+                      data-child-id={c.id}
+                    >
+                      {getIconForType(c.type)}{c.name}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -2172,6 +2264,8 @@ span[data-tag] {
                   
                   setDesc(htmlToDesc(editorRef.current!))
                 }
+                
+                (editorRef.current?.lastChild as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
                 return
               }
               
@@ -3245,7 +3339,7 @@ span[data-tag] {
 
           {/* Bulk Move modal */}
           {showBulkMoveModal && (
-            <div className="bulk-move-overlay" onClick={handleBulkMoveCancel}>
+            <div className="bulk-move-overlay" {...createOverlayClickHandler(handleBulkMoveCancel)}>
               <div className="bulk-move-width" onClick={e => e.stopPropagation()}>
                 <div className="bulk-move-card">
                   <div className="bulk-move-header">
@@ -3294,7 +3388,19 @@ span[data-tag] {
                   <div className="bulk-move-content">
                     <div className="bulk-items-list">
                       {filteredBulkItems.map(item => (
-                        <div key={item.id} className="bulk-item-row">
+                        <div 
+                          key={item.id} 
+                          className="bulk-item-row"
+                          onClick={() => {
+                            const newSelected = new Set(selectedItems)
+                            if (selectedItems.has(item.id)) {
+                              newSelected.delete(item.id)
+                            } else {
+                              newSelected.add(item.id)
+                            }
+                            setSelectedItems(newSelected)
+                          }}
+                        >
                           <input
                             type="checkbox"
                             className="bulk-item-checkbox"
@@ -3308,6 +3414,7 @@ span[data-tag] {
                               }
                               setSelectedItems(newSelected)
                             }}
+                            onClick={(e) => e.stopPropagation()}
                           />
                           <div className="bulk-item-info">
                             <div className="bulk-item-name">{item.name}</div>
