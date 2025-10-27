@@ -338,6 +338,8 @@ export const Editor: React.FC = () => {
   const [moveItems, setMoveItems] = useState<Array<{ id: string; name: string; path: string }>>([])
   const [selectedParent, setSelectedParent] = useState<string | null>(null)
   const [possibleParents, setPossibleParents] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [parentSearchInput, setParentSearchInput] = useState('')
+  const [filteredParents, setFilteredParents] = useState<Array<{ id: string; name: string; path: string }>>([])
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
@@ -974,7 +976,23 @@ span[data-tag] {
     setSelectedParent(null)
     setMoveItems([])
     setPossibleParents([])
+    setParentSearchInput('')
+    setFilteredParents([])
   }, [])
+
+  // Filter parents based on search input
+  useEffect(() => {
+    if (!parentSearchInput.trim()) {
+      setFilteredParents(possibleParents)
+    } else {
+      const searchTerm = parentSearchInput.toLowerCase()
+      const filtered = possibleParents.filter(parent => 
+        parent.name.toLowerCase().includes(searchTerm) ||
+        parent.path.toLowerCase().includes(searchTerm)
+      )
+      setFilteredParents(filtered)
+    }
+  }, [parentSearchInput, possibleParents])
 
   const handleEditChildOpen = useCallback(() => {
     console.log('handleEditChildOpen', childCtxMenu)
@@ -1006,7 +1024,9 @@ span[data-tag] {
     
     setMoveItems([{ id: itemToMove.id, name: itemToMove.name, path: itemToMove.name }])
     setPossibleParents(possibleParents)
+    setFilteredParents(possibleParents)
     setSelectedParent(null)
+    setParentSearchInput('')
     setShowMoveModal(true)
   }, [campaign, childCtxMenu])
 
@@ -2975,8 +2995,16 @@ span[data-tag] {
                     {/* Right column: Possible parents */}
                     <div className="move-col">
                       <div className="move-section-title">Select New Parent</div>
+                      <input
+                        type="text"
+                        className="move-search-input"
+                        placeholder="Search parents..."
+                        value={parentSearchInput}
+                        onChange={(e) => setParentSearchInput(e.target.value)}
+                        autoFocus
+                      />
                       <div className="move-list">
-                        {possibleParents.map(parent => (
+                        {filteredParents.map(parent => (
                           <div 
                             key={parent.id} 
                             className="move-parent-item"
@@ -2994,6 +3022,9 @@ span[data-tag] {
                             </div>
                           </div>
                         ))}
+                        {filteredParents.length === 0 && parentSearchInput && (
+                          <div className="move-no-results">No parents found matching "{parentSearchInput}"</div>
+                        )}
                       </div>
                     </div>
                   </div>
