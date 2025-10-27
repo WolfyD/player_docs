@@ -131,6 +131,14 @@ button {
   user-select: text;
   overflow-y: auto;
   padding-right: 10px;
+  padding-left: 10px;
+}
+
+.editor_content_with_images::after {
+  content: '';
+  display: block;
+  height: calc(100vh - 480px);
+  width: 100%;
 }
 
 .editor_content {
@@ -143,6 +151,14 @@ button {
   user-select: text;
   overflow-y: auto;
   padding-right: 10px;
+  padding-left: 10px;
+}
+
+.editor_content::after {
+  content: '';
+  display: block;
+  height: calc(100vh - 150px);
+  width: 100%;
 }
 
 .editor_content_footer {
