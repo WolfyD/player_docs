@@ -134,6 +134,34 @@ button {
   padding-left: 10px;
 }
 
+/* Custom scrollbar styling for editor content with images */
+.editor_content_with_images::-webkit-scrollbar {
+  width: 8px;
+  cursor: pointer;
+}
+
+.editor_content_with_images::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  cursor: default;
+}
+
+.editor_content_with_images::-webkit-scrollbar-thumb {
+  background: var(--pd-primary, #6495ED);
+  opacity: 0.6;
+  border-radius: 4px;
+  transition: opacity 0.2s ease;
+  cursor: default;
+}
+
+.editor_content_with_images::-webkit-scrollbar-thumb:hover {
+  opacity: 0.8;
+}
+
+.editor_content_with_images::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .editor_content_with_images::after {
   content: '';
   display: block;
@@ -152,6 +180,33 @@ button {
   overflow-y: auto;
   padding-right: 10px;
   padding-left: 10px;
+}
+
+/* Custom scrollbar styling for editor content */
+.editor_content::-webkit-scrollbar {
+  width: 8px;
+  cursor: default;
+}
+
+.editor_content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  cursor: default;
+}
+
+.editor_content::-webkit-scrollbar-thumb {
+  background: var(--pd-primary, #6495ED);
+  opacity: 0.6;
+  border-radius: 4px;
+  transition: opacity 0.2s ease;
+}
+
+.editor_content::-webkit-scrollbar-thumb:hover {
+  opacity: 0.8;
+}
+
+.editor_content::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .editor_content::after {
