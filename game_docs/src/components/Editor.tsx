@@ -1663,7 +1663,11 @@ span[data-tag] {
       return `<span data-tag="${safeTag}" style="background: var(--pd-tag-bg, rgba(100,149,237,0.2)); border-bottom: 1px dotted var(--pd-tag-border, #6495ED); cursor: pointer;">${safeLabel}</span>`
     })
     // Preserve explicit newlines using <br>
-    return withSpans.replace(/\n/g, '<br>')
+    // First normalize line endings by removing \r, then convert \n to <br>
+    console.log('descToHtml input:', JSON.stringify(text))
+    const result = withSpans.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>')
+    console.log('descToHtml output:', JSON.stringify(result))
+    return result
   }
 
   function htmlToDesc(container: HTMLElement): string {
@@ -1675,29 +1679,27 @@ span[data-tag] {
       const token = document.createTextNode(`[[${label}|${tag}]]`)
       el.replaceWith(token)
     })
-    // Convert <br> to \n and treat block boundaries as newlines
-    // First, BRs become newlines
+    // Convert <br> to \n
     clone.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode('\n')))
-    // Then add newline separators for block boundaries
-    const blocks = new Set(['DIV', 'P'])
-    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT, null)
-    const toAppendNewline: HTMLElement[] = []
-    const toInsertBefore: HTMLElement[] = []
-    let node: Element | null = walker.nextNode() as Element | null
-    while (node) {
-      if (blocks.has(node.nodeName)) {
-        toAppendNewline.push(node as HTMLElement)
-        if ((node as HTMLElement).previousSibling) toInsertBefore.push(node as HTMLElement)
+    
+    // Convert <div> elements to newlines (browser creates divs for each line)
+    clone.querySelectorAll('div').forEach((div) => {
+      // Add newline before the div content
+      if (div.previousSibling) {
+        div.parentNode?.insertBefore(document.createTextNode('\n'), div)
       }
-      node = walker.nextNode() as Element | null
-    }
-    for (const el of toInsertBefore) {
-      el.parentNode?.insertBefore(document.createTextNode('\n'), el)
-    }
-    for (const el of toAppendNewline) el.appendChild(document.createTextNode('\n'))
-    // Extract text; collapse triple+ newlines to double to avoid runaway breaks
+      // Replace the div with its content
+      const content = div.textContent || ''
+      div.replaceWith(document.createTextNode(content))
+    })
+    
+    // Extract text; normalize line endings and collapse triple+ newlines to double to avoid runaway breaks
     const text = clone.textContent || ''
-    return text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n')
+    //console.log('htmlToDesc input HTML:', clone.innerHTML)
+    //console.log('htmlToDesc textContent:', JSON.stringify(text))
+    const result = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n')
+    //console.log('htmlToDesc output:', JSON.stringify(result))
+    return result
   }
 
   async function handleGoToParent() {
