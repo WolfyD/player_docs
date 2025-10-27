@@ -942,6 +942,20 @@ span[data-tag] {
     setShowEditObject(true)
   }, [])
 
+  const openMoveChild = useCallback(async (targetId: string, targetName: string) => {
+    // TODO: Implement this
+  }, [])
+
+  const handleEditChildOpen = useCallback(() => {
+    console.log('handleEditChildOpen', childCtxMenu)
+    openEditForObject(childCtxMenu.selId, childCtxMenu.selText)
+  }, [openEditForObject, childCtxMenu])
+
+  const handleMoveChildOpen = useCallback(() => {
+    console.log('handleMoveChildOpen', childCtxMenu)
+    // TODO: Implement this
+  }, [openMoveChild, childCtxMenu])
+
   const handleEditOpen = useCallback(async () => {
     setCtxMenu(m => ({ ...m, visible: false }))
     if (!ctxLinkedTargets || ctxLinkedTargets.length === 0) return
@@ -1108,6 +1122,7 @@ span[data-tag] {
   // }, [handleSelectMatch])
 
   const handleShowChildContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>, id: string, name: string) => {
+    console.log('handleShowChildContextMenu', id, name)
     e.preventDefault()
     e.stopPropagation()
     setChildCtxMenu(m => ({ ...m, visible: false }))
@@ -1219,7 +1234,6 @@ span[data-tag] {
   }, [handleCreateChild])
 
   const handleDeleteChild = useCallback(async () => {
-    // TODO: we need to ask the user for confirmation
     const ok = await confirmDialog({ title: 'Delete', message: `Delete '${childCtxMenu.selText}' and all descendants?`, variant: 'yes-no' })
     if (!ok) return
     await window.ipcRenderer.invoke('gamedocs:delete-object-cascade', childCtxMenu.selId)
@@ -1891,7 +1905,11 @@ span[data-tag] {
               <div className="separator" />
               {/* <div className="ctx-menu-item" onClick={handleCreateChildAndEnter}>Create Child</div> */}
               <div className="ctx-menu-item" onClick={handleDeleteChild}>Delete Child</div>
+              {/* Edit the child XXX */}
+              <div className="ctx-menu-item" onClick={(e)=>{ handleEditChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Edit</div>
+              <div className="ctx-menu-item" onClick={(e)=>{ handleMoveChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Move</div>
             </div>
+
           )}
           {ctxMenu.visible && (
             <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} ref={ctxMenuRef}>
