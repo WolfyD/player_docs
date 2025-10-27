@@ -2537,16 +2537,10 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     const parent = db.prepare('SELECT id FROM objects WHERE id = ? AND game_id = ? AND deleted_at IS NULL').get(newParentId, object.game_id) as { id: string } | undefined
     if (!parent) { db.close(); throw new Error('Parent object not found') }
     
-    // Prevent moving an object under itself or its descendants
-    const checkDescendants = (checkId: string): boolean => {
-      if (checkId === objectId) return true
-      const children = db.prepare('SELECT id FROM objects WHERE parent_id = ? AND game_id = ? AND deleted_at IS NULL').all(checkId, object.game_id) as Array<{ id: string }>
-      return children.some(child => checkDescendants(child.id))
-    }
-    
-    if (checkDescendants(newParentId)) {
+    // Prevent moving an object under itself
+    if (newParentId === objectId) {
       db.close()
-      throw new Error('Cannot move an object under itself or its descendants')
+      throw new Error('Cannot move an object under itself')
     }
     
     const now = new Date().toISOString()

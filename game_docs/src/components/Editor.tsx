@@ -1009,13 +1009,36 @@ span[data-tag] {
     // Get all possible parent objects using the existing handler
     const allObjects = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id).catch(() => [])
     
-    // Filter out the item itself and its descendants
-    const possibleParents = allObjects.filter((obj: any) => {
-      // Don't include the item itself
-      if (obj.id === childCtxMenu.selId) return false
+    // Build a map of parent-child relationships to find descendants
+    const parentChildMap = new Map<string, string[]>()
+    for (const obj of allObjects) {
+      if (obj.parent_id) {
+        if (!parentChildMap.has(obj.parent_id)) {
+          parentChildMap.set(obj.parent_id, [])
+        }
+        parentChildMap.get(obj.parent_id)!.push(obj.id)
+      }
+    }
+    
+    // Recursively find all descendants of the item being moved
+    const findAllDescendants = (itemId: string): string[] => {
+      const descendants: string[] = []
+      const children = parentChildMap.get(itemId) || []
       
-      // For now, just exclude the item itself. We can enhance this later to exclude descendants
-      return true
+      for (const childId of children) {
+        descendants.push(childId)
+        descendants.push(...findAllDescendants(childId))
+      }
+      
+      return descendants
+    }
+    
+    const itemDescendants = findAllDescendants(childCtxMenu.selId)
+    const excludedIds = new Set([childCtxMenu.selId, ...itemDescendants])
+    
+    // Filter out the item itself and all its descendants
+    const possibleParents = allObjects.filter((obj: any) => {
+      return !excludedIds.has(obj.id)
     }).map((obj: any) => ({
       id: obj.id,
       name: obj.name,
@@ -1979,9 +2002,8 @@ span[data-tag] {
               <div className="separator" />
               {/* <div className="ctx-menu-item" onClick={handleCreateChildAndEnter}>Create Child</div> */}
               <div className="ctx-menu-item" onClick={handleDeleteChild}>Delete Child</div>
-              {/* Edit the child XXX */}
-              <div className="ctx-menu-item" onClick={(e)=>{ handleEditChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Edit</div>
-              <div className="ctx-menu-item" onClick={(e)=>{ handleMoveChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Move</div>
+              <div className="ctx-menu-item" onClick={(e)=>{ handleEditChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Edit Child</div>
+              <div className="ctx-menu-item" onClick={(e)=>{ handleMoveChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Move Child</div>
             </div>
 
           )}
