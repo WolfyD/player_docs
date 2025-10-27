@@ -334,6 +334,10 @@ export const Editor: React.FC = () => {
   const [paletteResults, setPaletteResults] = useState<{ objects: Array<{ id: string; name: string }>; tags: Array<{ id: string; object_id: string }> }>({ objects: [], tags: [] })
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
+  const [showMoveModal, setShowMoveModal] = useState(false)
+  const [moveItems, setMoveItems] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [selectedParent, setSelectedParent] = useState<string | null>(null)
+  const [possibleParents, setPossibleParents] = useState<Array<{ id: string; name: string; path: string }>>([])
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
@@ -582,6 +586,7 @@ span[data-tag] {
         setShowPalette(false)
         setShowSettings(false)
         setShowEditObject(false)
+        setShowMoveModal(false)
       } else if (matchShortcut(e, shortcuts.settings)) {
         e.preventDefault(); setShowSettings(true)
       } else if (matchShortcut(e, shortcuts.editObject)) {
@@ -942,8 +947,33 @@ span[data-tag] {
     setShowEditObject(true)
   }, [])
 
-  const openMoveChild = useCallback(async (targetId: string, targetName: string) => {
-    // TODO: Implement this
+  const handleMoveConfirm = useCallback(async () => {
+    if (!selectedParent || moveItems.length === 0) return
+    
+    try {
+      // Move each item to the selected parent
+      for (const item of moveItems) {
+        await window.ipcRenderer.invoke('gamedocs:move-object', item.id, selectedParent)
+      }
+      
+      // Refresh the children list
+      const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
+      setChildren(kids)
+      
+      setShowMoveModal(false)
+      toast('Items moved successfully', 'success')
+    } catch (error: any) {
+      console.error('Failed to move items:', error)
+      const errorMessage = error?.message || 'Failed to move items'
+      toast(errorMessage, 'error')
+    }
+  }, [selectedParent, moveItems, campaign, activeId, root])
+
+  const handleMoveCancel = useCallback(() => {
+    setShowMoveModal(false)
+    setSelectedParent(null)
+    setMoveItems([])
+    setPossibleParents([])
   }, [])
 
   const handleEditChildOpen = useCallback(() => {
@@ -951,10 +981,34 @@ span[data-tag] {
     openEditForObject(childCtxMenu.selId, childCtxMenu.selText)
   }, [openEditForObject, childCtxMenu])
 
-  const handleMoveChildOpen = useCallback(() => {
+  const handleMoveChildOpen = useCallback(async () => {
     console.log('handleMoveChildOpen', childCtxMenu)
-    // TODO: Implement this
-  }, [openMoveChild, childCtxMenu])
+    
+    // Get the item to move
+    const itemToMove = await window.ipcRenderer.invoke('gamedocs:get-object', childCtxMenu.selId).catch(() => null)
+    if (!itemToMove) return
+    
+    // Get all possible parent objects using the existing handler
+    const allObjects = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id).catch(() => [])
+    
+    // Filter out the item itself and its descendants
+    const possibleParents = allObjects.filter((obj: any) => {
+      // Don't include the item itself
+      if (obj.id === childCtxMenu.selId) return false
+      
+      // For now, just exclude the item itself. We can enhance this later to exclude descendants
+      return true
+    }).map((obj: any) => ({
+      id: obj.id,
+      name: obj.name,
+      path: obj.name // For now, just use the name as the path
+    }))
+    
+    setMoveItems([{ id: itemToMove.id, name: itemToMove.name, path: itemToMove.name }])
+    setPossibleParents(possibleParents)
+    setSelectedParent(null)
+    setShowMoveModal(true)
+  }, [campaign, childCtxMenu])
 
   const handleEditOpen = useCallback(async () => {
     setCtxMenu(m => ({ ...m, visible: false }))
@@ -2879,6 +2933,70 @@ span[data-tag] {
                 {/* Close button */}
                 <div className="actions">
                   <button onClick={() => { setShowLinker(false); setIsLinkLastWordMode(false) }}>Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Move modal */}
+          {showMoveModal && (
+            <div className="move-overlay" onClick={handleMoveCancel}>
+              <div className="move-width" onClick={e => e.stopPropagation()}>
+                <div className="move-card">
+                  <div className="move-header">
+                    <h3 className="m-0">Move Items</h3>
+                    <div className="flex-gap-8">
+                      <button onClick={handleMoveCancel}>Cancel</button>
+                      <button 
+                        onClick={handleMoveConfirm}
+                        disabled={!selectedParent}
+                        style={{ opacity: selectedParent ? 1 : 0.5 }}
+                      >
+                        Move
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="move-columns">
+                    {/* Left column: Items to move */}
+                    <div className="move-col">
+                      <div className="move-section-title">Items to Move</div>
+                      <div className="move-list">
+                        {moveItems.map(item => (
+                          <div key={item.id} className="move-item" title={item.path}>
+                            <div className="move-item-id">{item.id}</div>
+                            <div className="move-item-name">{item.name}</div>
+                            <div className="move-item-path">{item.path}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Right column: Possible parents */}
+                    <div className="move-col">
+                      <div className="move-section-title">Select New Parent</div>
+                      <div className="move-list">
+                        {possibleParents.map(parent => (
+                          <div 
+                            key={parent.id} 
+                            className="move-parent-item"
+                            onClick={() => setSelectedParent(parent.id)}
+                          >
+                            <input 
+                              type="radio" 
+                              className="move-parent-radio"
+                              checked={selectedParent === parent.id}
+                              onChange={() => setSelectedParent(parent.id)}
+                            />
+                            <div className="move-parent-info">
+                              <div className="move-parent-name">{parent.name}</div>
+                              <div className="move-parent-path">{parent.path}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
