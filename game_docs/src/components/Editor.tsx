@@ -2111,6 +2111,70 @@ span[data-tag] {
               }
             }}
             onKeyDown={(e) => {
+              // Handle Enter key with indentation preservation
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                const sel = window.getSelection()
+                if (sel && sel.rangeCount > 0) {
+                  const range = sel.getRangeAt(0)
+                  
+                  // Get the full text content of the editor
+                  const editorText = editorRef.current?.textContent || ''
+                  
+                  // Create a temporary range to measure the position
+                  const tempRange = document.createRange()
+                  tempRange.setStart(editorRef.current!, 0)
+                  tempRange.setEnd(range.startContainer, range.startOffset)
+                  
+                  // Count characters from start to cursor position
+                  const charCount = tempRange.toString().length
+                  
+                  // Find the current line by looking for newlines
+                  let lineStart = 0
+                  let lineEnd = editorText.length
+                  
+                  // Find start of current line
+                  for (let i = charCount - 1; i >= 0; i--) {
+                    if (editorText[i] === '\n') {
+                      lineStart = i + 1
+                      break
+                    }
+                  }
+                  
+                  // Find end of current line
+                  for (let i = charCount; i < editorText.length; i++) {
+                    if (editorText[i] === '\n') {
+                      lineEnd = i
+                      break
+                    }
+                  }
+                  
+                  // Extract the current line text
+                  const currentLineText = editorText.substring(lineStart, lineEnd)
+                  
+                  // Extract whitespace from the start of the current line
+                  const whitespaceMatch = currentLineText.match(/^[\s\t]*/)
+                  const whitespace = whitespaceMatch ? whitespaceMatch[0] : ''
+                  
+                  // Create newline with preserved indentation
+                  const newlineWithIndent = '\n' + whitespace
+                  const textNode = document.createTextNode(newlineWithIndent)
+                  
+                  range.deleteContents()
+                  range.insertNode(textNode)
+                  
+                  // Move caret to the end of the inserted text (after the indentation)
+                  const newRange = document.createRange()
+                  newRange.setStartAfter(textNode)
+                  newRange.collapse(true)
+                  sel.removeAllRanges()
+                  sel.addRange(newRange)
+                  
+                  setDesc(htmlToDesc(editorRef.current!))
+                }
+                return
+              }
+              
               // Insert literal tab characters in the content
               if (e.key === 'Tab') {
                 e.preventDefault()
