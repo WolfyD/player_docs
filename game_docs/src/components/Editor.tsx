@@ -184,7 +184,19 @@ export const Editor: React.FC = () => {
     const spacer = needsGap ? (base.endsWith('\n\n\n') ? '' : base.endsWith('\n\n') ? '\n' : base.endsWith('\n') ? '\n\n' : '\n\n\n') : ''
     const next = `${base}${spacer}${body}`
     setDesc(next)
-    if (editorRef.current) editorRef.current.innerHTML = descToHtml(next)
+    if (editorRef.current) {
+      // Preserve scroll position before updating content
+      const scrollTop = editorRef.current.scrollTop
+      
+      editorRef.current.innerHTML = descToHtml(next)
+      
+      // Restore scroll position after content update
+      requestAnimationFrame(() => {
+        if (editorRef.current) {
+          editorRef.current.scrollTop = scrollTop
+        }
+      })
+    }
     toast(created > 0 ? `Generated ${created} tags from listed items` : 'No eligible items to tag', created > 0 ? 'success' : 'info')
     setShowMisc(false)
   }, [activeId, campaign, desc])
@@ -1541,9 +1553,19 @@ span[data-tag] {
     span.style.borderBottom = '1px dotted var(--pd-tag-border, #6495ED)'
     span.style.cursor = 'pointer'
     if (el && selRange) {
+      // Preserve scroll position before updating content
+      const scrollTop = el.scrollTop
+      
       selRange.deleteContents()
       selRange.insertNode(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore scroll position after content update
+      requestAnimationFrame(() => {
+        if (el) {
+          el.scrollTop = scrollTop
+        }
+      })
       
       // Restore focus to editor and position cursor after the new link
       el.focus()
@@ -1577,8 +1599,18 @@ span[data-tag] {
       return
     }
     if (el) {
+      // Preserve scroll position before updating content
+      const scrollTop = el.scrollTop
+      
       el.appendChild(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore scroll position after content update
+      requestAnimationFrame(() => {
+        if (el) {
+          el.scrollTop = scrollTop
+        }
+      })
       
       // Restore focus to editor and position cursor after the new link
       el.focus()
@@ -1664,9 +1696,9 @@ span[data-tag] {
     })
     // Preserve explicit newlines using <br>
     // First normalize line endings by removing \r, then convert \n to <br>
-    console.log('descToHtml input:', JSON.stringify(text))
+    //console.log('descToHtml input:', JSON.stringify(text))
     const result = withSpans.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>')
-    console.log('descToHtml output:', JSON.stringify(result))
+    //console.log('descToHtml output:', JSON.stringify(result))
     return result
   }
 
