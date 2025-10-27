@@ -1725,11 +1725,11 @@ span[data-tag] {
       div.replaceWith(document.createTextNode(content))
     })
     
-    // Extract text; normalize line endings and collapse triple+ newlines to double to avoid runaway breaks
+    // Extract text; normalize line endings and preserve all newlines
     const text = clone.textContent || ''
     //console.log('htmlToDesc input HTML:', clone.innerHTML)
     //console.log('htmlToDesc textContent:', JSON.stringify(text))
-    const result = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n')
+    const result = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
     //console.log('htmlToDesc output:', JSON.stringify(result))
     return result
   }
