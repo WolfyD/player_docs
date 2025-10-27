@@ -56,24 +56,28 @@ button {
 .sidebar {
   border-right: 1px solid #333;
   padding: 12px;
+  position: relative;
 }
 
 .sidebar-title {
   font-weight: 700;
   margin-bottom: 8px;
+  margin-top: 10px;
 }
 
 .jump-to-parent {
   cursor: pointer;
   user-select: none;
   position: absolute;
-  width: 200px;
+  width: 100%;
   white-space: nowrap;
   margin-top: -30px;
   margin-left: -10px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
 }
 .nowrap { white-space: nowrap; }
 
@@ -81,16 +85,18 @@ button {
   user-select: none;
   font-weight: 600;
   padding-bottom: 10px;
+  padding-top: 10px;
 }
 
 .add-child {
   user-select: none;
   cursor: pointer;
+  margin-top: 10px;
 }
 
 .divider-line {
   user-select: none;
-  height: 10px;
+  height: 12px;
   border-bottom: 1px solid #333;
 }
 
