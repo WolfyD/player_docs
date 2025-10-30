@@ -264,6 +264,34 @@ button {
 .ctx-menu-scroll { max-height: 200px; overflow: auto; }
 .ctx-menu-item:hover, .tag-menu-item:hover { background: #666; }
 
+.ctx-menu-formatting-section {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 6px 10px;
+  align-items: center;
+  align-content: center;
+  justify-content: center;
+}
+.formatting-item {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;  
+  padding: 6px;
+  font-size: 1.2em;
+  border-radius: 4px;
+  border: 1px solid #333;
+  background: #2a2a2a;
+  color: #e5e5e5;
+  width: 24px;
+  height: 24px;
+  transition: background 0.2s ease;
+}
+.formatting-item:hover {
+  background: #3a3a3a;
+}
+
 .tag-menu {
   position: fixed;
   background: #202020;

@@ -1880,8 +1880,33 @@ span[data-tag] {
   }
 
 
+  function handleBoldFormatting() {
+    console.log('handleBoldFormatting')
+  }
 
+  function handleItalicFormatting() {
+    console.log('handleItalicFormatting')
+  }
 
+  function handleUnderlineFormatting() {
+    console.log('handleUnderlineFormatting')
+  }
+
+  function handleHeadingFormatting() {
+    console.log('handleHeadingFormatting')
+  }
+
+  function handleCodeFormatting() {
+    console.log('handleCodeFormatting')
+  }
+
+  function handleRedactedFormatting() {
+    console.log('handleRedactedFormatting')
+  }
+
+  function handleStrikethroughFormatting() {
+    console.log('handleStrikethroughFormatting')
+  }
 
 
 
@@ -2362,6 +2387,16 @@ span[data-tag] {
           )}
           {ctxMenu.visible && (
             <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} ref={ctxMenuRef}>
+              <div className="ctx-menu-formatting-section">
+                <div className="ctx-menu-item formatting-item" title='Bold' onClick={handleBoldFormatting}><i className="ri-bold"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Italic' onClick={handleItalicFormatting}><i className="ri-italic"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Underline' onClick={handleUnderlineFormatting}><i className="ri-underline"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Strikethrough' onClick={handleStrikethroughFormatting}><i className="ri-strikethrough"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Heading' onClick={handleHeadingFormatting}><i className="ri-heading"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Code' onClick={handleCodeFormatting}><i className="ri-braces-line"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Redacted' onClick={handleRedactedFormatting}><i className="ri-checkbox-indeterminate-fill"></i></div>
+              </div>
+              <div className="separator" />
               <div className="ctx-menu-section-title">Links</div>
               <div className="separator" />
               <div className="ctx-menu-item"  onClick={handleAddLinkOpen}>Link Object</div>
