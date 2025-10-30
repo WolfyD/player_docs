@@ -2522,6 +2522,40 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     return true
   })
 
+  ipcMain.handle('gamedocs:move-object', async (_evt, objectId: string, newParentId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    
+    // Verify the object exists
+    const object = db.prepare('SELECT id, game_id FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { id: string; game_id: string } | undefined
+    if (!object) { db.close(); throw new Error('Object not found') }
+    
+    // Verify the new parent exists
+    const parent = db.prepare('SELECT id FROM objects WHERE id = ? AND game_id = ? AND deleted_at IS NULL').get(newParentId, object.game_id) as { id: string } | undefined
+    if (!parent) { db.close(); throw new Error('Parent object not found') }
+    
+    // Prevent moving an object under itself
+    if (newParentId === objectId) {
+      db.close()
+      throw new Error('Cannot move an object under itself')
+    }
+    
+    const now = new Date().toISOString()
+    db.prepare('UPDATE objects SET parent_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(newParentId, now, objectId)
+    
+    try {
+      cleanupTagsForObject(db, objectId)
+      cleanupLinkData(db, object.game_id)
+      cleanupMissingImages(db, object.game_id)
+    } catch {}
+    
+    db.close()
+    return true
+  })
+
   ipcMain.handle('gamedocs:rename-campaign', async (_evt, gameId: string, newName: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')

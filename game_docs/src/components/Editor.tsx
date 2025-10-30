@@ -98,6 +98,7 @@ export const Editor: React.FC = () => {
   const childCtxMenuRef = useRef<HTMLDivElement | null>(null)
   const tagMenuRef = useRef<HTMLDivElement | null>(null)
   const menuButtonRef = useRef<HTMLButtonElement | null>(null)
+  const childItemMouseStateRef = useRef<Map<string, { mouseDownOnItem: boolean; hasMoved: boolean; startX: number; startY: number; startItemId: string }>>(new Map())
   const [images, setImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
   const [editImages, setEditImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
   const [addPictureModal, setAddPictureModal] = useState(false)
@@ -184,7 +185,19 @@ export const Editor: React.FC = () => {
     const spacer = needsGap ? (base.endsWith('\n\n\n') ? '' : base.endsWith('\n\n') ? '\n' : base.endsWith('\n') ? '\n\n' : '\n\n\n') : ''
     const next = `${base}${spacer}${body}`
     setDesc(next)
-    if (editorRef.current) editorRef.current.innerHTML = descToHtml(next)
+    if (editorRef.current) {
+      // Preserve scroll position before updating content
+      const scrollTop = editorRef.current.scrollTop
+      
+      editorRef.current.innerHTML = descToHtml(next)
+      
+      // Restore scroll position after content update
+      requestAnimationFrame(() => {
+        if (editorRef.current) {
+          editorRef.current.scrollTop = scrollTop
+        }
+      })
+    }
     toast(created > 0 ? `Generated ${created} tags from listed items` : 'No eligible items to tag', created > 0 ? 'success' : 'info')
     setShowMisc(false)
   }, [activeId, campaign, desc])
@@ -334,6 +347,19 @@ export const Editor: React.FC = () => {
   const [paletteResults, setPaletteResults] = useState<{ objects: Array<{ id: string; name: string }>; tags: Array<{ id: string; object_id: string }> }>({ objects: [], tags: [] })
   const [showSettings, setShowSettings] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
+  const [showMoveModal, setShowMoveModal] = useState(false)
+  const [moveItems, setMoveItems] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [selectedParent, setSelectedParent] = useState<string | null>(null)
+  const [possibleParents, setPossibleParents] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [parentSearchInput, setParentSearchInput] = useState('')
+  const [filteredParents, setFilteredParents] = useState<Array<{ id: string; name: string; path: string }>>([])
+  const [showBulkMoveModal, setShowBulkMoveModal] = useState(false)
+  const [allObjectsForBulk, setAllObjectsForBulk] = useState<Array<{ id: string; name: string; path: string; parent_id: string | null }>>([])
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
+  const [bulkNameFilter, setBulkNameFilter] = useState('')
+  const [bulkParentFilter, setBulkParentFilter] = useState('')
+  const [includeDescendants, setIncludeDescendants] = useState(false)
+  const [filteredBulkItems, setFilteredBulkItems] = useState<Array<{ id: string; name: string; path: string; parent_id: string | null }>>([])
   const [paletteKey, setPaletteKey] = useState<'dracula' | 'solarized-dark' | 'solarized-light' | 'github-dark' | 'github-light' | 'night-owl' | 'monokai' | 'parchment' | 'primary-blue' | 'primary-green' | 'custom'>('dracula')
   const [customColors, setCustomColors] = useState<{ primary: string; surface: string; text: string; tagBg: string; tagBorder: string }>({ primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' })
   const [fonts, setFonts] = useState<{ family: string; size: number; weight: number; color: string }>({ family: 'system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif', size: 14, weight: 400, color: '#e5e5e5' })
@@ -582,6 +608,8 @@ span[data-tag] {
         setShowPalette(false)
         setShowSettings(false)
         setShowEditObject(false)
+        setShowMoveModal(false)
+        setShowBulkMoveModal(false)
       } else if (matchShortcut(e, shortcuts.settings)) {
         e.preventDefault(); setShowSettings(true)
       } else if (matchShortcut(e, shortcuts.editObject)) {
@@ -942,6 +970,262 @@ span[data-tag] {
     setShowEditObject(true)
   }, [])
 
+  const handleMoveConfirm = useCallback(async () => {
+    if (!selectedParent || moveItems.length === 0) return
+    
+    try {
+      // Move each item to the selected parent
+      for (const item of moveItems) {
+        await window.ipcRenderer.invoke('gamedocs:move-object', item.id, selectedParent)
+      }
+      
+      // Refresh the children list
+      const kids = await window.ipcRenderer.invoke('gamedocs:list-children', campaign!.id, activeId || root!.id)
+      setChildren(kids)
+      
+      setShowMoveModal(false)
+      toast('Items moved successfully', 'success')
+    } catch (error: any) {
+      console.error('Failed to move items:', error)
+      const errorMessage = error?.message || 'Failed to move items'
+      toast(errorMessage, 'error')
+    }
+  }, [selectedParent, moveItems, campaign, activeId, root])
+
+  const handleMoveCancel = useCallback(() => {
+    setShowMoveModal(false)
+    setSelectedParent(null)
+    setMoveItems([])
+    setPossibleParents([])
+    setParentSearchInput('')
+    setFilteredParents([])
+  }, [])
+
+  const handleBulkMoveOpen = useCallback(async () => {
+    // Get all objects for bulk move
+    const allObjects = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id).catch(() => [])
+    
+    // Convert to the format we need with paths
+    const objectsWithPaths = allObjects.map((obj: any) => ({
+      id: obj.id,
+      name: obj.name,
+      path: obj.name, // For now, just use the name as the path
+      parent_id: obj.parent_id
+    }))
+    
+    setAllObjectsForBulk(objectsWithPaths)
+    setFilteredBulkItems(objectsWithPaths)
+    setSelectedItems(new Set())
+    setBulkNameFilter('')
+    setBulkParentFilter('')
+    setIncludeDescendants(false)
+    setShowBulkMoveModal(true)
+  }, [campaign])
+
+  const handleBulkMoveCancel = useCallback(() => {
+    setShowBulkMoveModal(false)
+    setSelectedItems(new Set())
+    setBulkNameFilter('')
+    setBulkParentFilter('')
+    setIncludeDescendants(false)
+    setAllObjectsForBulk([])
+    setFilteredBulkItems([])
+  }, [])
+
+  const handleBulkMoveNext = useCallback(() => {
+    if (selectedItems.size === 0) return
+    
+    // Get the selected items
+    const selectedObjects = allObjectsForBulk.filter(obj => selectedItems.has(obj.id))
+    
+    // Close bulk modal and open move modal
+    setShowBulkMoveModal(false)
+    setMoveItems(selectedObjects.map(obj => ({ id: obj.id, name: obj.name, path: obj.path })))
+    
+    // Get possible parents (exclude all selected items and their descendants)
+    const excludedIds = new Set<string>()
+    
+    // Build parent-child map
+    const parentChildMap = new Map<string, string[]>()
+    for (const obj of allObjectsForBulk) {
+      if (obj.parent_id) {
+        if (!parentChildMap.has(obj.parent_id)) {
+          parentChildMap.set(obj.parent_id, [])
+        }
+        parentChildMap.get(obj.parent_id)!.push(obj.id)
+      }
+    }
+    
+    // Find all descendants of selected items
+    const findAllDescendants = (itemId: string): string[] => {
+      const descendants: string[] = []
+      const children = parentChildMap.get(itemId) || []
+      
+      for (const childId of children) {
+        descendants.push(childId)
+        descendants.push(...findAllDescendants(childId))
+      }
+      
+      return descendants
+    }
+    
+    // Add all selected items and their descendants to excluded list
+    for (const selectedId of selectedItems) {
+      excludedIds.add(selectedId)
+      const descendants = findAllDescendants(selectedId)
+      descendants.forEach(descId => excludedIds.add(descId))
+    }
+    
+    // Filter possible parents
+    const possibleParents = allObjectsForBulk.filter(obj => !excludedIds.has(obj.id))
+      .map(obj => ({ id: obj.id, name: obj.name, path: obj.path }))
+    
+    setPossibleParents(possibleParents)
+    setFilteredParents(possibleParents)
+    setSelectedParent(null)
+    setParentSearchInput('')
+    setShowMoveModal(true)
+  }, [selectedItems, allObjectsForBulk])
+
+  // Filter parents based on search input
+  useEffect(() => {
+    if (!parentSearchInput.trim()) {
+      setFilteredParents(possibleParents)
+    } else {
+      const searchTerm = parentSearchInput.toLowerCase()
+      const filtered = possibleParents.filter(parent => 
+        parent.name.toLowerCase().includes(searchTerm) ||
+        parent.path.toLowerCase().includes(searchTerm)
+      )
+      setFilteredParents(filtered)
+    }
+  }, [parentSearchInput, possibleParents])
+
+  // Filter bulk items based on name and parent filters
+  useEffect(() => {
+    let filtered = allObjectsForBulk
+
+    // Apply name filter
+    if (bulkNameFilter.trim()) {
+      const nameTerm = bulkNameFilter.toLowerCase()
+      filtered = filtered.filter(item => 
+        item.name.toLowerCase().includes(nameTerm)
+      )
+    }
+
+    // Apply parent filter
+    if (bulkParentFilter.trim()) {
+      const parentTerm = bulkParentFilter.toLowerCase()
+      
+      // Build parent-child map for hierarchy traversal
+      const parentChildMap = new Map<string, string[]>()
+      for (const obj of allObjectsForBulk) {
+        if (obj.parent_id) {
+          if (!parentChildMap.has(obj.parent_id)) {
+            parentChildMap.set(obj.parent_id, [])
+          }
+          parentChildMap.get(obj.parent_id)!.push(obj.id)
+        }
+      }
+      
+      // Find all descendants of items matching the parent term
+      const findAllDescendants = (itemId: string): string[] => {
+        const descendants: string[] = []
+        const children = parentChildMap.get(itemId) || []
+        
+        for (const childId of children) {
+          descendants.push(childId)
+          descendants.push(...findAllDescendants(childId))
+        }
+        
+        return descendants
+      }
+      
+      // Find items that match the parent term
+      const matchingParents = allObjectsForBulk.filter(obj => 
+        obj.name.toLowerCase().includes(parentTerm)
+      )
+      
+      if (includeDescendants) {
+        // Include all descendants of matching parents
+        const allDescendantIds = new Set<string>()
+        for (const parent of matchingParents) {
+          const descendants = findAllDescendants(parent.id)
+          descendants.forEach(descId => allDescendantIds.add(descId))
+        }
+        
+        filtered = filtered.filter(item => allDescendantIds.has(item.id))
+      } else {
+        // Filter by direct parent only
+        const matchingParentIds = new Set(matchingParents.map(p => p.id))
+        filtered = filtered.filter(item => 
+          item.parent_id && matchingParentIds.has(item.parent_id)
+        )
+      }
+    }
+
+    setFilteredBulkItems(filtered)
+  }, [bulkNameFilter, bulkParentFilter, includeDescendants, allObjectsForBulk])
+
+  const handleEditChildOpen = useCallback(() => {
+    console.log('handleEditChildOpen', childCtxMenu)
+    openEditForObject(childCtxMenu.selId, childCtxMenu.selText)
+  }, [openEditForObject, childCtxMenu])
+
+  const handleMoveChildOpen = useCallback(async () => {
+    console.log('handleMoveChildOpen', childCtxMenu)
+    
+    // Get the item to move
+    const itemToMove = await window.ipcRenderer.invoke('gamedocs:get-object', childCtxMenu.selId).catch(() => null)
+    if (!itemToMove) return
+    
+    // Get all possible parent objects using the existing handler
+    const allObjects = await window.ipcRenderer.invoke('gamedocs:list-objects-for-fuzzy', campaign!.id).catch(() => [])
+    
+    // Build a map of parent-child relationships to find descendants
+    const parentChildMap = new Map<string, string[]>()
+    for (const obj of allObjects) {
+      if (obj.parent_id) {
+        if (!parentChildMap.has(obj.parent_id)) {
+          parentChildMap.set(obj.parent_id, [])
+        }
+        parentChildMap.get(obj.parent_id)!.push(obj.id)
+      }
+    }
+    
+    // Recursively find all descendants of the item being moved
+    const findAllDescendants = (itemId: string): string[] => {
+      const descendants: string[] = []
+      const children = parentChildMap.get(itemId) || []
+      
+      for (const childId of children) {
+        descendants.push(childId)
+        descendants.push(...findAllDescendants(childId))
+      }
+      
+      return descendants
+    }
+    
+    const itemDescendants = findAllDescendants(childCtxMenu.selId)
+    const excludedIds = new Set([childCtxMenu.selId, ...itemDescendants])
+    
+    // Filter out the item itself and all its descendants
+    const possibleParents = allObjects.filter((obj: any) => {
+      return !excludedIds.has(obj.id)
+    }).map((obj: any) => ({
+      id: obj.id,
+      name: obj.name,
+      path: obj.name // For now, just use the name as the path
+    }))
+    
+    setMoveItems([{ id: itemToMove.id, name: itemToMove.name, path: itemToMove.name }])
+    setPossibleParents(possibleParents)
+    setFilteredParents(possibleParents)
+    setSelectedParent(null)
+    setParentSearchInput('')
+    setShowMoveModal(true)
+  }, [campaign, childCtxMenu])
+
   const handleEditOpen = useCallback(async () => {
     setCtxMenu(m => ({ ...m, visible: false }))
     if (!ctxLinkedTargets || ctxLinkedTargets.length === 0) return
@@ -1108,6 +1392,7 @@ span[data-tag] {
   // }, [handleSelectMatch])
 
   const handleShowChildContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>, id: string, name: string) => {
+    console.log('handleShowChildContextMenu', id, name)
     e.preventDefault()
     e.stopPropagation()
     setChildCtxMenu(m => ({ ...m, visible: false }))
@@ -1219,7 +1504,6 @@ span[data-tag] {
   }, [handleCreateChild])
 
   const handleDeleteChild = useCallback(async () => {
-    // TODO: we need to ask the user for confirmation
     const ok = await confirmDialog({ title: 'Delete', message: `Delete '${childCtxMenu.selText}' and all descendants?`, variant: 'yes-no' })
     if (!ok) return
     await window.ipcRenderer.invoke('gamedocs:delete-object-cascade', childCtxMenu.selId)
@@ -1270,9 +1554,19 @@ span[data-tag] {
     span.style.borderBottom = '1px dotted var(--pd-tag-border, #6495ED)'
     span.style.cursor = 'pointer'
     if (el && selRange) {
+      // Preserve scroll position before updating content
+      const scrollTop = el.scrollTop
+      
       selRange.deleteContents()
       selRange.insertNode(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore scroll position after content update
+      requestAnimationFrame(() => {
+        if (el) {
+          el.scrollTop = scrollTop
+        }
+      })
       
       // Restore focus to editor and position cursor after the new link
       el.focus()
@@ -1306,8 +1600,18 @@ span[data-tag] {
       return
     }
     if (el) {
+      // Preserve scroll position before updating content
+      const scrollTop = el.scrollTop
+      
       el.appendChild(span)
       setDesc(htmlToDesc(el))
+      
+      // Restore scroll position after content update
+      requestAnimationFrame(() => {
+        if (el) {
+          el.scrollTop = scrollTop
+        }
+      })
       
       // Restore focus to editor and position cursor after the new link
       el.focus()
@@ -1392,7 +1696,11 @@ span[data-tag] {
       return `<span data-tag="${safeTag}" style="background: var(--pd-tag-bg, rgba(100,149,237,0.2)); border-bottom: 1px dotted var(--pd-tag-border, #6495ED); cursor: pointer;">${safeLabel}</span>`
     })
     // Preserve explicit newlines using <br>
-    return withSpans.replace(/\n/g, '<br>')
+    // First normalize line endings by removing \r, then convert \n to <br>
+    //console.log('descToHtml input:', JSON.stringify(text))
+    const result = withSpans.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>')
+    //console.log('descToHtml output:', JSON.stringify(result))
+    return result
   }
 
   function htmlToDesc(container: HTMLElement): string {
@@ -1404,29 +1712,27 @@ span[data-tag] {
       const token = document.createTextNode(`[[${label}|${tag}]]`)
       el.replaceWith(token)
     })
-    // Convert <br> to \n and treat block boundaries as newlines
-    // First, BRs become newlines
+    // Convert <br> to \n
     clone.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode('\n')))
-    // Then add newline separators for block boundaries
-    const blocks = new Set(['DIV', 'P'])
-    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT, null)
-    const toAppendNewline: HTMLElement[] = []
-    const toInsertBefore: HTMLElement[] = []
-    let node: Element | null = walker.nextNode() as Element | null
-    while (node) {
-      if (blocks.has(node.nodeName)) {
-        toAppendNewline.push(node as HTMLElement)
-        if ((node as HTMLElement).previousSibling) toInsertBefore.push(node as HTMLElement)
+    
+    // Convert <div> elements to newlines (browser creates divs for each line)
+    clone.querySelectorAll('div').forEach((div) => {
+      // Add newline before the div content
+      if (div.previousSibling) {
+        div.parentNode?.insertBefore(document.createTextNode('\n'), div)
       }
-      node = walker.nextNode() as Element | null
-    }
-    for (const el of toInsertBefore) {
-      el.parentNode?.insertBefore(document.createTextNode('\n'), el)
-    }
-    for (const el of toAppendNewline) el.appendChild(document.createTextNode('\n'))
-    // Extract text; collapse triple+ newlines to double to avoid runaway breaks
+      // Replace the div with its content
+      const content = div.textContent || ''
+      div.replaceWith(document.createTextNode(content))
+    })
+    
+    // Extract text; normalize line endings and preserve all newlines
     const text = clone.textContent || ''
-    return text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n')
+    //console.log('htmlToDesc input HTML:', clone.innerHTML)
+    //console.log('htmlToDesc textContent:', JSON.stringify(text))
+    const result = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    //console.log('htmlToDesc output:', JSON.stringify(result))
+    return result
   }
 
   async function handleGoToParent() {
@@ -1635,6 +1941,7 @@ span[data-tag] {
               items.push({ id: activeLocked ? '__UNLOCK__' : '__LOCK__', name: activeLocked ? 'Unlock object' : 'Lock object', path: '' })
               items.push({ id: '__SEPARATOR_MIDDLE__', name: '', path: '' })
               items.push({ id: '__MISC_STUFF__', name: 'Misc stuff', path: '' })
+              items.push({ id: '__BULK_MOVE_ITEMS__', name: 'Bulk move items', path: '' })
               items.push({ id: '__SEPARATOR_BOTTOM__', name: '', path: '' })
               if (!activeLocked) items.push({ id: '__DELETE__', name: 'Delete', path: '' })
               return { visible: true, x, y, items, hoverPreview: null, source: 'dropdown' }
@@ -1666,10 +1973,101 @@ span[data-tag] {
               <div className="header_line">{activeName || root.name}</div>
               <a className="add-child" onClick={() => { setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true) }}>Add Child <i className="ri-add-circle-line"></i></a>
               <div className="divider-line"></div>
-              <div className="menu_items_container" style={{ height: getHeight() }}>
-                {children.map(c => (
-                  <div key={c.id} onMouseUp={(e) => { if(e.button == 0){ selectObject(c.id, c.name) } else if(e.button == 2){ handleShowChildContextMenu(e, c.id, c.name) } }} className="child-item">{getIconForType(c.type)}{c.name}</div>
-                ))}
+              <div 
+                className="menu_items_container" 
+                style={{ height: getHeight() }}
+                onMouseDown={(e) => {
+                  //console.log('🖱️ MouseDown on container', e.target)
+                  const target = e.target as HTMLElement
+                  const childItem = target.closest('.child-item') as HTMLElement
+                  //console.log('🎯 Found child item:', childItem)
+                  if (childItem) {
+                    const childId = childItem.getAttribute('data-child-id')
+                    //console.log('🆔 Child ID:', childId)
+                    if (childId) {
+                      const state = childItemMouseStateRef.current.get(childId) || { mouseDownOnItem: false, hasMoved: false, startX: 0, startY: 0, startItemId: '' }
+                      //console.log('📊 Previous state:', state)
+                      state.mouseDownOnItem = true
+                      state.hasMoved = false
+                      state.startX = e.clientX
+                      state.startY = e.clientY
+                      state.startItemId = childId
+                      childItemMouseStateRef.current.set(childId, state)
+                      //console.log('✅ Set new state:', state, 'start position:', e.clientX, e.clientY, 'start item:', childId)
+                    }
+                  }
+                }}
+                onMouseMove={(e) => {
+                  const target = e.target as HTMLElement
+                  const childItem = target.closest('.child-item') as HTMLElement
+                  if (childItem) {
+                    const childId = childItem.getAttribute('data-child-id')
+                    if (childId) {
+                      const state = childItemMouseStateRef.current.get(childId)
+                      if (state && state.mouseDownOnItem) {
+                        const deltaX = Math.abs(e.clientX - state.startX)
+                        const deltaY = Math.abs(e.clientY - state.startY)
+                        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+                        
+                        // Only consider it a drag if moved more than 5 pixels
+                        if (distance > 5) {
+                          //console.log('🚀 Mouse moved significantly - marking as dragged for:', childId, 'distance:', distance.toFixed(1))
+                          state.hasMoved = true
+                        }
+                      }
+                    }
+                  }
+                }}
+                onMouseUp={(e) => {
+                  //console.log('🖱️ MouseUp on container', e.target, 'button:', e.button)
+                  const target = e.target as HTMLElement
+                  const childItem = target.closest('.child-item') as HTMLElement
+                  //console.log('🎯 Found child item:', childItem)
+                  if (childItem) {
+                    const childId = childItem.getAttribute('data-child-id')
+                    //console.log('🆔 Child ID:', childId)
+                    if (childId) {
+                      const state = childItemMouseStateRef.current.get(childId)
+                      //console.log('📊 Current state:', state)
+                      
+                      // Check if mouse down and mouse up happened on the same item
+                      const sameItem = state && state.startItemId === childId
+                      //console.log('🔍 Same item check:', sameItem, 'start:', state?.startItemId, 'end:', childId)
+                      
+                      if (state && state.mouseDownOnItem && sameItem) {
+                        //console.log('🎉 CLICK DETECTED! Executing action for:', childId)
+                        if(e.button == 0){ 
+                          //console.log('👆 Left click - selecting object')
+                          selectObject(childId, childItem.textContent || '') 
+                        } else if(e.button == 2){ 
+                          //console.log('👆 Right click - showing context menu')
+                          handleShowChildContextMenu(e, childId, childItem.textContent || '') 
+                        }
+                      } else {
+                        //console.log('❌ Click ignored - mouseDownOnItem:', state?.mouseDownOnItem, 'sameItem:', sameItem)
+                      }
+                      if (state) {
+                        //console.log('🔄 Resetting state for:', childId)
+                        state.mouseDownOnItem = false
+                        state.hasMoved = false
+                        state.startItemId = ''
+                      }
+                    }
+                  }
+                }}
+              >
+                {children.map(c => {
+                  //console.log('🔄 Rendering child item:', c.id, c.name)
+                  return (
+                    <div 
+                      key={c.id} 
+                      className="child-item"
+                      data-child-id={c.id}
+                    >
+                      {getIconForType(c.type)}{c.name}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -1805,6 +2203,72 @@ span[data-tag] {
               }
             }}
             onKeyDown={(e) => {
+              // Handle Enter key with indentation preservation
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                const sel = window.getSelection()
+                if (sel && sel.rangeCount > 0) {
+                  const range = sel.getRangeAt(0)
+                  
+                  // Get the full text content of the editor
+                  const editorText = editorRef.current?.textContent || ''
+                  
+                  // Create a temporary range to measure the position
+                  const tempRange = document.createRange()
+                  tempRange.setStart(editorRef.current!, 0)
+                  tempRange.setEnd(range.startContainer, range.startOffset)
+                  
+                  // Count characters from start to cursor position
+                  const charCount = tempRange.toString().length
+                  
+                  // Find the current line by looking for newlines
+                  let lineStart = 0
+                  let lineEnd = editorText.length
+                  
+                  // Find start of current line
+                  for (let i = charCount - 1; i >= 0; i--) {
+                    if (editorText[i] === '\n') {
+                      lineStart = i + 1
+                      break
+                    }
+                  }
+                  
+                  // Find end of current line
+                  for (let i = charCount; i < editorText.length; i++) {
+                    if (editorText[i] === '\n') {
+                      lineEnd = i
+                      break
+                    }
+                  }
+                  
+                  // Extract the current line text
+                  const currentLineText = editorText.substring(lineStart, lineEnd)
+                  
+                  // Extract whitespace from the start of the current line
+                  const whitespaceMatch = currentLineText.match(/^[\s\t]*/)
+                  const whitespace = whitespaceMatch ? whitespaceMatch[0] : ''
+                  
+                  // Create newline with preserved indentation
+                  const newlineWithIndent = '\n' + whitespace
+                  const textNode = document.createTextNode(newlineWithIndent)
+                  
+                  range.deleteContents()
+                  range.insertNode(textNode)
+                  
+                  // Move caret to the end of the inserted text (after the indentation)
+                  const newRange = document.createRange()
+                  newRange.setStartAfter(textNode)
+                  newRange.collapse(true)
+                  sel.removeAllRanges()
+                  sel.addRange(newRange)
+                  
+                  setDesc(htmlToDesc(editorRef.current!))
+                }
+                
+                (editorRef.current?.lastChild as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+                return
+              }
+              
               // Insert literal tab characters in the content
               if (e.key === 'Tab') {
                 e.preventDefault()
@@ -1891,7 +2355,10 @@ span[data-tag] {
               <div className="separator" />
               {/* <div className="ctx-menu-item" onClick={handleCreateChildAndEnter}>Create Child</div> */}
               <div className="ctx-menu-item" onClick={handleDeleteChild}>Delete Child</div>
+              <div className="ctx-menu-item" onClick={(e)=>{ handleEditChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Edit Child</div>
+              <div className="ctx-menu-item" onClick={(e)=>{ handleMoveChildOpen(); setChildCtxMenu(m => ({ ...m, visible: false })); }}>Move Child</div>
             </div>
+
           )}
           {ctxMenu.visible && (
             <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} ref={ctxMenuRef}>
@@ -2051,6 +2518,10 @@ span[data-tag] {
                       }
               if (t.id === '__MISC_STUFF__') {
                 setShowMisc(true)
+                setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                return
+              } else if (t.id === '__BULK_MOVE_ITEMS__') {
+                handleBulkMoveOpen()
                 setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
                 return
               }
@@ -2861,6 +3332,188 @@ span[data-tag] {
                 {/* Close button */}
                 <div className="actions">
                   <button onClick={() => { setShowLinker(false); setIsLinkLastWordMode(false) }}>Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Bulk Move modal */}
+          {showBulkMoveModal && (
+            <div className="bulk-move-overlay" {...createOverlayClickHandler(handleBulkMoveCancel)}>
+              <div className="bulk-move-width" onClick={e => e.stopPropagation()}>
+                <div className="bulk-move-card">
+                  <div className="bulk-move-header">
+                    <h3 className="m-0">Select Items to Move</h3>
+                    <div className="flex-gap-8">
+                      <button onClick={handleBulkMoveCancel}>Cancel</button>
+                      <button 
+                        onClick={handleBulkMoveNext}
+                        disabled={selectedItems.size === 0}
+                        style={{ opacity: selectedItems.size > 0 ? 1 : 0.5 }}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bulk-move-filters">
+                    <div className="bulk-filter-row">
+                      <input
+                        type="text"
+                        className="bulk-filter-input"
+                        placeholder="Filter by name..."
+                        value={bulkNameFilter}
+                        onChange={(e) => setBulkNameFilter(e.target.value)}
+                      />
+                      <input
+                        type="text"
+                        className="bulk-filter-input"
+                        placeholder="Filter by parent..."
+                        value={bulkParentFilter}
+                        onChange={(e) => setBulkParentFilter(e.target.value)}
+                      />
+                    </div>
+                    <div className="bulk-filter-options">
+                      <label className="bulk-checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={includeDescendants}
+                          onChange={(e) => setIncludeDescendants(e.target.checked)}
+                        />
+                        Include descendants (not just direct children)
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="bulk-move-content">
+                    <div className="bulk-items-list">
+                      {filteredBulkItems.map(item => (
+                        <div 
+                          key={item.id} 
+                          className="bulk-item-row"
+                          onClick={() => {
+                            const newSelected = new Set(selectedItems)
+                            if (selectedItems.has(item.id)) {
+                              newSelected.delete(item.id)
+                            } else {
+                              newSelected.add(item.id)
+                            }
+                            setSelectedItems(newSelected)
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            className="bulk-item-checkbox"
+                            checked={selectedItems.has(item.id)}
+                            onChange={(e) => {
+                              const newSelected = new Set(selectedItems)
+                              if (e.target.checked) {
+                                newSelected.add(item.id)
+                              } else {
+                                newSelected.delete(item.id)
+                              }
+                              setSelectedItems(newSelected)
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <div className="bulk-item-info">
+                            <div className="bulk-item-name">{item.name}</div>
+                            <div className="bulk-item-id">{item.id}</div>
+                          </div>
+                        </div>
+                      ))}
+                      {filteredBulkItems.length === 0 && (
+                        <div className="bulk-no-results">No items found matching filters</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedItems.size > 0 && (
+                    <div className="bulk-selected-summary">
+                      <div className="bulk-summary-title">Selected Items ({selectedItems.size}):</div>
+                      <div className="bulk-summary-list">
+                        {Array.from(selectedItems).map(itemId => {
+                          const item = allObjectsForBulk.find(obj => obj.id === itemId)
+                          return item ? item.name : null
+                        }).filter(Boolean).join(', ')}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Move modal */}
+          {showMoveModal && (
+            <div className="move-overlay" onClick={handleMoveCancel}>
+              <div className="move-width" onClick={e => e.stopPropagation()}>
+                <div className="move-card">
+                  <div className="move-header">
+                    <h3 className="m-0">Move Items</h3>
+                    <div className="flex-gap-8">
+                      <button onClick={handleMoveCancel}>Cancel</button>
+                      <button 
+                        onClick={handleMoveConfirm}
+                        disabled={!selectedParent}
+                        style={{ opacity: selectedParent ? 1 : 0.5 }}
+                      >
+                        Move
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="move-columns">
+                    {/* Left column: Items to move */}
+                    <div className="move-col">
+                      <div className="move-section-title">Items to Move</div>
+                      <div className="move-list">
+                        {moveItems.map(item => (
+                          <div key={item.id} className="move-item" title={item.path}>
+                            <div className="move-item-id">{item.id}</div>
+                            <div className="move-item-name">{item.name}</div>
+                            <div className="move-item-path">{item.path}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Right column: Possible parents */}
+                    <div className="move-col">
+                      <div className="move-section-title">Select New Parent</div>
+                      <input
+                        type="text"
+                        className="move-search-input"
+                        placeholder="Search parents..."
+                        value={parentSearchInput}
+                        onChange={(e) => setParentSearchInput(e.target.value)}
+                        autoFocus
+                      />
+                      <div className="move-list">
+                        {filteredParents.map(parent => (
+                          <div 
+                            key={parent.id} 
+                            className="move-parent-item"
+                            onClick={() => setSelectedParent(parent.id)}
+                          >
+                            <input 
+                              type="radio" 
+                              className="move-parent-radio"
+                              checked={selectedParent === parent.id}
+                              onChange={() => setSelectedParent(parent.id)}
+                            />
+                            <div className="move-parent-info">
+                              <div className="move-parent-name">{parent.name}</div>
+                              <div className="move-parent-path">{parent.path}</div>
+                            </div>
+                          </div>
+                        ))}
+                        {filteredParents.length === 0 && parentSearchInput && (
+                          <div className="move-no-results">No parents found matching "{parentSearchInput}"</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
