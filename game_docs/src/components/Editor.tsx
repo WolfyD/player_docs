@@ -1689,49 +1689,176 @@ span[data-tag] {
   
 
   function descToHtml(text: string): string {
-    // Convert [[label|tag_xxx]] tokens to span elements
-    const withSpans = text.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label, tag) => {
-      const safeLabel = String(label)
-      const safeTag = String(tag)
-      return `<span data-tag="${safeTag}" style="background: var(--pd-tag-bg, rgba(100,149,237,0.2)); border-bottom: 1px dotted var(--pd-tag-border, #6495ED); cursor: pointer;">${safeLabel}</span>`
-    })
+    // Helper: render style tokens in plain text using classed spans. Supports [{italic|...}] initially.
+    function renderStylesToHtml(input: string): string {
+      const OPEN = '[{'
+      const CLOSE = '}]'
+      let i = 0
+      const out: string[] = []
+
+      function parseSegment(): string {
+        const seg: string[] = []
+        while (i < input.length) {
+          // Handle escape of special sequences
+          if (input[i] === '\\' && i + 1 < input.length) {
+            seg.push(input[i + 1])
+            i += 2
+            continue
+          }
+          // Look for opening token '[{'
+          if (input.startsWith(OPEN, i)) {
+            i += OPEN.length
+            // parse style name until first unescaped '|'
+            let name = ''
+            while (i < input.length && !(input[i] === '|' )) {
+              if (input[i] === '\\' && i + 1 < input.length) { name += input[i + 1]; i += 2; continue }
+              name += input[i++]
+            }
+            if (i >= input.length || input[i] !== '|') {
+              // malformed, emit literally
+              seg.push(OPEN + name)
+              continue
+            }
+            i++ // skip '|'
+            // parse inner content with nesting
+            const innerStart = i
+            let depth = 1
+            const innerParts: string[] = []
+            while (i < input.length) {
+              if (input[i] === '\\' && i + 1 < input.length) {
+                innerParts.push(input[i + 1])
+                i += 2
+                continue
+              }
+              if (input.startsWith(OPEN, i)) { depth++; innerParts.push(OPEN); i += OPEN.length; continue }
+              if (input.startsWith(CLOSE, i)) { depth--; if (depth === 0) { i += CLOSE.length; break } innerParts.push(CLOSE); i += CLOSE.length; continue }
+              innerParts.push(input[i++])
+            }
+            const innerRaw = innerParts.join('')
+            const innerHtml = renderStylesToHtml(innerRaw)
+            const styleName = name.trim().toLowerCase()
+            const known = new Set(['bold','italic','underline','strike','code','redacted','h1'])
+            if (known.has(styleName)) {
+              seg.push(`<span class="styleTag style-${styleName}">${innerHtml}</span>`)
+            } else {
+              // Unknown style: emit content without wrapper to avoid breaking
+              seg.push(innerHtml)
+            }
+            continue
+          }
+          // normal char
+          seg.push(input[i++])
+        }
+        return seg.join('')
+      }
+
+      out.push(parseSegment())
+      return out.join('')
+    }
+
+    // Phase 1: protect tags with placeholders and collect them (scanner supports styles in label)
+    const placeholders: Array<{ key: string; label: string; tag: string }> = []
+    let phIndex = 0
+    const src = String(text)
+    let iScan = 0
+    const protectedParts: string[] = []
+    while (iScan < src.length) {
+      if (src[iScan] === '\\' && iScan + 1 < src.length) { protectedParts.push(src[iScan + 1]); iScan += 2; continue }
+      if (src.startsWith('[[', iScan)) {
+        const start = iScan
+        iScan += 2
+        // parse label until '|' at styleDepth=0
+        let styleDepth = 0
+        let labelBuf: string[] = []
+        let ok = false
+        while (iScan < src.length) {
+          if (src[iScan] === '\\' && iScan + 1 < src.length) { labelBuf.push(src[iScan + 1]); iScan += 2; continue }
+          if (src.startsWith('[{', iScan)) { styleDepth++; labelBuf.push('[{'); iScan += 2; continue }
+          if (src.startsWith('}]', iScan)) { if (styleDepth > 0) styleDepth--; labelBuf.push('}]'); iScan += 2; continue }
+          if (src[iScan] === '|' && styleDepth === 0) { iScan++; ok = true; break }
+          labelBuf.push(src[iScan++])
+        }
+        if (!ok) { // not a well-formed tag, emit literally
+          protectedParts.push(src.substring(start, iScan))
+          continue
+        }
+        // parse tag id until ']]'
+        const tagStart = iScan
+        const closeIdx = src.indexOf(']]', iScan)
+        if (closeIdx === -1) {
+          // no closing, emit literally
+          protectedParts.push(src.substring(start))
+          iScan = src.length
+          continue
+        }
+        const tagId = src.substring(tagStart, closeIdx)
+        iScan = closeIdx + 2
+        const key = `\u0001TAG${phIndex++}\u0001`
+        placeholders.push({ key, label: labelBuf.join(''), tag: tagId })
+        protectedParts.push(key)
+        continue
+      }
+      protectedParts.push(src[iScan++])
+    }
+    const protectedText = protectedParts.join('')
+
+    // Phase 2: render style tokens outside of tags
+    const withStyles = renderStylesToHtml(protectedText)
+
+    // Phase 3: restore tags; also render styles inside tag labels now
+    let restored = withStyles
+    for (const ph of placeholders) {
+      const safeLabelHtml = renderStylesToHtml(ph.label)
+      const tagSpan = `<span data-tag="${ph.tag}" style="background: var(--pd-tag-bg, rgba(100,149,237,0.2)); border-bottom: 1px dotted var(--pd-tag-border, #6495ED); cursor: pointer;">${safeLabelHtml}</span>`
+      restored = restored.split(ph.key).join(tagSpan)
+    }
+
     // Preserve explicit newlines using <br>
     // First normalize line endings by removing \r, then convert \n to <br>
-    //console.log('descToHtml input:', JSON.stringify(text))
-    const result = withSpans.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>')
-    //console.log('descToHtml output:', JSON.stringify(result))
+    const result = restored.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>')
     return result
   }
 
   function htmlToDesc(container: HTMLElement): string {
     // Convert spans back to token syntax and preserve line breaks
     const clone = container.cloneNode(true) as HTMLElement
-    clone.querySelectorAll('span[data-tag]').forEach((el) => {
-      const label = el.textContent || ''
-      const tag = el.getAttribute('data-tag') || ''
-      const token = document.createTextNode(`[[${label}|${tag}]]`)
-      el.replaceWith(token)
-    })
-    // Convert <br> to \n
-    clone.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode('\n')))
-    
-    // Convert <div> elements to newlines (browser creates divs for each line)
-    clone.querySelectorAll('div').forEach((div) => {
-      // Add newline before the div content
-      if (div.previousSibling) {
-        div.parentNode?.insertBefore(document.createTextNode('\n'), div)
+
+    // First convert style spans into tokens, recursively serializing their contents
+    const serializeNode = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) return (node as Text).data
+      if (node.nodeType !== Node.ELEMENT_NODE) return ''
+      const el = node as HTMLElement
+      if (el.tagName === 'BR') return '\n'
+      if (el.tagName === 'DIV') {
+        let s = ''
+        // mimic existing behavior: newline before div content when there is a previous sibling
+        if (el.previousSibling) s += '\n'
+        el.childNodes.forEach((c) => { s += serializeNode(c) })
+        return s
       }
-      // Replace the div with its content
-      const content = div.textContent || ''
-      div.replaceWith(document.createTextNode(content))
-    })
-    
-    // Extract text; normalize line endings and preserve all newlines
-    const text = clone.textContent || ''
-    //console.log('htmlToDesc input HTML:', clone.innerHTML)
-    //console.log('htmlToDesc textContent:', JSON.stringify(text))
-    const result = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-    //console.log('htmlToDesc output:', JSON.stringify(result))
+      if (el.matches('span.styleTag')) {
+        const inner = Array.from(el.childNodes).map(serializeNode).join('')
+        const style = Array.from(el.classList).find(cls => cls.startsWith('style-'))
+        if (style) {
+          const token = style.replace('style-', '')
+          const allowed = new Set(['bold','italic','underline','strike','code','redacted','h1'])
+          if (allowed.has(token)) return `[{${token}|${inner}}]`
+        }
+        return inner
+      }
+      if (el.matches('span[data-tag]')) {
+        const label = Array.from(el.childNodes).map(serializeNode).join('')
+        const tag = el.getAttribute('data-tag') || ''
+        return `[[${label}|${tag}]]`
+      }
+      let s = ''
+      el.childNodes.forEach((c) => { s += serializeNode(c) })
+      return s
+    }
+
+    const raw = Array.from(clone.childNodes).map(serializeNode).join('')
+    // Normalize Windows/Mac newlines to \n; do not alter other whitespace
+    const result = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
     return result
   }
 
@@ -1882,30 +2009,101 @@ span[data-tag] {
 
   function handleBoldFormatting() {
     console.log('handleBoldFormatting')
+    applyInlineStyle('bold')
   }
 
-  function handleItalicFormatting() {
+  function handleItalicFormatting(e: React.MouseEvent<HTMLDivElement>) {
     console.log('handleItalicFormatting')
+    applyInlineStyle('italic')
+  }
+
+  // Generic helper to apply inline style by class name, keeping tags contiguous
+  function applyInlineStyle(styleName: string, e?: React.MouseEvent<HTMLDivElement>) {
+    if (e) { e.preventDefault(); e.stopPropagation() }
+    const editor = editorRef.current
+    if (!editor) return
+    const preserved = selectionRangeRef.current ? selectionRangeRef.current.cloneRange() : null
+    const sel = window.getSelection()
+    const liveRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+    const range = preserved || liveRange
+    if (!range || range.collapsed) return
+    const makeRanges = (r: Range): Range[] => {
+      const ranges: Range[] = []
+      const root: Node = editor
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      let node: Node | null = walker.currentNode
+      const cmpNodeOrder = (a: Node, b: Node): number => {
+        if (a === b) return 0
+        const pos = a.compareDocumentPosition(b)
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1
+        return 0
+      }
+      while (node && cmpNodeOrder(node, r.startContainer) < 0) node = walker.nextNode()
+      if (!node) return ranges
+      const nodes: Text[] = []
+      do {
+        if (node.nodeType === Node.TEXT_NODE) nodes.push(node as Text)
+        if (cmpNodeOrder(node, r.endContainer) > 0) break
+        node = walker.nextNode()
+      } while (node)
+      for (const textNode of nodes) {
+        const text = textNode.data
+        if (!text || text.length === 0) continue
+        let startOffset = 0
+        let endOffset = text.length
+        if (textNode === r.startContainer && typeof r.startOffset === 'number') startOffset = r.startOffset
+        if (textNode === r.endContainer && typeof r.endOffset === 'number') endOffset = r.endOffset
+        if (textNode !== r.startContainer && cmpNodeOrder(textNode, r.startContainer) < 0) continue
+        if (textNode !== r.endContainer && cmpNodeOrder(textNode, r.endContainer) > 0) continue
+        if (endOffset <= startOffset) continue
+        const sub = document.createRange()
+        sub.setStart(textNode, startOffset)
+        sub.setEnd(textNode, endOffset)
+        ranges.push(sub)
+      }
+      return ranges
+    }
+    const segments = makeRanges(range)
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i]
+      const wrapper = document.createElement('span')
+      wrapper.className = `styleTag style-${styleName}`
+      const contents = seg.extractContents()
+      wrapper.appendChild(contents)
+      seg.insertNode(wrapper)
+    }
+    const newRange = document.createRange()
+    newRange.setStart(range.endContainer, range.endOffset)
+    newRange.collapse(true)
+    if (sel) { sel.removeAllRanges(); sel.addRange(newRange) }
+    setCtxMenu(m => ({ ...m, visible: false }))
+    setDesc(htmlToDesc(editor))
   }
 
   function handleUnderlineFormatting() {
     console.log('handleUnderlineFormatting')
+    applyInlineStyle('underline')
   }
 
   function handleHeadingFormatting() {
     console.log('handleHeadingFormatting')
+    applyInlineStyle('h1')
   }
 
   function handleCodeFormatting() {
     console.log('handleCodeFormatting')
+    applyInlineStyle('code')
   }
 
   function handleRedactedFormatting() {
     console.log('handleRedactedFormatting')
+    applyInlineStyle('redacted')
   }
 
   function handleStrikethroughFormatting() {
     console.log('handleStrikethroughFormatting')
+    applyInlineStyle('strike')
   }
 
 
@@ -2234,69 +2432,266 @@ span[data-tag] {
                 const sel = window.getSelection()
                 if (sel && sel.rangeCount > 0) {
                   const range = sel.getRangeAt(0)
+                  console.log('ENTER_DBG start', { rangeCollapsed: range.collapsed, scType: range.startContainer.nodeType, so: range.startOffset, ecType: range.endContainer.nodeType, eo: range.endOffset })
                   
-                  // Get the full text content of the editor
-                  const editorText = editorRef.current?.textContent || ''
-                  
-                  // Create a temporary range to measure the position
-                  const tempRange = document.createRange()
-                  tempRange.setStart(editorRef.current!, 0)
-                  tempRange.setEnd(range.startContainer, range.startOffset)
-                  
-                  // Count characters from start to cursor position
-                  const charCount = tempRange.toString().length
-                  
-                  // Find the current line by looking for newlines
-                  let lineStart = 0
-                  let lineEnd = editorText.length
-                  
-                  // Find start of current line
-                  for (let i = charCount - 1; i >= 0; i--) {
-                    if (editorText[i] === '\n') {
-                      lineStart = i + 1
-                      break
+                  // Compute leading indentation for the current visual line using DOM (<br>-aware)
+                  const computeLeadingIndent = (): string => {
+                    const root = editorRef.current!
+                    // Walk backwards from caret to previous <br>
+                    const back = document.createTreeWalker(root, NodeFilter.SHOW_ALL)
+                    back.currentNode = range.startContainer
+                    let prevBreak: Node | null = null
+                    while (back.currentNode && back.currentNode !== root) {
+                      if ((back.currentNode as HTMLElement).tagName === 'BR') { prevBreak = back.currentNode; break }
+                      const prev = back.previousNode()
+                      if (!prev) break
                     }
-                  }
-                  
-                  // Find end of current line
-                  for (let i = charCount; i < editorText.length; i++) {
-                    if (editorText[i] === '\n') {
-                      lineEnd = i
-                      break
+                    // Start scanning forward after the <br> (or root start) to accumulate whitespace
+                    const fwd = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+                    fwd.currentNode = (prevBreak && prevBreak.nextSibling) ? prevBreak.nextSibling : (root.firstChild || root)
+                    const buf: string[] = []
+                    // Advance to the first text node if current is not a text node
+                    if (!fwd.currentNode || fwd.currentNode.nodeType !== Node.TEXT_NODE) {
+                      let advanced: Node | null
+                      while ((advanced = fwd.nextNode())) {
+                        if (fwd.currentNode && fwd.currentNode.nodeType === Node.TEXT_NODE) break
+                      }
+                      if (!fwd.currentNode || fwd.currentNode.nodeType !== Node.TEXT_NODE) {
+                        return buf.join('')
+                      }
                     }
+                    // Helper to know if we have reached the caret position
+                    const reachedCaret = (node: Node): boolean => {
+                      if (node === range.startContainer) return true
+                      const pos = node.compareDocumentPosition(range.startContainer)
+                      return (pos & Node.DOCUMENT_POSITION_FOLLOWING) === 0 && node !== root
+                    }
+                    while (fwd.currentNode && fwd.currentNode.nodeType === Node.TEXT_NODE) {
+                      const tn = fwd.currentNode as Text
+                      const data = tn.data || ''
+                      for (let i = 0; i < data.length; i++) {
+                        if (tn === range.startContainer && i >= range.startOffset) return buf.join('')
+                        const ch = data[i]
+                        // if (ch === ' ' || ch === '\t') buf.push(ch)
+                        // else return buf.join('')
+                        if (ch === ' ' || ch === '\t') buf.push(ch)
+                        else if (ch === '\u00A0') continue
+                        else return buf.join('')
+                      }
+                      const n = fwd.nextNode()
+                      if (!n) break
+                      if (reachedCaret(n)) return buf.join('')
+                      // Ensure we are on a text node for the next iteration
+                      while (fwd.currentNode && fwd.currentNode.nodeType !== Node.TEXT_NODE) {
+                        const step = fwd.nextNode()
+                        if (!step) break
+                      }
+                    }
+                    return buf.join('')
                   }
+                  const whitespace = computeLeadingIndent()
+                  console.log('ENTER_DBG indent', { whitespaceLen: whitespace.length })
                   
-                  // Extract the current line text
-                  const currentLineText = editorText.substring(lineStart, lineEnd)
-                  
-                  // Extract whitespace from the start of the current line
-                  const whitespaceMatch = currentLineText.match(/^[\s\t]*/)
-                  const whitespace = whitespaceMatch ? whitespaceMatch[0] : ''
-                  
-                  // Create newline with preserved indentation
-                  const newlineWithIndent = '\n' + whitespace
-                  const textNode = document.createTextNode(newlineWithIndent)
-                  
+                  // Insert a visible line break and then indentation as text
                   range.deleteContents()
-                  range.insertNode(textNode)
+                  const br = document.createElement('br')
+                  range.insertNode(br)
+                  let caretAnchor: Node = br
+                  if (whitespace && whitespace.length > 0) {
+                    const ws = document.createTextNode(whitespace)
+                    if (br.nextSibling) {
+                      br.parentNode?.insertBefore(ws, br.nextSibling)
+                    } else {
+                      br.parentNode?.appendChild(ws)
+                    }
+                    caretAnchor = ws
+
+                  } else {
+                    // create a text node with a non-breaking space so caret can sit in it
+                    const empty = document.createTextNode('\u00A0')
+                    if (br.nextSibling) br.parentNode?.insertBefore(empty, br.nextSibling)
+                    else br.parentNode?.appendChild(empty)
+                    caretAnchor = empty
                   
-                  // Move caret to the end of the inserted text (after the indentation)
+                    // Put caret *before* the NBSP (offset 0) so typed characters come before it
+                    const newRange = document.createRange()
+                    newRange.setStart(empty, 0)
+                    newRange.collapse(true)
+                    sel.removeAllRanges()
+                    sel.addRange(newRange)
+                  
+                    // Handler that cleans up the NBSP once the user types (or finishes an IME composition)
+                    const cleanupNbsp = (event: Event) => {
+                      try {
+                        // If node is gone already, nothing to do
+                        if (!empty.parentNode) {
+                          editorRef.current?.removeEventListener('input', cleanupNbsp)
+                          editorRef.current?.removeEventListener('compositionend', cleanupNbsp)
+                          return
+                        }
+                  
+                        // Record current selection offset so we can restore caret position after modifying node
+                        const s = window.getSelection()
+                        let caretOffset = 0
+                        if (s && s.rangeCount) {
+                          const r = s.getRangeAt(0)
+                          if (r.startContainer === empty) caretOffset = r.startOffset
+                          else caretOffset = empty.length // typed elsewhere; put caret at end of this node
+                        }
+                  
+                        // Remove the NBSP characters (there should usually be only the leading one)
+                        if (empty.data.includes('\u00A0')) {
+                          empty.data = empty.data.replace(/\u00A0/g, '')
+                        }
+                  
+                        // Clamp caretOffset to the new node length, then restore selection inside `empty`
+                        const restore = document.createRange()
+                        const newOffset = Math.max(0, Math.min(empty.length, caretOffset))
+                        restore.setStart(empty, newOffset)
+                        restore.collapse(true)
+                        s?.removeAllRanges()
+                        s?.addRange(restore)
+                      } finally {
+                        // detach listeners after first cleanup
+                        editorRef.current?.removeEventListener('input', cleanupNbsp)
+                        editorRef.current?.removeEventListener('compositionend', cleanupNbsp)
+                      }
+                    }
+                  
+                    // Attach listeners: input for normal typing, compositionend for IME input
+                    editorRef.current?.addEventListener('input', cleanupNbsp)
+                    editorRef.current?.addEventListener('compositionend', cleanupNbsp)
+                  }
+
+                  console.log('ENTER_DBG inserted', { hasWs: whitespace.length > 0, brParentTag: (br.parentElement && br.parentElement.tagName) || null })
+                  // Move caret after the indentation (or after <br> if no indentation)
                   const newRange = document.createRange()
-                  newRange.setStartAfter(textNode)
+                  newRange.setStartAfter(caretAnchor)
                   newRange.collapse(true)
                   sel.removeAllRanges()
                   sel.addRange(newRange)
-                  
-                  setDesc(htmlToDesc(editorRef.current!))
+                  console.log('ENTER_DBG caretSet', { anchorType: newRange.startContainer.nodeType, anchorOffset: newRange.startOffset })
+                  // Defer state update so the caret visually settles first
+                  setTimeout(() => {
+                    if (editorRef.current) setDesc(htmlToDesc(editorRef.current))
+                  }, 0)
                 }
                 
-                (editorRef.current?.lastChild as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+                // Ensure we scroll an element, not a text node
+                const cont = editorRef.current
+                if (cont) {
+                  const lastEl = cont.lastElementChild as HTMLElement | null
+                  if (lastEl && typeof (lastEl as any).scrollIntoView === 'function') {
+                    console.log('ENTER_DBG scroll target', { tag: lastEl.tagName })
+                    lastEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+                  } else {
+                    console.log('ENTER_DBG scroll fallback', { hasLastEl: !!lastEl })
+                    cont.scrollTop = cont.scrollHeight
+                  }
+                }
+
+                // 🧹 Remove NBSPs on previous lines only
+                
+                window.setTimeout(() => {
+                  const editor = editorRef.current
+                  if (editor) {
+                    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+                    const nbspNodes: Text[] = []
+
+                    while (walker.nextNode()) {
+                      const n = walker.currentNode as Text
+                      if (n.nodeValue === '\u00A0') {
+                        nbspNodes.push(n)
+                      }
+                    }
+
+                    // Remove all but the last NBSP
+                    for (let i = 0; i < nbspNodes.length - 1; i++) {
+                      nbspNodes[i].remove()
+                    }
+                  }
+                }, 100);
+                
+
+                
+                
                 return
               }
+
+              if (e.key === 'Backspace') {
+                const sel = window.getSelection()
+                if (!sel || sel.rangeCount === 0) return
+                const range = sel.getRangeAt(0)
+                const node = range.startContainer
+              
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                  const childNodes = Array.from(node.childNodes)
+                  const offset = range.startOffset
+                  const prevNode = childNodes[offset - 1]
+              
+                  if (prevNode && prevNode.nodeType === Node.TEXT_NODE && prevNode.nodeValue === '\u00A0') {
+                    e.preventDefault()
+              
+                    let brToRemove: ChildNode | null = null
+              
+                    // Find a <br> immediately before the NBSP (but NOT if there’s another <br> before that)
+                    let prev = prevNode.previousSibling
+                    while (prev && prev.nodeType === Node.TEXT_NODE && !(prev.nodeValue || '').trim()) {
+                      prev = prev.previousSibling
+                    }
+                    if (prev && prev.nodeName === 'BR') {
+                      // Only remove if the *previous* sibling isn't another <br>
+                      const beforePrev = prev.previousSibling
+                      if (!beforePrev || beforePrev.nodeName !== 'BR') {
+                        brToRemove = prev
+                      }
+                    }
+              
+                    prevNode.remove() // remove the nbsp
+                    if (brToRemove) brToRemove.remove()
+              
+                    // Move caret to end of previous text node
+                    const newSel = window.getSelection()
+                    const newRange = document.createRange()
+              
+                    let caretTarget: ChildNode | null =
+                      (brToRemove && brToRemove.previousSibling) || node.lastChild
+              
+                    while (caretTarget && caretTarget.nodeType !== Node.TEXT_NODE) {
+                      if (caretTarget.lastChild) caretTarget = caretTarget.lastChild
+                      else caretTarget = caretTarget.previousSibling
+                    }
+              
+                    if (caretTarget && caretTarget.nodeType === Node.TEXT_NODE) {
+                      newRange.setStart(caretTarget, caretTarget.textContent?.length || 0)
+                    } else {
+                      newRange.selectNodeContents(node)
+                      newRange.collapse(false)
+                    }
+              
+                    newSel?.removeAllRanges()
+                    newSel?.addRange(newRange)
+                    return
+                  }
+                }
+              }
+              
+              
               
               // Insert literal tab characters in the content
               if (e.key === 'Tab') {
                 e.preventDefault()
+
+                const editor = editorRef.current
+                if (editor) {
+                  const children = Array.from(editor.childNodes)
+                  for (const node of children) {
+                    if (node.nodeType === Node.TEXT_NODE && node.nodeValue === '\u00A0') {
+                      node.remove()
+                    }
+                  }
+                }
+
                 const sel = window.getSelection()
                 if (sel && sel.rangeCount > 0) {
                   const range = sel.getRangeAt(0)
