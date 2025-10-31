@@ -10,7 +10,7 @@ type Campaign = { id: string; name: string }
 
 export const Editor: React.FC = () => {
   const [campaign, setCampaign] = useState<Campaign | null>(null)
-  const [toggleStylingOptions, setToggleStylingOptions] = useState(false)
+  const [toggleStylingOptions, setToggleStylingOptions] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [root, setRoot] = useState<{ id: string; name: string; type: string } | null>(null)
   const [children, setChildren] = useState<Array<{ id: string; name: string; type: string }>>([])
@@ -56,6 +56,8 @@ export const Editor: React.FC = () => {
   const [hasPlaces, setHasPlaces] = useState<boolean>(false)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const selectionRangeRef = useRef<Range | null>(null)
+  const settingsLoadedRef = useRef<boolean>(false)
+  const loadedStylingEnabledRef = useRef<boolean>(true)
   const [ctxMenu, setCtxMenu] = useState<{
     visible: boolean
     x: number
@@ -452,6 +454,24 @@ export const Editor: React.FC = () => {
       const savedSidebarWidth = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.sidebarWidth').catch(() => null)
       if (savedSidebarWidth && typeof savedSidebarWidth === 'number') {
         setSidebarWidth(savedSidebarWidth)
+      }
+
+      const savedStylingEnabled = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.stylingEnabled').catch(() => null)
+      const stylingEnabled = typeof savedStylingEnabled === 'boolean' ? savedStylingEnabled : true
+      loadedStylingEnabledRef.current = stylingEnabled
+      setToggleStylingOptions(stylingEnabled)
+      settingsLoadedRef.current = true
+      // Force re-render of description if it exists, now that settings are loaded
+      // Use the loaded value directly instead of waiting for state update
+      if (editorRef.current && desc !== undefined) {
+        const scrollTop = editorRef.current.scrollTop
+        const currentDesc = desc || ''
+        editorRef.current.innerHTML = descToHtml(currentDesc, stylingEnabled)
+        requestAnimationFrame(() => {
+          if (editorRef.current) {
+            editorRef.current.scrollTop = scrollTop
+          }
+        })
       }
     })()
   }, [])
@@ -860,6 +880,21 @@ span[data-tag] {
     return () => clearTimeout(handler)
   }, [desc, activeId])
 
+  // Re-render description when styling enabled state changes (only after settings have loaded)
+  useEffect(() => {
+    if (settingsLoadedRef.current && editorRef.current && desc !== undefined) {
+      // Preserve scroll position
+      const scrollTop = editorRef.current.scrollTop
+      const currentDesc = desc || ''
+      editorRef.current.innerHTML = descToHtml(currentDesc)
+      requestAnimationFrame(() => {
+        if (editorRef.current) {
+          editorRef.current.scrollTop = scrollTop
+        }
+      })
+    }
+  }, [toggleStylingOptions, desc])
+
   const handleEditorInput = useCallback(() => {
     const el = editorRef.current
     if (el) setDesc(htmlToDesc(el))
@@ -887,7 +922,6 @@ span[data-tag] {
 
   const handleEditorContextMenu = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
-    //console.log('activeLocked', activeLocked)
     if (activeLocked) { setCtxMenu(m => ({ ...m, visible: false })); return }
     const sel = window.getSelection()
     if (!sel) return
@@ -1169,12 +1203,10 @@ span[data-tag] {
   }, [bulkNameFilter, bulkParentFilter, includeDescendants, allObjectsForBulk])
 
   const handleEditChildOpen = useCallback(() => {
-    console.log('handleEditChildOpen', childCtxMenu)
     openEditForObject(childCtxMenu.selId, childCtxMenu.selText)
   }, [openEditForObject, childCtxMenu])
 
   const handleMoveChildOpen = useCallback(async () => {
-    console.log('handleMoveChildOpen', childCtxMenu)
     
     // Get the item to move
     const itemToMove = await window.ipcRenderer.invoke('gamedocs:get-object', childCtxMenu.selId).catch(() => null)
@@ -1393,7 +1425,6 @@ span[data-tag] {
   // }, [handleSelectMatch])
 
   const handleShowChildContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>, id: string, name: string) => {
-    console.log('handleShowChildContextMenu', id, name)
     e.preventDefault()
     e.stopPropagation()
     setChildCtxMenu(m => ({ ...m, visible: false }))
@@ -1414,7 +1445,9 @@ span[data-tag] {
       if (editorRef.current) {
         // Strip broken/empty references: remove tokens whose tag id no longer exists
         const cleaned = await removeMissingTags(text)
-        editorRef.current.innerHTML = descToHtml(cleaned)
+        // Use loaded value directly if settings have loaded, otherwise use current state
+        const stylingEnabledToUse = settingsLoadedRef.current ? loadedStylingEnabledRef.current : toggleStylingOptions
+        editorRef.current.innerHTML = descToHtml(cleaned, stylingEnabledToUse)
         setDesc(cleaned)
       }
     })
@@ -1689,7 +1722,8 @@ span[data-tag] {
   
   
 
-  function descToHtml(text: string): string {
+  function descToHtml(text: string, forceStylingEnabled?: boolean): string {
+    const stylingEnabled = forceStylingEnabled !== undefined ? forceStylingEnabled : toggleStylingOptions
     // Helper: render style tokens in plain text using classed spans. Supports [{italic|...}] initially.
     function renderStylesToHtml(input: string): string {
       const OPEN = '[{'
@@ -1740,7 +1774,8 @@ span[data-tag] {
             const styleName = name.trim().toLowerCase()
             const known = new Set(['bold','italic','underline','strike','code','redacted','h1','quote'])
             if (known.has(styleName)) {
-              seg.push(`<span class="styleTag style-${styleName}">${innerHtml}</span>`)
+              const baseClass = stylingEnabled ? 'styleTag' : 'styleTagDisabled'
+              seg.push(`<span class="${baseClass} style-${styleName}">${innerHtml}</span>`)
             } else {
               // Unknown style: emit content without wrapper to avoid breaking
               seg.push(innerHtml)
@@ -1837,7 +1872,7 @@ span[data-tag] {
         el.childNodes.forEach((c) => { s += serializeNode(c) })
         return s
       }
-      if (el.matches('span.styleTag')) {
+      if (el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) {
         const inner = Array.from(el.childNodes).map(serializeNode).join('')
         // Skip empty style tags (no content or only whitespace)
         if (!inner || inner.trim().length === 0) {
@@ -1871,7 +1906,6 @@ span[data-tag] {
 
   async function handleGoToParent() {
     let parent = await window.ipcRenderer.invoke('gamedocs:get-parent', campaign!.id, activeId || root!.id) as { id: string; name: string }
-    console.log('parent->' + JSON.stringify(parent))
     if (parent) selectObject(parent.id, parent.name)
   }
   function handleGoToPreviousSibling() {
@@ -1883,7 +1917,6 @@ span[data-tag] {
     //if (nextSibling) selectObject(nextSibling.id, nextSibling.name)
   }
   function handleLinkLastWord() {
-    console.log('handleLinkLastWord')
     const editor = editorRef.current
     if (!editor) return
     
@@ -1952,7 +1985,6 @@ span[data-tag] {
       setIsLinkLastWordMode(true)
       handleAddLinkOpenOnSelectedWord()
       
-      console.log('Selected word:', text.substring(wordStart, wordEnd))
     }
   }
 
@@ -2015,12 +2047,10 @@ span[data-tag] {
 
 
   function handleBoldFormatting() {
-    console.log('handleBoldFormatting')
     applyInlineStyle('bold')
   }
 
   function handleItalicFormatting(e: React.MouseEvent<HTMLDivElement>) {
-    console.log('handleItalicFormatting')
     applyInlineStyle('italic')
   }
 
@@ -2120,7 +2150,8 @@ span[data-tag] {
     for (let i = mergedSegments.length - 1; i >= 0; i--) {
       const seg = mergedSegments[i]
       const wrapper = document.createElement('span')
-      wrapper.className = `styleTag style-${styleName}`
+      const baseClass = toggleStylingOptions ? 'styleTag' : 'styleTagDisabled'
+      wrapper.className = `${baseClass} style-${styleName}`
       const contents = seg.extractContents()
       wrapper.appendChild(contents)
       seg.insertNode(wrapper)
@@ -2134,32 +2165,26 @@ span[data-tag] {
   }
 
   function handleUnderlineFormatting() {
-    console.log('handleUnderlineFormatting')
     applyInlineStyle('underline')
   }
 
   function handleHeadingFormatting() {
-    console.log('handleHeadingFormatting')
     applyInlineStyle('h1')
   }
 
   function handleCodeFormatting() {
-    console.log('handleCodeFormatting')
     applyInlineStyle('code')
   }
 
   function handleRedactedFormatting() {
-    console.log('handleRedactedFormatting')
     applyInlineStyle('redacted')
   }
 
   function handleStrikethroughFormatting() {
-    console.log('handleStrikethroughFormatting')
     applyInlineStyle('strike')
   }
 
   function handleQuoteFormatting() {
-    console.log('handleQuoteFormatting')
     applyInlineStyle('quote')
   }
 
@@ -2199,7 +2224,7 @@ span[data-tag] {
       while (node) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           const el = node as HTMLElement
-          if (el.matches('span.styleTag')) {
+          if (el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) {
             const elRange = document.createRange()
             elRange.selectNodeContents(el)
             // Check if this nested style is fully within the selection range
@@ -2309,7 +2334,7 @@ span[data-tag] {
 
       // Helper: unwrap all style spans from a DocumentFragment
       const unwrapStylesInFragment = (frag: DocumentFragment): void => {
-        const styleSpans = Array.from(frag.querySelectorAll('span.styleTag')) as HTMLElement[]
+        const styleSpans = Array.from(frag.querySelectorAll('span.styleTag, span.styleTagDisabled')) as HTMLElement[]
         // Sort from innermost to outermost
         styleSpans.sort((a, b) => {
           const aRange = document.createRange()
@@ -2397,7 +2422,7 @@ span[data-tag] {
     }
 
     // Find all style spans that intersect with the selection
-    const allStyleSpans = Array.from(editor.querySelectorAll('span.styleTag')) as HTMLElement[]
+    const allStyleSpans = Array.from(editor.querySelectorAll('span.styleTag, span.styleTagDisabled')) as HTMLElement[]
     const intersectingSpans: HTMLElement[] = []
 
     for (const span of allStyleSpans) {
@@ -2537,23 +2562,18 @@ span[data-tag] {
                 className="menu_items_container" 
                 style={{ height: getHeight() }}
                 onMouseDown={(e) => {
-                  //console.log('🖱️ MouseDown on container', e.target)
                   const target = e.target as HTMLElement
                   const childItem = target.closest('.child-item') as HTMLElement
-                  //console.log('🎯 Found child item:', childItem)
                   if (childItem) {
                     const childId = childItem.getAttribute('data-child-id')
-                    //console.log('🆔 Child ID:', childId)
                     if (childId) {
                       const state = childItemMouseStateRef.current.get(childId) || { mouseDownOnItem: false, hasMoved: false, startX: 0, startY: 0, startItemId: '' }
-                      //console.log('📊 Previous state:', state)
                       state.mouseDownOnItem = true
                       state.hasMoved = false
                       state.startX = e.clientX
                       state.startY = e.clientY
                       state.startItemId = childId
                       childItemMouseStateRef.current.set(childId, state)
-                      //console.log('✅ Set new state:', state, 'start position:', e.clientX, e.clientY, 'start item:', childId)
                     }
                   }
                 }}
@@ -2571,7 +2591,6 @@ span[data-tag] {
                         
                         // Only consider it a drag if moved more than 5 pixels
                         if (distance > 5) {
-                          //console.log('🚀 Mouse moved significantly - marking as dragged for:', childId, 'distance:', distance.toFixed(1))
                           state.hasMoved = true
                         }
                       }
@@ -2579,35 +2598,24 @@ span[data-tag] {
                   }
                 }}
                 onMouseUp={(e) => {
-                  //console.log('🖱️ MouseUp on container', e.target, 'button:', e.button)
                   const target = e.target as HTMLElement
                   const childItem = target.closest('.child-item') as HTMLElement
-                  //console.log('🎯 Found child item:', childItem)
                   if (childItem) {
                     const childId = childItem.getAttribute('data-child-id')
-                    //console.log('🆔 Child ID:', childId)
                     if (childId) {
                       const state = childItemMouseStateRef.current.get(childId)
-                      //console.log('📊 Current state:', state)
                       
                       // Check if mouse down and mouse up happened on the same item
                       const sameItem = state && state.startItemId === childId
-                      //console.log('🔍 Same item check:', sameItem, 'start:', state?.startItemId, 'end:', childId)
                       
                       if (state && state.mouseDownOnItem && sameItem) {
-                        //console.log('🎉 CLICK DETECTED! Executing action for:', childId)
                         if(e.button == 0){ 
-                          //console.log('👆 Left click - selecting object')
                           selectObject(childId, childItem.textContent || '') 
                         } else if(e.button == 2){ 
-                          //console.log('👆 Right click - showing context menu')
                           handleShowChildContextMenu(e, childId, childItem.textContent || '') 
                         }
-                      } else {
-                        //console.log('❌ Click ignored - mouseDownOnItem:', state?.mouseDownOnItem, 'sameItem:', sameItem)
                       }
                       if (state) {
-                        //console.log('🔄 Resetting state for:', childId)
                         state.mouseDownOnItem = false
                         state.hasMoved = false
                         state.startItemId = ''
@@ -2617,7 +2625,6 @@ span[data-tag] {
                 }}
               >
                 {children.map(c => {
-                  //console.log('🔄 Rendering child item:', c.id, c.name)
                   return (
                     <div 
                       key={c.id} 
@@ -2769,7 +2776,6 @@ span[data-tag] {
                 const sel = window.getSelection()
                 if (sel && sel.rangeCount > 0) {
                   const range = sel.getRangeAt(0)
-                  console.log('ENTER_DBG start', { rangeCollapsed: range.collapsed, scType: range.startContainer.nodeType, so: range.startOffset, ecType: range.endContainer.nodeType, eo: range.endOffset })
                   
                   // Compute leading indentation for the current visual line using DOM (<br>-aware)
                   const computeLeadingIndent = (): string => {
@@ -2827,7 +2833,6 @@ span[data-tag] {
                     return buf.join('')
                   }
                   const whitespace = computeLeadingIndent()
-                  console.log('ENTER_DBG indent', { whitespaceLen: whitespace.length })
                   
                   // Insert a visible line break and then indentation as text
                   range.deleteContents()
@@ -2900,14 +2905,12 @@ span[data-tag] {
                     editorRef.current?.addEventListener('compositionend', cleanupNbsp)
                   }
 
-                  console.log('ENTER_DBG inserted', { hasWs: whitespace.length > 0, brParentTag: (br.parentElement && br.parentElement.tagName) || null })
                   // Move caret after the indentation (or after <br> if no indentation)
                   const newRange = document.createRange()
                   newRange.setStartAfter(caretAnchor)
                   newRange.collapse(true)
                   sel.removeAllRanges()
                   sel.addRange(newRange)
-                  console.log('ENTER_DBG caretSet', { anchorType: newRange.startContainer.nodeType, anchorOffset: newRange.startOffset })
                   // Defer state update so the caret visually settles first
                   setTimeout(() => {
                     if (editorRef.current) setDesc(htmlToDesc(editorRef.current))
@@ -2919,10 +2922,8 @@ span[data-tag] {
                 if (cont) {
                   const lastEl = cont.lastElementChild as HTMLElement | null
                   if (lastEl && typeof (lastEl as any).scrollIntoView === 'function') {
-                    console.log('ENTER_DBG scroll target', { tag: lastEl.tagName })
                     lastEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
                   } else {
-                    console.log('ENTER_DBG scroll fallback', { hasLastEl: !!lastEl })
                     cont.scrollTop = cont.scrollHeight
                   }
                 }
@@ -3119,18 +3120,22 @@ span[data-tag] {
           )}
           {ctxMenu.visible && (
             <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} ref={ctxMenuRef}>
-              <div className="ctx-menu-formatting-section">
-                <div className="ctx-menu-item formatting-item" title='Bold' onClick={handleBoldFormatting}><i className="ri-bold"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Italic' onClick={handleItalicFormatting}><i className="ri-italic"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Underline' onClick={handleUnderlineFormatting}><i className="ri-underline"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Strikethrough' onClick={handleStrikethroughFormatting}><i className="ri-strikethrough"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Heading' onClick={handleHeadingFormatting}><i className="ri-heading"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Code' onClick={handleCodeFormatting}><i className="ri-braces-line"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Quote' onClick={handleQuoteFormatting}><i className="ri-double-quotes-r"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Redacted' onClick={handleRedactedFormatting}><i className="ri-checkbox-indeterminate-fill"></i></div>
-                <div className="ctx-menu-item formatting-item" title='Clear Formatting' onClick={handleClearFormatting}><i className="ri-format-clear"></i></div>
-              </div>
-              <div className="separator" />
+              {toggleStylingOptions && (
+                <>
+                  <div className="ctx-menu-formatting-section">
+                    <div className="ctx-menu-item formatting-item" title='Bold' onClick={handleBoldFormatting}><i className="ri-bold"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Italic' onClick={handleItalicFormatting}><i className="ri-italic"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Underline' onClick={handleUnderlineFormatting}><i className="ri-underline"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Strikethrough' onClick={handleStrikethroughFormatting}><i className="ri-strikethrough"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Heading' onClick={handleHeadingFormatting}><i className="ri-heading"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Code' onClick={handleCodeFormatting}><i className="ri-braces-line"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Quote' onClick={handleQuoteFormatting}><i className="ri-double-quotes-r"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Redacted' onClick={handleRedactedFormatting}><i className="ri-checkbox-indeterminate-fill"></i></div>
+                    <div className="ctx-menu-item formatting-item" title='Clear Formatting' onClick={handleClearFormatting}><i className="ri-format-clear"></i></div>
+                  </div>
+                  <div className="separator" />
+                </>
+              )}
               <div className="ctx-menu-section-title">Links</div>
               <div className="separator" />
               <div className="ctx-menu-item"  onClick={handleAddLinkOpen}>Link Object</div>
@@ -3760,6 +3765,7 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.shortcuts', shortcuts)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.hoverDebounce', hoverDebounce)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.sidebarWidth', sidebarWidth)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.stylingEnabled', toggleStylingOptions)
                         applyPalette(paletteKey, paletteKey === 'custom' ? customColors : null)
                         applyFonts(fonts)
                         setShowSettings(false)
