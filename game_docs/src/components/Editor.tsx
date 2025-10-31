@@ -1737,7 +1737,7 @@ span[data-tag] {
             const innerRaw = innerParts.join('')
             const innerHtml = renderStylesToHtml(innerRaw)
             const styleName = name.trim().toLowerCase()
-            const known = new Set(['bold','italic','underline','strike','code','redacted','h1'])
+            const known = new Set(['bold','italic','underline','strike','code','redacted','h1','quote'])
             if (known.has(styleName)) {
               seg.push(`<span class="styleTag style-${styleName}">${innerHtml}</span>`)
             } else {
@@ -1838,10 +1838,14 @@ span[data-tag] {
       }
       if (el.matches('span.styleTag')) {
         const inner = Array.from(el.childNodes).map(serializeNode).join('')
+        // Skip empty style tags (no content or only whitespace)
+        if (!inner || inner.trim().length === 0) {
+          return inner // Return empty content without style token
+        }
         const style = Array.from(el.classList).find(cls => cls.startsWith('style-'))
         if (style) {
           const token = style.replace('style-', '')
-          const allowed = new Set(['bold','italic','underline','strike','code','redacted','h1'])
+          const allowed = new Set(['bold','italic','underline','strike','code','redacted','h1','quote'])
           if (allowed.has(token)) return `[{${token}|${inner}}]`
         }
         return inner
@@ -1858,7 +1862,9 @@ span[data-tag] {
 
     const raw = Array.from(clone.childNodes).map(serializeNode).join('')
     // Normalize Windows/Mac newlines to \n; do not alter other whitespace
-    const result = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    let result = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    // Remove empty style tokens: [{styleName|}]
+    result = result.replace(/\[\{[^|]+\|\}\]/g, '')
     return result
   }
 
@@ -2065,8 +2071,53 @@ span[data-tag] {
       return ranges
     }
     const segments = makeRanges(range)
-    for (let i = segments.length - 1; i >= 0; i--) {
-      const seg = segments[i]
+    
+    // Helper: check if two ranges are adjacent (only separated by BR or whitespace)
+    const areAdjacent = (r1: Range, r2: Range): boolean => {
+      const r1End = r1.cloneRange()
+      r1End.collapse(false)
+      const r2Start = r2.cloneRange()
+      r2Start.collapse(true)
+      
+      const between = document.createRange()
+      between.setStart(r1End.endContainer, r1End.endOffset)
+      between.setEnd(r2Start.startContainer, r2Start.startOffset)
+      
+      // Check if between range only contains BR elements or whitespace
+      const contents = between.cloneContents()
+      for (let node = contents.firstChild; node; node = node.nextSibling) {
+        if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'BR') {
+          continue // BR is allowed
+        }
+        if (node.nodeType === Node.TEXT_NODE) {
+          const text = (node as Text).data
+          if (text.trim().length === 0) continue // Whitespace only is allowed
+        }
+        return false // Found something other than BR or whitespace
+      }
+      return true
+    }
+    
+    // Merge adjacent segments (that are only separated by BR elements)
+    const mergedSegments: Range[] = []
+    for (let i = 0; i < segments.length; i++) {
+      if (mergedSegments.length === 0) {
+        mergedSegments.push(segments[i])
+      } else {
+        const lastMerged = mergedSegments[mergedSegments.length - 1]
+        if (areAdjacent(lastMerged, segments[i])) {
+          // Extend the last merged range to include this segment
+          lastMerged.setEnd(segments[i].endContainer, segments[i].endOffset)
+        } else {
+          // Not adjacent, start a new merged segment
+          mergedSegments.push(segments[i])
+        }
+      }
+    }
+    
+    // Apply style wrappers from end to start to preserve offsets
+    for (let i = mergedSegments.length - 1; i >= 0; i--) {
+      const seg = mergedSegments[i]
       const wrapper = document.createElement('span')
       wrapper.className = `styleTag style-${styleName}`
       const contents = seg.extractContents()
@@ -2106,6 +2157,294 @@ span[data-tag] {
     applyInlineStyle('strike')
   }
 
+  function handleQuoteFormatting() {
+    console.log('handleQuoteFormatting')
+    applyInlineStyle('quote')
+  }
+
+  function handleClearFormatting(e?: React.MouseEvent<HTMLDivElement>) {
+    if (e) { e.preventDefault(); e.stopPropagation() }
+    const editor = editorRef.current
+    if (!editor) return
+    const preserved = selectionRangeRef.current ? selectionRangeRef.current.cloneRange() : null
+    const sel = window.getSelection()
+    const liveRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+    const range = preserved || liveRange
+    if (!range || range.collapsed) return
+
+    // Helper: check if an element's content is fully contained within a range
+    const isFullyContained = (el: HTMLElement, r: Range): boolean => {
+      const elRange = document.createRange()
+      elRange.selectNodeContents(el)
+      // Check if selection fully contains all content of the element
+      return r.compareBoundaryPoints(Range.START_TO_START, elRange) <= 0 &&
+             r.compareBoundaryPoints(Range.END_TO_END, elRange) >= 0
+    }
+
+    // Helper: check if an element intersects (partially or fully) with a range
+    const intersectsRange = (el: HTMLElement, r: Range): boolean => {
+      const elRange = document.createRange()
+      elRange.selectNodeContents(el)
+      return r.compareBoundaryPoints(Range.START_TO_END, elRange) > 0 &&
+             r.compareBoundaryPoints(Range.END_TO_START, elRange) < 0
+    }
+
+    // Helper: recursively unwrap all nested style spans within a given range
+    const unwrapNestedStylesInRange = (container: Node, r: Range): void => {
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT)
+      const toUnwrap: HTMLElement[] = []
+      let node: Node | null = walker.firstChild()
+      
+      while (node) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as HTMLElement
+          if (el.matches('span.styleTag')) {
+            const elRange = document.createRange()
+            elRange.selectNodeContents(el)
+            // Check if this nested style is fully within the selection range
+            if (r.compareBoundaryPoints(Range.START_TO_START, elRange) <= 0 &&
+                r.compareBoundaryPoints(Range.END_TO_END, elRange) >= 0) {
+              toUnwrap.push(el)
+            }
+          }
+        }
+        node = walker.nextNode()
+      }
+      
+      // Unwrap from deepest to shallowest
+      toUnwrap.sort((a, b) => {
+        const aRange = document.createRange()
+        aRange.selectNodeContents(a)
+        const bRange = document.createRange()
+        bRange.selectNodeContents(b)
+        if (aRange.compareBoundaryPoints(Range.START_TO_START, bRange) >= 0 &&
+            aRange.compareBoundaryPoints(Range.END_TO_END, bRange) <= 0) {
+          return -1 // a is inside b, process a first
+        }
+        if (bRange.compareBoundaryPoints(Range.START_TO_START, aRange) >= 0 &&
+            bRange.compareBoundaryPoints(Range.END_TO_END, aRange) <= 0) {
+          return 1 // b is inside a, process b first
+        }
+        return 0
+      })
+      
+      for (const nestedSpan of toUnwrap) {
+        const nestedParent = nestedSpan.parentNode
+        if (!nestedParent) continue
+        while (nestedSpan.firstChild) {
+          nestedParent.insertBefore(nestedSpan.firstChild, nestedSpan)
+        }
+        nestedParent.removeChild(nestedSpan)
+      }
+    }
+
+    // Helper: unwrap a style span, keeping its children, and unwrap any nested styles in selection
+    const unwrapStyleSpan = (span: HTMLElement): void => {
+      const parent = span.parentNode
+      if (!parent) return
+      
+      // First unwrap any nested style spans that are fully within the selection
+      unwrapNestedStylesInRange(span, range)
+      
+      // Then unwrap this span itself
+      while (span.firstChild) {
+        parent.insertBefore(span.firstChild, span)
+      }
+      parent.removeChild(span)
+    }
+
+    // Helper: split a style span at selection boundaries
+    const splitStyleSpan = (span: HTMLElement, r: Range): void => {
+      const parent = span.parentNode
+      if (!parent) return
+      const spanRange = document.createRange()
+      spanRange.selectNodeContents(span)
+      
+      // Create ranges for before, selected, and after parts
+      const beforeRange = document.createRange()
+      const selectedRange = document.createRange()
+      const afterRange = document.createRange()
+
+      const rStart = r.cloneRange()
+      rStart.collapse(true)
+      const rEnd = r.cloneRange()
+      rEnd.collapse(false)
+      
+      const spanStart = spanRange.cloneRange()
+      spanStart.collapse(true)
+      const spanEnd = spanRange.cloneRange()
+      spanEnd.collapse(false)
+
+      // Determine boundaries
+      const startBefore = r.compareBoundaryPoints(Range.START_TO_START, spanRange) <= 0
+      const endAfter = r.compareBoundaryPoints(Range.END_TO_END, spanRange) >= 0
+
+      if (!startBefore) {
+        // Selection starts inside span - create before part
+        beforeRange.setStart(spanRange.startContainer, spanRange.startOffset)
+        beforeRange.setEnd(r.startContainer, r.startOffset)
+      }
+
+      if (!endAfter) {
+        // Selection ends inside span - create after part
+        afterRange.setStart(r.endContainer, r.endOffset)
+        afterRange.setEnd(spanRange.endContainer, spanRange.endOffset)
+      }
+
+      // Selected part (may span full element or part)
+      selectedRange.setStart(
+        startBefore ? spanRange.startContainer : r.startContainer,
+        startBefore ? spanRange.startOffset : r.startOffset
+      )
+      selectedRange.setEnd(
+        endAfter ? spanRange.endContainer : r.endContainer,
+        endAfter ? spanRange.endOffset : r.endOffset
+      )
+
+      // Extract contents
+      const beforeContent = beforeRange.collapsed ? null : beforeRange.extractContents()
+      const selectedContent = selectedRange.extractContents()
+      const afterContent = afterRange.collapsed ? null : afterRange.extractContents()
+
+      // Helper: unwrap all style spans from a DocumentFragment
+      const unwrapStylesInFragment = (frag: DocumentFragment): void => {
+        const styleSpans = Array.from(frag.querySelectorAll('span.styleTag')) as HTMLElement[]
+        // Sort from innermost to outermost
+        styleSpans.sort((a, b) => {
+          const aRange = document.createRange()
+          aRange.selectNodeContents(a)
+          const bRange = document.createRange()
+          bRange.selectNodeContents(b)
+          if (aRange.compareBoundaryPoints(Range.START_TO_START, bRange) >= 0 &&
+              aRange.compareBoundaryPoints(Range.END_TO_END, bRange) <= 0) {
+            return -1 // a is inside b
+          }
+          if (bRange.compareBoundaryPoints(Range.START_TO_START, aRange) >= 0 &&
+              bRange.compareBoundaryPoints(Range.END_TO_END, aRange) <= 0) {
+            return 1 // b is inside a
+          }
+          return 0
+        })
+        for (const styleSpan of styleSpans) {
+          const styleParent = styleSpan.parentNode
+          if (!styleParent) continue
+          while (styleSpan.firstChild) {
+            styleParent.insertBefore(styleSpan.firstChild, styleSpan)
+          }
+          styleParent.removeChild(styleSpan)
+        }
+      }
+
+      // Unwrap all nested styles from the selected content (it will be plain text)
+      if (selectedContent) {
+        unwrapStylesInFragment(selectedContent)
+      }
+
+      // Remove original span
+      const nextSibling = span.nextSibling
+      parent.removeChild(span)
+
+      // Helper: check if a DocumentFragment has actual text content
+      const hasTextContent = (frag: DocumentFragment | null): boolean => {
+        if (!frag || frag.childNodes.length === 0) return false
+        const text = frag.textContent || ''
+        return text.trim().length > 0 || text.length > 0
+      }
+
+      // Track insertion point
+      let currentInsertPoint: Node | null = nextSibling
+
+      // Insert before part (styled) if exists and has content
+      if (beforeContent && hasTextContent(beforeContent)) {
+        const beforeSpan = span.cloneNode(false) as HTMLElement
+        while (beforeContent.firstChild) {
+          beforeSpan.appendChild(beforeContent.firstChild)
+        }
+        parent.insertBefore(beforeSpan, currentInsertPoint)
+        currentInsertPoint = beforeSpan.nextSibling
+      }
+
+      // Insert selected part (plain) if has content
+      if (selectedContent && hasTextContent(selectedContent)) {
+        const fragment = document.createDocumentFragment()
+        while (selectedContent.firstChild) {
+          fragment.appendChild(selectedContent.firstChild)
+        }
+        if (currentInsertPoint) {
+          parent.insertBefore(fragment, currentInsertPoint)
+        } else {
+          parent.appendChild(fragment)
+        }
+        // Update insert point after the fragment
+        if (fragment.lastChild) {
+          currentInsertPoint = fragment.lastChild.nextSibling
+        }
+      }
+
+      // Insert after part (styled) if exists and has content
+      if (afterContent && hasTextContent(afterContent)) {
+        const afterSpan = span.cloneNode(false) as HTMLElement
+        while (afterContent.firstChild) {
+          afterSpan.appendChild(afterContent.firstChild)
+        }
+        if (currentInsertPoint) {
+          parent.insertBefore(afterSpan, currentInsertPoint)
+        } else {
+          parent.appendChild(afterSpan)
+        }
+      }
+    }
+
+    // Find all style spans that intersect with the selection
+    const allStyleSpans = Array.from(editor.querySelectorAll('span.styleTag')) as HTMLElement[]
+    const intersectingSpans: HTMLElement[] = []
+
+    for (const span of allStyleSpans) {
+      if (intersectsRange(span, range)) {
+        intersectingSpans.push(span)
+      }
+    }
+
+    // Sort from innermost to outermost (process nested styles correctly)
+    intersectingSpans.sort((a, b) => {
+      const aRange = document.createRange()
+      aRange.selectNodeContents(a)
+      const bRange = document.createRange()
+      bRange.selectNodeContents(b)
+      // If a is contained in b, a comes first (process inner first)
+      if (aRange.compareBoundaryPoints(Range.START_TO_START, bRange) >= 0 &&
+          aRange.compareBoundaryPoints(Range.END_TO_END, bRange) <= 0) {
+        return -1
+      }
+      if (bRange.compareBoundaryPoints(Range.START_TO_START, aRange) >= 0 &&
+          bRange.compareBoundaryPoints(Range.END_TO_END, aRange) <= 0) {
+        return 1
+      }
+      return 0
+    })
+
+    // Process each span
+    for (const span of intersectingSpans) {
+      if (!span.parentNode) continue // already removed by previous operation
+      if (isFullyContained(span, range)) {
+        unwrapStyleSpan(span)
+      } else {
+        splitStyleSpan(span, range)
+      }
+    }
+
+    // Normalize adjacent text nodes: merge sibling text nodes into contiguous ones
+    // Use DOM's built-in normalize() which merges adjacent text nodes
+    editor.normalize()
+
+    // Update caret and persist
+    const newRange = document.createRange()
+    newRange.setStart(range.endContainer, range.endOffset)
+    newRange.collapse(true)
+    if (sel) { sel.removeAllRanges(); sel.addRange(newRange) }
+    setCtxMenu(m => ({ ...m, visible: false }))
+    setDesc(htmlToDesc(editor))
+  }
 
 
 
@@ -2789,7 +3128,9 @@ span[data-tag] {
                 <div className="ctx-menu-item formatting-item" title='Strikethrough' onClick={handleStrikethroughFormatting}><i className="ri-strikethrough"></i></div>
                 <div className="ctx-menu-item formatting-item" title='Heading' onClick={handleHeadingFormatting}><i className="ri-heading"></i></div>
                 <div className="ctx-menu-item formatting-item" title='Code' onClick={handleCodeFormatting}><i className="ri-braces-line"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Quote' onClick={handleQuoteFormatting}><i className="ri-double-quotes-r"></i></div>
                 <div className="ctx-menu-item formatting-item" title='Redacted' onClick={handleRedactedFormatting}><i className="ri-checkbox-indeterminate-fill"></i></div>
+                <div className="ctx-menu-item formatting-item" title='Clear Formatting' onClick={handleClearFormatting}><i className="ri-format-clear"></i></div>
               </div>
               <div className="separator" />
               <div className="ctx-menu-section-title">Links</div>
