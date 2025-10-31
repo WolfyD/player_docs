@@ -10,6 +10,7 @@ type Campaign = { id: string; name: string }
 
 export const Editor: React.FC = () => {
   const [campaign, setCampaign] = useState<Campaign | null>(null)
+  const [toggleStylingOptions, setToggleStylingOptions] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [root, setRoot] = useState<{ id: string; name: string; type: string } | null>(null)
   const [children, setChildren] = useState<Array<{ id: string; name: string; type: string }>>([])
@@ -2458,9 +2459,6 @@ span[data-tag] {
 
 
 
-
-
-
  // ================================================ //
 
 
@@ -3904,6 +3902,16 @@ span[data-tag] {
                                   }
                                 }
                               }}>Browse…</button>
+                        </div>
+                      </div>
+
+                      {/* Toggle styling options */}
+                      <div className="settings-group">
+                        <label className="box-title">Toggle Styling Options</label>
+                        <div className="styling-settings settings-flex-wrap">
+                          <label className="styling-label">Toggle Styling Options
+                            <input type="checkbox" checked={toggleStylingOptions} onChange={() => setToggleStylingOptions(!toggleStylingOptions)} />
+                          </label>
                         </div>
                       </div>
                     </div>

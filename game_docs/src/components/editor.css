@@ -866,24 +866,14 @@ select option { background-color: #1e1e1e; color: #e5e5e5; }
 
 /* Formatting Item Styles */
 
-.styleTag.style-bold { font-weight: bold; }
+.styleTag.style-bold { font-weight: bold; text-shadow: 1px 0 0 var(--pd-text); }
 .styleTag.style-italic { font-style: italic;  }
 .styleTag.style-underline { text-decoration: underline; }
 .styleTag.style-strike { text-decoration: line-through; }
 .styleTag.style-h1 { font-size: 2em; font-weight: bold; }
-.styleTag.style-code { display: inline-block; font-family: monospace; font-size: 0.9em; font-weight: 100; background: #000; color: #fff; padding:10px; border-radius: 3px; cursor: default; }
-.styleTag.style-redacted { display: inline-block; background: #222; color: #222; padding: 2px 7px; border-radius: 3px; cursor: default; }
+.styleTag.style-code { display: inline-block; font-family: monospace; font-size: 0.9em; font-weight: 100; background: #000; color: #fff; padding:10px; border-radius: 3px; }
+.styleTag.style-redacted { display: inline-block; background: #222; color: #222; padding: 2px 7px; border-radius: 3px; cursor: default; text-shadow: none; }
 .styleTag.style-redacted:hover { color: #eee; }
-/* .styleTag.style-quote {
-  font-weight: 100;
-	font-size: 2rem;
-	max-width: 600px;
-	line-height: 1.4;
-	position: relative;
-	margin: 0;
-	padding: .5rem;
-
- } */
 
  .styleTag.style-quote {
   -webkit-user-drag: none;
@@ -926,4 +916,11 @@ select option { background-color: #1e1e1e; color: #e5e5e5; }
 }
 .styleTag.style-quote:hover {
   color: #ace;
+}
+
+.styling-settings, .styling-label {
+  display: flex;
+  flex-direction: row !important;
+  gap: 6px;
+  white-space: nowrap;
 }
