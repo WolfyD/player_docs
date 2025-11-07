@@ -1669,6 +1669,15 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    
+    // Verify that the tag exists in link_tags table (foreign key constraint)
+    const tagExists = db.prepare('SELECT id FROM link_tags WHERE id = ? AND deleted_at IS NULL').get(tagId) as { id?: string } | undefined
+    if (!tagExists?.id) {
+      db.close()
+      throw new Error(`Tag ${tagId} does not exist in link_tags table. Cannot add link target.`)
+    }
+    
     const now = new Date().toISOString()
     db.prepare('INSERT OR IGNORE INTO tag_links (tag_id, object_id, created_at, deleted_at) VALUES (?, ?, ?, NULL)').run(tagId, objectId, now)
     db.close()
@@ -1881,14 +1890,178 @@ app.whenReady().then(async () => {
       }
     }
 
+    // Helper to render style tokens recursively
+    const renderStylesToHtml = (input: string): string => {
+      const OPEN = '[{'
+      const CLOSE = '}]'
+      let i = 0
+      const out: string[] = []
+
+      function parseSegment(): string {
+        const seg: string[] = []
+        while (i < input.length) {
+          // Handle escape sequences
+          if (input[i] === '\\' && i + 1 < input.length) {
+            seg.push(input[i + 1])
+            i += 2
+            continue
+          }
+          // Look for opening style token '[{'
+          if (input.startsWith(OPEN, i)) {
+            i += OPEN.length
+            // Parse style name until '|'
+            let name = ''
+            while (i < input.length && input[i] !== '|') {
+              if (input[i] === '\\' && i + 1 < input.length) {
+                name += input[i + 1]
+                i += 2
+                continue
+              }
+              name += input[i++]
+            }
+            if (i >= input.length || input[i] !== '|') {
+              seg.push(OPEN + name)
+              continue
+            }
+            i++ // skip '|'
+            // Parse inner content with nesting
+            let depth = 1
+            const innerParts: string[] = []
+            while (i < input.length) {
+              if (input[i] === '\\' && i + 1 < input.length) {
+                innerParts.push(input[i + 1])
+                i += 2
+                continue
+              }
+              if (input.startsWith(OPEN, i)) {
+                depth++
+                innerParts.push(OPEN)
+                i += OPEN.length
+                continue
+              }
+              if (input.startsWith(CLOSE, i)) {
+                depth--
+                if (depth === 0) {
+                  i += CLOSE.length
+                  break
+                }
+                innerParts.push(CLOSE)
+                i += CLOSE.length
+                continue
+              }
+              innerParts.push(input[i++])
+            }
+            const innerRaw = innerParts.join('')
+            const innerHtml = renderStylesToHtml(innerRaw)
+            const styleName = name.trim().toLowerCase()
+            const known = new Set(['bold', 'italic', 'underline', 'strike', 'code', 'redacted', 'h1', 'quote'])
+            if (known.has(styleName)) {
+              seg.push(`<span class="styleTag style-${styleName}">${innerHtml}</span>`)
+            } else {
+              seg.push(innerHtml)
+            }
+            continue
+          }
+          // Normal character
+          seg.push(input[i++])
+        }
+        return seg.join('')
+      }
+
+      out.push(parseSegment())
+      return out.join('')
+    }
+
     const tokenToHtml = (text: string): string => {
       if (!text) return ''
-      return String(text).replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label: string, tagId: string) => {
-        const targets = tagToTargets.get(String(tagId)) || []
+      let result = String(text)
+      
+      // Phase 1: Protect tags with placeholders (supports styles in label)
+      const placeholders: Array<{ key: string; label: string; tag: string }> = []
+      let phIndex = 0
+      const src = result
+      let iScan = 0
+      const protectedParts: string[] = []
+      
+      while (iScan < src.length) {
+        if (src[iScan] === '\\' && iScan + 1 < src.length) {
+          protectedParts.push(src[iScan + 1])
+          iScan += 2
+          continue
+        }
+        if (src.startsWith('[[', iScan)) {
+          const start = iScan
+          iScan += 2
+          let styleDepth = 0
+          let labelBuf: string[] = []
+          let ok = false
+          while (iScan < src.length) {
+            if (src[iScan] === '\\' && iScan + 1 < src.length) {
+              labelBuf.push(src[iScan + 1])
+              iScan += 2
+              continue
+            }
+            if (src.startsWith('[{', iScan)) {
+              styleDepth++
+              labelBuf.push('[{')
+              iScan += 2
+              continue
+            }
+            if (src.startsWith('}]', iScan)) {
+              if (styleDepth > 0) styleDepth--
+              labelBuf.push('}]')
+              iScan += 2
+              continue
+            }
+            if (src[iScan] === '|' && styleDepth === 0) {
+              iScan++
+              ok = true
+              break
+            }
+            labelBuf.push(src[iScan++])
+          }
+          if (!ok) {
+            protectedParts.push(src.substring(start, iScan))
+            continue
+          }
+          const tagStart = iScan
+          const closeIdx = src.indexOf(']]', iScan)
+          if (closeIdx === -1) {
+            protectedParts.push(src.substring(start))
+            iScan = src.length
+            continue
+          }
+          const tagId = src.substring(tagStart, closeIdx)
+          iScan = closeIdx + 2
+          const key = `\u0001TAG${phIndex++}\u0001`
+          placeholders.push({ key, label: labelBuf.join(''), tag: tagId })
+          protectedParts.push(key)
+          continue
+        }
+        protectedParts.push(src[iScan++])
+      }
+      
+      const protectedText = protectedParts.join('')
+      
+      // Phase 2: Render style tokens
+      const withStyles = renderStylesToHtml(protectedText)
+      
+      // Phase 3: Restore tags (with styles in labels)
+      result = withStyles
+      for (const ph of placeholders) {
+        const safeLabelHtml = renderStylesToHtml(ph.label)
+        const targets = tagToTargets.get(String(ph.tag)) || []
         const first = targets.find(t => idToObj.has(t))
-        if (!first) return String(label)
-        return `<a href="#${first}">${label}</a>`
-      }).replace(/\n/g, '<br>')
+        if (first) {
+          result = result.replace(ph.key, `<a href="#${first}">${safeLabelHtml}</a>`)
+        } else {
+          result = result.replace(ph.key, safeLabelHtml)
+        }
+      }
+      
+      // Convert newlines to <br>
+      result = result.replace(/\n/g, '<br>')
+      return result
     }
 
     const breadcrumb = (id: string): Array<{ name: string; href: string | null }> => {
@@ -2081,6 +2254,71 @@ app.whenReady().then(async () => {
       a:hover { 
         text-decoration: underline;
       }
+      /* Style tag support */
+      .styleTag.style-bold { font-weight: bold; }
+      .styleTag.style-italic { font-style: italic; }
+      .styleTag.style-underline { text-decoration: underline; }
+      .styleTag.style-strike { text-decoration: line-through; }
+      .styleTag.style-code { 
+        font-family: 'Courier New', monospace; 
+        background: rgba(128, 128, 128, 0.2); 
+        padding: 0.1em 0.2em; 
+        border-radius: 2px;
+      }
+      .styleTag.style-redacted { 
+        display: inline-block !important;
+        background: ${palette.text}; 
+        color: ${palette.text};
+        cursor: default !important;
+      }
+      .styleTag.style-redacted:hover { 
+        color: ${palette.surface}; 
+      }
+      .styleTag.style-h1 { 
+        font-size: 1.5em; 
+        font-weight: bold; 
+        display: block; 
+        margin-top: 1em; 
+        margin-bottom: 0.5em;
+      }
+      .styleTag.style-quote { 
+        font-family: serif; 
+        font-size: 24px; 
+        line-height: 1.2; 
+        color: ${palette.text}; 
+        padding: 40px 40px 40px 50px; 
+        display: inline-block; 
+        position: relative; 
+        box-sizing: border-box; 
+        box-shadow: inset 0 0 0 7px rgba(255, 255, 255, 0.07), 4px 4px 4px rgba(0, 0, 0, 0.15); 
+        text-align: justify !important; 
+        background: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAALElEQVQIW2N0cHD4z8PDw/DlyxcGEGD08fH5D+OABUAqwFIMDAwglXABmDYAVnIQJU/kBYMAAAAASUVORK5CYII=);
+        margin: 0.5em 0;
+      }
+      .styleTag.style-quote:before {
+        width: 30px; 
+        height: 20px; 
+        position: absolute; 
+        left: 10px; 
+        top: 10px; 
+        content: ''; 
+        background: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEcAAAAWCAYAAACSYoFNAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3wkIDBIR/EbngQAAAq5JREFUWMPtmD9oFFEQxn93XmGhCVFBQiQiCSYo2AiSxKAgsfAPH4IiFlYp1MYmiMGAhQgRRCSlCrEQIaYQwjQptBJMVLQSYxRBTNSQoBGNgoXhLHwH5/Le3u7hFcJ+cNyyM/vNzLcz7+1ujgqQtBU4DOwA6sxsFwkgCTMrHfcA+4DtwGszO0FKSLoBbAaeAeNmdj8aJwHHA+Ab8AS4a2Yv4vwLoaIkHQOuAE1l5rdJi3Ec54DBiOkr1WE9sNv9+iQBDJjZpRQcG4BNwAHggqQPwBkzu+MTOe8haJA0DYxEhEnULe6/Q1LRI8y/xqCkoqSO8vgp0ASMuHobosZ8pLh2YBFoqyZT1y29wGSMW64GIk1K6k06Xh60AYuu/r/FkYSkemAqhuAH8KhC5+wEhmNcPgIPqyzgubs+hGEXPw5PXR0hTEmqL3Vgrqyw6UDHLANXzexshXFa7RY7H74AvWY2lmYBDayFh4CbvjFwqAOW4mJIugz0ASs85ldm1l7eOUdiRqkF6K80TsBQwLxgZmuAsTLfqkbWYczxLQRchxLE6Hd1eUfM6fGncyS9A5o9jqeA6xXuAsBa4FOgqFqsMaXYxYBpHfA5Qd4ngWse84yZbcxJ2gL49vtlMyskTPIoMBoKUkNxQjd1v5mNJ+T4FRivljzQE7jucYo8TwfO36rxVh7iH0jBEarzYB7oDBhfxj3LRNAd4BitsTgh/u6EeQfrBDpzkiYCAr0BZiLn5szseCRo3C51z9OyE2Z2vooRugh0eXbSvaFdy8yWIhy3gcaIXzPQ6nt2KnicS2j1XOR7fVgVU5Mv8e9Vdsk2YE8K/1XAUuRcl3t9SILGPBmCyMTJxMnEycTJxMnEycT5r1EAZoFiQv/ZwPeeOeBnQo75KnOdJ/k37JUuryT5h/D+N8Px49h3fiJsAAAAAElFTkSuQmCC') no-repeat;
+      }
+      .styleTag.style-quote:after {
+        width: 30px; 
+        height: 20px; 
+        position: absolute; 
+        right: 10px; 
+        bottom: 10px; 
+        content: ''; 
+        background: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEcAAAAWCAYAAACSYoFNAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3wkIDBIR/EbngQAAAq5JREFUWMPtmD9oFFEQxn93XmGhCVFBQiQiCSYo2AiSxKAgsfAPH4IiFlYp1MYmiMGAhQgRRCSlCrEQIaYQwjQptBJMVLQSYxRBTNSQoBGNgoXhLHwH5/Le3u7hFcJ+cNyyM/vNzLcz7+1ujgqQtBU4DOwA6sxsFwkgCTMrHfcA+4DtwGszO0FKSLoBbAaeAeNmdj8aJwHHA+Ab8AS4a2Yv4vwLoaIkHQOuAE1l5rdJi3Ec54DBiOkr1WE9sNv9+iQBDJjZpRQcG4BNwAHggqQPwBkzu+MTOe8haJA0DYxEhEnULe6/Q1LRI8y/xqCkoqSO8vgp0ASMuHobosZ8pLh2YBFoqyZT1y29wGSMW64GIk1K6k06Xh60AYuu/r/FkYSkemAqhuAH8KhC5+wEhmNcPgIPqyzgubs+hGEXPw5PXR0hTEmqL3Vgrqyw6UDHLANXzexshXFa7RY7H74AvWY2lmYBDayFh4CbvjFwqAOW4mJIugz0ASs85ldm1l7eOUdiRqkF6K80TsBQwLxgZmuAsTLfqkbWYczxLQRchxLE6Hd1eUfM6fGncyS9A5o9jqeA6xXuAsBa4FOgqFqsMaXYxYBpHfA5Qd4ngWse84yZbcxJ2gL49vtlMyskTPIoMBoKUkNxQjd1v5mNJ+T4FRivljzQE7jucYo8TwfO36rxVh7iH0jBEarzYB7oDBhfxj3LRNAd4BitsTgh/u6EeQfrBDpzkiYCAr0BZiLn5szseCRo3C51z9OyE2Z2vooRugh0eXbSvaFdy8yWIhy3gcaIXzPQ6nt2KnicS2j1XOR7fVgVU5Mv8e9Vdsk2YE8K/1XAUuRcl3t9SILGPBmCyMTJxMnEycTJxMnEycT5r1EAZoFiQv/ZwPeeOeBnQo75KnOdJ/k37JUuryT5h/D+N8Px49h3fiJsAAAAAElFTkSuQmCC') -40px 0px no-repeat;
+      }
+      .styleTag.style-quote > text {
+        font-family: sans-serif; 
+        font-size: 14px; 
+        color: ${palette.text}; 
+        text-decoration: none;
+      }
     `
 
     return `<!DOCTYPE html>
@@ -2161,6 +2399,19 @@ a{color:var(--pd-primary)}
 .children a{margin-right:10px}
 .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center}
 .lightbox img{max-width:92vw;max-height:92vh}
+/* Style tag support */
+.styleTag.style-bold{font-weight:bold}
+.styleTag.style-italic{font-style:italic}
+.styleTag.style-underline{text-decoration:underline}
+.styleTag.style-strike{text-decoration:line-through}
+.styleTag.style-code{font-family:'Courier New',monospace;background:rgba(128,128,128,0.2);padding:0.1em 0.2em;border-radius:2px}
+.styleTag.style-redacted{background:var(--pd-text);color:var(--pd-text); cursor: default !important; display: inline-block !important;}
+.styleTag.style-redacted:hover{color:var(--pd-surface)}
+.styleTag.style-h1{font-size:1.5em;font-weight:bold;display:block;margin-top:1em;margin-bottom:0.5em}
+.styleTag.style-quote{font-family:serif;font-size:24px;line-height:1.2;color:var(--pd-text);padding:40px 40px 40px 50px;display:inline-block;position:relative;box-sizing:border-box;box-shadow:inset 0 0 0 7px rgba(255,255,255,0.07),4px 4px 4px rgba(0,0,0,0.15);text-align:justify !important;background:url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAALElEQVQIW2N0cHD4z8PDw/DlyxcGEGD08fH5D+OABUAqwFIMDAwglXABmDYAVnIQJU/kBYMAAAAASUVORK5CYII=);margin:0.5em 0}
+.styleTag.style-quote:before{width:30px;height:20px;position:absolute;left:10px;top:10px;content:'';background:url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEcAAAAWCAYAAACSYoFNAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3wkIDBIR/EbngQAAAq5JREFUWMPtmD9oFFEQxn93XmGhCVFBQiQiCSYo2AiSxKAgsfAPH4IiFlYp1MYmiMGAhQgRRCSlCrEQIaYQwjQptBJMVLQSYxRBTNSQoBGNgoXhLHwH5/Le3u7hFcJ+cNyyM/vNzLcz7+1ujgqQtBU4DOwA6sxsFwkgCTMrHfcA+4DtwGszO0FKSLoBbAaeAeNmdj8aJwHHA+Ab8AS4a2Yv4vwLoaIkHQOuAE1l5rdJi3Ec54DBiOkr1WE9sNv9+iQBDJjZpRQcG4BNwAHggqQPwBkzu+MTOe8haJA0DYxEhEnULe6/Q1LRI8y/xqCkoqSO8vgp0ASMuHobosZ8pLh2YBFoqyZT1y29wGSMW64GIk1K6k06Xh60AYuu/r/FkYSkemAqhuAH8KhC5+wEhmNcPgIPqyzgubs+hGEXPw5PXR0hTEmqL3Vgrqyw6UDHLANXzexshXFa7RY7H74AvWY2lmYBDayFh4CbvjFwqAOW4mJIugz0ASs85ldm1l7eOUdiRqkF6K80TsBQwLxgZmuAsTLfqkbWYczxLQRchxLE6Hd1eUfM6fGncyS9A5o9jqeA6xXuAsBa4FOgqFqsMaXYxYBpHfA5Qd4ngWse84yZbcxJ2gL49vtlMyskTPIoMBoKUkNxQjd1v5mNJ+T4FRivljzQE7jucYo8TwfO36rxVh7iH0jBEarzYB7oDBhfxj3LRNAd4BitsTgh/u6EeQfrBDpzkiYCAr0BZiLn5szseCRo3C51z9OyE2Z2vooRugh0eXbSvaFdy8yWIhy3gcaIXzPQ6nt2KnicS2j1XOR7fVgVU5Mv8e9Vdsk2YE8K/1XAUuRcl3t9SILGPBmCyMTJxMnEycTJxMnEycT5r1EAZoFiQv/ZwPeeOeBnQo75KnOdJ/k37JUuryT5h/D+N8Px49h3fiJsAAAAAElFTkSuQmCC') no-repeat}
+.styleTag.style-quote:after{width:30px;height:20px;position:absolute;right:10px;bottom:10px;content:'';background:url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEcAAAAWCAYAAACSYoFNAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3wkIDBIR/EbngQAAAq5JREFUWMPtmD9oFFEQxn93XmGhCVFBQiQiCSYo2AiSxKAgsfAPH4IiFlYp1MYmiMGAhQgRRCSlCrEQIaYQwjQptBJMVLQSYxRBTNSQoBGNgoXhLHwH5/Le3u7hFcJ+cNyyM/vNzLcz7+1ujgqQtBU4DOwA6sxsFwkgCTMrHfcA+4DtwGszO0FKSLoBbAaeAeNmdj8aJwHHA+Ab8AS4a2Yv4vwLoaIkHQOuAE1l5rdJi3Ec54DBiOkr1WE9sNv9+iQBDJjZpRQcG4BNwAHggqQPwBkzu+MTOe8haJA0DYxEhEnULe6/Q1LRI8y/xqCkoqSO8vgp0ASMuHobosZ8pLh2YBFoqyZT1y29wGSMW64GIk1K6k06Xh60AYuu/r/FkYSkemAqhuAH8KhC5+wEhmNcPgIPqyzgubs+hGEXPw5PXR0hTEmqL3Vgrqyw6UDHLANXzexshXFa7RY7H74AvWY2lmYBDayFh4CbvjFwqAOW4mJIugz0ASs85ldm1l7eOUdiRqkF6K80TsBQwLxgZmuAsTLfqkbWYczxLQRchxLE6Hd1eUfM6fGncyS9A5o9jqeA6xXuAsBa4FOgqFqsMaXYxYBpHfA5Qd4ngWse84yZbcxJ2gL49vtlMyskTPIoMBoKUkNxQjd1v5mNJ+T4FRivljzQE7jucYo8TwfO36rxVh7iH0jBEarzYB7oDBhfxj3LRNAd4BitsTgh/u6EeQfrBDpzkiYCAr0BZiLn5szseCRo3C51z9OyE2Z2vooRugh0eXbSvaFdy8yWIhy3gcaIXzPQ6nt2KnicS2j1XOR7fVgVU5Mv8e9Vdsk2YE8K/1XAUuRcl3t9SILGPBmCyMTJxMnEycTJxMnEycT5r1EAZoFiQv/ZwPeeOeBnQo75KnOdJ/k37JUuryT5h/D+N8Px49h3fiJsAAAAAElFTkSuQmCC') -40px 0px no-repeat}
+.styleTag.style-quote > text{font-family:sans-serif;font-size:14px;color:var(--pd-text);text-decoration:none}
 `
     await fs.writeFile(path.join(pagesDir, 'index.css'), css, 'utf8')
 
@@ -2170,14 +2421,168 @@ a{color:var(--pd-primary)}
     const getFillColor = () => palette.primary
     const getStrokeColor = () => palette.primary
 
+    // Helper to render style tokens recursively
+    const renderStylesToHtml = (input: string): string => {
+      const OPEN = '[{'
+      const CLOSE = '}]'
+      let i = 0
+      const out: string[] = []
+
+      function parseSegment(): string {
+        const seg: string[] = []
+        while (i < input.length) {
+          if (input[i] === '\\' && i + 1 < input.length) {
+            seg.push(input[i + 1])
+            i += 2
+            continue
+          }
+          if (input.startsWith(OPEN, i)) {
+            i += OPEN.length
+            let name = ''
+            while (i < input.length && input[i] !== '|') {
+              if (input[i] === '\\' && i + 1 < input.length) {
+                name += input[i + 1]
+                i += 2
+                continue
+              }
+              name += input[i++]
+            }
+            if (i >= input.length || input[i] !== '|') {
+              seg.push(OPEN + name)
+              continue
+            }
+            i++
+            let depth = 1
+            const innerParts: string[] = []
+            while (i < input.length) {
+              if (input[i] === '\\' && i + 1 < input.length) {
+                innerParts.push(input[i + 1])
+                i += 2
+                continue
+              }
+              if (input.startsWith(OPEN, i)) {
+                depth++
+                innerParts.push(OPEN)
+                i += OPEN.length
+                continue
+              }
+              if (input.startsWith(CLOSE, i)) {
+                depth--
+                if (depth === 0) {
+                  i += CLOSE.length
+                  break
+                }
+                innerParts.push(CLOSE)
+                i += CLOSE.length
+                continue
+              }
+              innerParts.push(input[i++])
+            }
+            const innerRaw = innerParts.join('')
+            const innerHtml = renderStylesToHtml(innerRaw)
+            const styleName = name.trim().toLowerCase()
+            const known = new Set(['bold', 'italic', 'underline', 'strike', 'code', 'redacted', 'h1', 'quote'])
+            if (known.has(styleName)) {
+              seg.push(`<span class="styleTag style-${styleName}">${innerHtml}</span>`)
+            } else {
+              seg.push(innerHtml)
+            }
+            continue
+          }
+          seg.push(input[i++])
+        }
+        return seg.join('')
+      }
+
+      out.push(parseSegment())
+      return out.join('')
+    }
+
     const tokenToHtml = (text: string): string => {
       if (!text) return ''
-      return String(text).replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, (_m, label: string, tagId: string) => {
-        const targets = tagToTargets.get(String(tagId)) || []
+      let result = String(text)
+      
+      const placeholders: Array<{ key: string; label: string; tag: string }> = []
+      let phIndex = 0
+      const src = result
+      let iScan = 0
+      const protectedParts: string[] = []
+      
+      while (iScan < src.length) {
+        if (src[iScan] === '\\' && iScan + 1 < src.length) {
+          protectedParts.push(src[iScan + 1])
+          iScan += 2
+          continue
+        }
+        if (src.startsWith('[[', iScan)) {
+          const start = iScan
+          iScan += 2
+          let styleDepth = 0
+          let labelBuf: string[] = []
+          let ok = false
+          while (iScan < src.length) {
+            if (src[iScan] === '\\' && iScan + 1 < src.length) {
+              labelBuf.push(src[iScan + 1])
+              iScan += 2
+              continue
+            }
+            if (src.startsWith('[{', iScan)) {
+              styleDepth++
+              labelBuf.push('[{')
+              iScan += 2
+              continue
+            }
+            if (src.startsWith('}]', iScan)) {
+              if (styleDepth > 0) styleDepth--
+              labelBuf.push('}]')
+              iScan += 2
+              continue
+            }
+            if (src[iScan] === '|' && styleDepth === 0) {
+              iScan++
+              ok = true
+              break
+            }
+            labelBuf.push(src[iScan++])
+          }
+          if (!ok) {
+            protectedParts.push(src.substring(start, iScan))
+            continue
+          }
+          const tagStart = iScan
+          const closeIdx = src.indexOf(']]', iScan)
+          if (closeIdx === -1) {
+            protectedParts.push(src.substring(start))
+            iScan = src.length
+            continue
+          }
+          const tagId = src.substring(tagStart, closeIdx)
+          iScan = closeIdx + 2
+          const key = `\u0001TAG${phIndex++}\u0001`
+          placeholders.push({ key, label: labelBuf.join(''), tag: tagId })
+          protectedParts.push(key)
+          continue
+        }
+        protectedParts.push(src[iScan++])
+      }
+      
+      const protectedText = protectedParts.join('')
+      const withStyles = renderStylesToHtml(protectedText)
+      
+      result = withStyles
+      for (const ph of placeholders) {
+        const safeLabelHtml = renderStylesToHtml(ph.label)
+        const targets = tagToTargets.get(String(ph.tag)) || []
         const first = targets.find(t => idToFile.has(t))
-        if (!first) return String(label)
-        return `<a href=\"${idToFile.get(first)}\">${label}</a>`
-      }).replace(/\n/g, '<br>')
+        if (first) {
+          result = result.replace(ph.key, `<a href=\"${idToFile.get(first)}\">${safeLabelHtml}</a>`)
+        } else {
+          result = result.replace(ph.key, safeLabelHtml)
+        }
+      }
+      
+      result = result.replace(/\n/g, '<br>')
+      return result
     }
 
     const breadcrumb = (id: string): Array<{ name: string; href: string | null }> => {

@@ -63,6 +63,7 @@ export const Editor: React.FC = () => {
     x: number
     y: number
     selText: string
+    activeStyles?: Set<string>
   }>({ visible: false, x: 0, y: 0, selText: '' })
   const [childCtxMenu, setChildCtxMenu] = useState<{
     visible: boolean
@@ -880,24 +881,98 @@ span[data-tag] {
     return () => clearTimeout(handler)
   }, [desc, activeId])
 
+  // Helper function to get character offset of cursor position in contentEditable
+  const getCursorOffset = useCallback((container: HTMLElement, range: Range): number => {
+    let offset = 0
+    const walker = document.createTreeWalker(
+      container,
+      NodeFilter.SHOW_TEXT,
+      null
+    )
+    let node: Node | null
+    while ((node = walker.nextNode())) {
+      if (node === range.startContainer) {
+        offset += range.startOffset
+        return offset
+      }
+      offset += node.textContent?.length || 0
+    }
+    return offset
+  }, [])
+
+  // Helper function to restore cursor position from character offset
+  const restoreCursorOffset = useCallback((container: HTMLElement, offset: number): void => {
+    const sel = window.getSelection()
+    if (!sel) return
+    
+    let currentOffset = 0
+    const walker = document.createTreeWalker(
+      container,
+      NodeFilter.SHOW_TEXT,
+      null
+    )
+    let node: Node | null
+    while ((node = walker.nextNode())) {
+      const nodeLength = node.textContent?.length || 0
+      if (currentOffset + nodeLength >= offset) {
+        const range = document.createRange()
+        const nodeOffset = offset - currentOffset
+        range.setStart(node, nodeOffset)
+        range.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(range)
+        return
+      }
+      currentOffset += nodeLength
+    }
+    // If we didn't find the position, place cursor at the end
+    const range = document.createRange()
+    range.selectNodeContents(container)
+    range.collapse(false)
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }, [])
+
   // Re-render description when styling enabled state changes (only after settings have loaded)
   useEffect(() => {
     if (settingsLoadedRef.current && editorRef.current && desc !== undefined) {
-      // Preserve scroll position
+      // Preserve scroll position and cursor position
       const scrollTop = editorRef.current.scrollTop
+      const sel = window.getSelection()
+      let cursorOffset = 0
+      let hadValidSelection = false
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0)
+        if (range.startContainer && editorRef.current.contains(range.startContainer)) {
+          cursorOffset = getCursorOffset(editorRef.current, range)
+          hadValidSelection = true
+        }
+      }
+      
       const currentDesc = desc || ''
       editorRef.current.innerHTML = descToHtml(currentDesc)
+      
       requestAnimationFrame(() => {
         if (editorRef.current) {
           editorRef.current.scrollTop = scrollTop
+          // Restore cursor position (cursorOffset can be 0 if at start)
+          if (hadValidSelection) {
+            restoreCursorOffset(editorRef.current, cursorOffset)
+          }
+          // Ensure editor has focus
+          editorRef.current.focus()
         }
       })
     }
-  }, [toggleStylingOptions, desc])
+  }, [toggleStylingOptions, getCursorOffset, restoreCursorOffset])
 
   const handleEditorInput = useCallback(() => {
     const el = editorRef.current
-    if (el) setDesc(htmlToDesc(el))
+    if (el) {
+      // Debug: log HTML structure before conversion
+      const desc = htmlToDesc(el)
+      setDesc(desc)
+    }
   }, [])
 
   const expandSelectionToWord = useCallback((sel: Selection, e: React.MouseEvent) => {
@@ -931,10 +1006,56 @@ span[data-tag] {
     }
     selectionRangeRef.current = sel.getRangeAt(0).cloneRange()
     const selText = sel.toString()
+    
+    // Check which styles are applied to the selection
+    const range = selectionRangeRef.current
+    const activeStyles = new Set<string>()
+    const styleNames = ['bold', 'italic', 'underline', 'strike', 'h1', 'code', 'quote', 'redacted']
+    
+    // Check all text nodes in the selection
+    const walker = document.createTreeWalker(editorRef.current!, NodeFilter.SHOW_TEXT)
+    let node: Node | null = walker.currentNode
+    const cmpNodeOrder = (a: Node, b: Node): number => {
+      if (a === b) return 0
+      const pos = a.compareDocumentPosition(b)
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1
+      return 0
+    }
+    while (node && cmpNodeOrder(node, range.startContainer) < 0) node = walker.nextNode()
+    if (node) {
+      do {
+        if (node.nodeType === Node.TEXT_NODE) {
+          // Check if this text node is within the selection
+          if (cmpNodeOrder(node, range.endContainer) > 0) break
+          
+          // Walk up the tree to find style spans
+          let current: Node | null = node
+          while (current && current !== editorRef.current) {
+            if (current.nodeType === Node.ELEMENT_NODE) {
+              const el = current as HTMLElement
+              if (el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) {
+                for (const styleName of styleNames) {
+                  if (el.classList.contains(`style-${styleName}`)) {
+                    activeStyles.add(styleName)
+                  }
+                }
+              }
+            }
+            current = current.parentElement
+          }
+        }
+        if (cmpNodeOrder(node, range.endContainer) > 0) break
+        node = walker.nextNode()
+      } while (node)
+    }
+    
+    console.log('[handleEditorContextMenu] Active styles:', Array.from(activeStyles))
+    
     // If inside a tag span, fetch linked targets
     let tagId: string | null = null
-    const node = selectionRangeRef.current.startContainer as Node
-    let el: HTMLElement | null = (node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : (node.parentElement))
+    const tagNode = selectionRangeRef.current.startContainer as Node
+    let el: HTMLElement | null = (tagNode.nodeType === Node.ELEMENT_NODE ? (tagNode as HTMLElement) : (tagNode.parentElement))
     while (el) {
       if (el instanceof HTMLElement && el.hasAttribute('data-tag')) { tagId = el.getAttribute('data-tag'); break }
       el = el.parentElement
@@ -945,7 +1066,7 @@ span[data-tag] {
     } else {
       setCtxLinkedTargets([])
     }
-    setCtxMenu({ visible: true, x: e.clientX, y: e.clientY, selText })
+    setCtxMenu({ visible: true, x: e.clientX, y: e.clientY, selText, activeStyles })
   }, [expandSelectionToWord, activeLocked])
 
   const handleAddLinkOpen = useCallback(async () => {
@@ -1859,8 +1980,78 @@ span[data-tag] {
     // Convert spans back to token syntax and preserve line breaks
     const clone = container.cloneNode(true) as HTMLElement
 
+    // Preprocessing: Merge adjacent style spans with the same style
+    const mergeAdjacentStyleSpans = (element: HTMLElement): void => {
+      // First recursively process children
+      Array.from(element.childNodes).forEach((child) => {
+        if (child.nodeType === Node.ELEMENT_NODE) {
+          mergeAdjacentStyleSpans(child as HTMLElement)
+        }
+      })
+      
+      // Then merge adjacent style spans at this level
+      let current: Node | null = element.firstChild
+      
+      while (current) {
+        const next = current.nextSibling
+        
+        if (current.nodeType === Node.ELEMENT_NODE) {
+          const el = current as HTMLElement
+          
+          // Check if this is a style span
+          if (el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) {
+            const style = Array.from(el.classList).find(cls => cls.startsWith('style-'))
+            if (style) {
+              const token = style.replace('style-', '')
+              const allowed = new Set(['bold','italic','underline','strike','code','redacted','h1','quote'])
+              
+              if (allowed.has(token)) {
+                // Look ahead for directly adjacent style spans with the same style
+                // Only merge if there are NO text nodes between them (they must be directly adjacent)
+                let nextSibling: Node | null = el.nextSibling
+                
+                while (nextSibling) {
+                  const nextNext = nextSibling.nextSibling
+                  
+                  if (nextSibling.nodeType === Node.ELEMENT_NODE) {
+                    const nextEl = nextSibling as HTMLElement
+                    if ((nextEl.matches('span.styleTag') || nextEl.matches('span.styleTagDisabled'))) {
+                      const nextStyle = Array.from(nextEl.classList).find(cls => cls.startsWith('style-'))
+                      if (nextStyle && nextStyle.replace('style-', '') === token) {
+                        // Same style and directly adjacent (no text nodes between) - merge the spans
+                        while (nextEl.firstChild) {
+                          el.appendChild(nextEl.firstChild)
+                        }
+                        nextEl.remove()
+                        nextSibling = el.nextSibling // Continue from after the merged span
+                        continue
+                      }
+                    }
+                    // Different style or not a style span - stop merging
+                    break
+                  } else if (nextSibling.nodeType === Node.TEXT_NODE) {
+                    // Text node between style spans - don't merge (this is intentional unstyled text)
+                    break
+                  } else {
+                    // Other node type (e.g., BR) - stop merging
+                    break
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        current = next
+      }
+    }
+    
+    // Merge adjacent style spans before serialization
+    mergeAdjacentStyleSpans(clone)
+
     // First convert style spans into tokens, recursively serializing their contents
-    const serializeNode = (node: Node): string => {
+    // activeStyles: Set of style tokens that are already active in ancestor nodes
+    const serializeNode = (node: Node, activeStyles: Set<string> = new Set()): string => {
       if (node.nodeType === Node.TEXT_NODE) return (node as Text).data
       if (node.nodeType !== Node.ELEMENT_NODE) return ''
       const el = node as HTMLElement
@@ -1869,38 +2060,55 @@ span[data-tag] {
         let s = ''
         // mimic existing behavior: newline before div content when there is a previous sibling
         if (el.previousSibling) s += '\n'
-        el.childNodes.forEach((c) => { s += serializeNode(c) })
+        el.childNodes.forEach((c) => { s += serializeNode(c, activeStyles) })
         return s
       }
       if (el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) {
-        const inner = Array.from(el.childNodes).map(serializeNode).join('')
-        // Skip empty style tags (no content or only whitespace)
-        if (!inner || inner.trim().length === 0) {
-          return inner // Return empty content without style token
-        }
         const style = Array.from(el.classList).find(cls => cls.startsWith('style-'))
         if (style) {
           const token = style.replace('style-', '')
           const allowed = new Set(['bold','italic','underline','strike','code','redacted','h1','quote'])
-          if (allowed.has(token)) return `[{${token}|${inner}}]`
+          if (allowed.has(token)) {
+            // Check if this style is already active in an ancestor
+            if (activeStyles.has(token)) {
+              // Style is already active - skip the token wrapper, just serialize inner content
+              const inner = Array.from(el.childNodes).map((c) => serializeNode(c, activeStyles)).join('')
+              return inner
+            } else {
+              // Style is not active - add it to active set and wrap with token
+              const newActiveStyles = new Set(activeStyles)
+              newActiveStyles.add(token)
+              const inner = Array.from(el.childNodes).map((c) => serializeNode(c, newActiveStyles)).join('')
+              // Skip empty style tags (no content or only whitespace)
+              if (!inner || inner.trim().length === 0) {
+                return inner // Return empty content without style token
+              }
+              return `[{${token}|${inner}}]`
+            }
+          }
         }
+        // Not an allowed style or no style class found - just serialize inner content
+        const inner = Array.from(el.childNodes).map((c) => serializeNode(c, activeStyles)).join('')
         return inner
       }
       if (el.matches('span[data-tag]')) {
-        const label = Array.from(el.childNodes).map(serializeNode).join('')
+        const label = Array.from(el.childNodes).map((c) => serializeNode(c, activeStyles)).join('')
         const tag = el.getAttribute('data-tag') || ''
         return `[[${label}|${tag}]]`
       }
       let s = ''
-      el.childNodes.forEach((c) => { s += serializeNode(c) })
+      el.childNodes.forEach((c) => { s += serializeNode(c, activeStyles) })
       return s
     }
 
-    const raw = Array.from(clone.childNodes).map(serializeNode).join('')
+    const raw = Array.from(clone.childNodes).map((node) => serializeNode(node, new Set())).join('')
     // Normalize Windows/Mac newlines to \n; do not alter other whitespace
     let result = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
     // Remove empty style tokens: [{styleName|}]
     result = result.replace(/\[\{[^|]+\|\}\]/g, '')
+    // Collapse 3 or more consecutive newlines into just 2 (one empty line)
+    // This prevents storing multiple empty lines when user presses Enter multiple times
+    result = result.replace(/\n{3,}/g, '\n\n')
     return result
   }
 
@@ -2064,6 +2272,21 @@ span[data-tag] {
     const liveRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
     const range = preserved || liveRange
     if (!range || range.collapsed) return
+    
+    console.log('[applyInlineStyle] Starting:', {
+      styleName,
+      range: range ? {
+        startContainer: range.startContainer,
+        startOffset: range.startOffset,
+        endContainer: range.endContainer,
+        endOffset: range.endOffset,
+        startContainerType: range.startContainer.nodeType === Node.TEXT_NODE ? 'TEXT_NODE' : 'ELEMENT_NODE',
+        endContainerType: range.endContainer.nodeType === Node.TEXT_NODE ? 'TEXT_NODE' : 'ELEMENT_NODE',
+        startText: range.startContainer.nodeType === Node.TEXT_NODE ? (range.startContainer as Text).data.substring(0, 50) : null,
+        endText: range.endContainer.nodeType === Node.TEXT_NODE ? (range.endContainer as Text).data.substring(0, 50) : null,
+        selectedText: range.toString().substring(0, 100),
+      } : null,
+    })
     const makeRanges = (r: Range): Range[] => {
       const ranges: Range[] = []
       const root: Node = editor
@@ -2103,59 +2326,305 @@ span[data-tag] {
     }
     const segments = makeRanges(range)
     
-    // Helper: check if two ranges are adjacent (only separated by BR or whitespace)
-    const areAdjacent = (r1: Range, r2: Range): boolean => {
-      const r1End = r1.cloneRange()
-      r1End.collapse(false)
-      const r2Start = r2.cloneRange()
-      r2Start.collapse(true)
-      
-      const between = document.createRange()
-      between.setStart(r1End.endContainer, r1End.endOffset)
-      between.setEnd(r2Start.startContainer, r2Start.startOffset)
-      
-      // Check if between range only contains BR elements or whitespace
-      const contents = between.cloneContents()
-      for (let node = contents.firstChild; node; node = node.nextSibling) {
-        if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'BR') {
-          continue // BR is allowed
-        }
+    console.log('[applyInlineStyle] Segments found:', {
+      segmentCount: segments.length,
+      segments: segments.map((seg, idx) => ({
+        index: idx,
+        startContainer: seg.startContainer,
+        startOffset: seg.startOffset,
+        endContainer: seg.endContainer,
+        endOffset: seg.endOffset,
+        startContainerType: seg.startContainer.nodeType === Node.TEXT_NODE ? 'TEXT_NODE' : 'ELEMENT_NODE',
+        endContainerType: seg.endContainer.nodeType === Node.TEXT_NODE ? 'TEXT_NODE' : 'ELEMENT_NODE',
+        text: seg.toString().substring(0, 50),
+      })),
+    })
+    
+    // Helper: check if all text nodes in the selection have the target style
+    const selectionHasStyle = (r: Range, styleName: string): boolean => {
+      // Check all text nodes in the segments
+      for (const seg of segments) {
+        let node: Node | null = seg.startContainer
         if (node.nodeType === Node.TEXT_NODE) {
-          const text = (node as Text).data
-          if (text.trim().length === 0) continue // Whitespace only is allowed
+          node = node.parentElement
         }
-        return false // Found something other than BR or whitespace
+        
+        // Walk up the tree to find a style span with this style
+        let found = false
+        while (node && node !== editor) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node as HTMLElement
+            if ((el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) &&
+                el.classList.contains(`style-${styleName}`)) {
+              found = true
+              break
+            }
+          }
+          node = node.parentElement
+        }
+        
+        if (!found) {
+          // At least one segment doesn't have the style
+          return false
+        }
       }
-      return true
+      
+      // All segments have the style
+      return segments.length > 0
     }
     
-    // Merge adjacent segments (that are only separated by BR elements)
-    const mergedSegments: Range[] = []
-    for (let i = 0; i < segments.length; i++) {
-      if (mergedSegments.length === 0) {
-        mergedSegments.push(segments[i])
-      } else {
-        const lastMerged = mergedSegments[mergedSegments.length - 1]
-        if (areAdjacent(lastMerged, segments[i])) {
-          // Extend the last merged range to include this segment
-          lastMerged.setEnd(segments[i].endContainer, segments[i].endOffset)
-        } else {
-          // Not adjacent, start a new merged segment
-          mergedSegments.push(segments[i])
+    // Helper: remove style from a range by splitting spans if needed
+    const removeStyleFromRange = (r: Range, styleName: string): void => {
+      console.log('[applyInlineStyle] removeStyleFromRange called:', {
+        styleName,
+        rangeText: r.toString().substring(0, 50),
+      })
+      
+      // Find all style spans with this style that intersect the range
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_ELEMENT)
+      const styleSpans: Array<{ span: HTMLElement; spanRange: Range }> = []
+      
+      let node: Node | null = walker.currentNode
+      while (node) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as HTMLElement
+          if ((el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) &&
+              el.classList.contains(`style-${styleName}`)) {
+            // Check if this span intersects with the range
+            // Check if range's containers are within this span
+            const rangeStartInSpan = el.contains(r.startContainer) || el === r.startContainer
+            const rangeEndInSpan = el.contains(r.endContainer) || el === r.endContainer
+            
+            // Create a range for the span to compare with selection range
+            const spanRange = document.createRange()
+            spanRange.selectNodeContents(el)
+            
+            // Check if the span intersects with the selection range using boundary comparison
+            // Ranges intersect if: range start is before span end AND range end is after span start
+            const rangeStartBeforeSpanEnd = r.compareBoundaryPoints(Range.START_TO_END, spanRange) < 0
+            const rangeEndAfterSpanStart = r.compareBoundaryPoints(Range.END_TO_START, spanRange) > 0
+            const rangesOverlap = rangeStartBeforeSpanEnd && rangeEndAfterSpanStart
+            
+            // Also check if range is entirely within span or span is entirely within range
+            const rangeStartAfterSpanStart = r.compareBoundaryPoints(Range.START_TO_START, spanRange) >= 0
+            const rangeEndBeforeSpanEnd = r.compareBoundaryPoints(Range.END_TO_END, spanRange) <= 0
+            const rangeEntirelyInSpan = rangeStartAfterSpanStart && rangeEndBeforeSpanEnd
+            
+            const spanStartAfterRangeStart = r.compareBoundaryPoints(Range.START_TO_START, spanRange) <= 0
+            const spanEndBeforeRangeEnd = r.compareBoundaryPoints(Range.END_TO_END, spanRange) >= 0
+            const spanEntirelyInRange = spanStartAfterRangeStart && spanEndBeforeRangeEnd
+            
+            const intersects = rangeStartInSpan || rangeEndInSpan || rangesOverlap || rangeEntirelyInSpan || spanEntirelyInRange
+            
+            console.log('[removeStyleFromRange] Checking span:', {
+              span: el,
+              className: el.className,
+              spanText: spanRange.toString().substring(0, 30),
+              rangeText: r.toString().substring(0, 30),
+              rangeStartInSpan,
+              rangeEndInSpan,
+              rangesOverlap,
+              rangeEntirelyInSpan,
+              spanEntirelyInRange,
+              intersects,
+            })
+            
+            if (intersects) {
+              styleSpans.push({ span: el, spanRange })
+            }
+          }
+        }
+        node = walker.nextNode()
+      }
+      
+      console.log('[removeStyleFromRange] Found style spans:', styleSpans.length)
+      
+      // Process each style span (from end to start to preserve offsets)
+      for (let i = styleSpans.length - 1; i >= 0; i--) {
+        const { span, spanRange } = styleSpans[i]
+        const parent = span.parentNode
+        if (!parent) continue
+        
+        // Compare range boundaries to determine the case
+        const startCompare = r.compareBoundaryPoints(Range.START_TO_START, spanRange)
+        const endCompare = r.compareBoundaryPoints(Range.END_TO_END, spanRange)
+        
+        console.log('[applyInlineStyle] Processing span:', {
+          className: span.className,
+          startCompare,
+          endCompare,
+          rangeStart: r.toString().substring(0, 20),
+          spanStart: spanRange.toString().substring(0, 20),
+        })
+        
+        // Case 1: Entire span is included in selection - remove completely
+        if (startCompare <= 0 && endCompare >= 0) {
+          console.log('[applyInlineStyle] Case 1: Entire span in selection - removing')
+          
+          // Check if span has other styles
+          const hasOtherStyles = Array.from(span.classList).some(cls => 
+            cls.startsWith('style-') && cls !== `style-${styleName}`
+          )
+          
+          if (hasOtherStyles) {
+            // Has other styles - just remove this style class
+            span.classList.remove(`style-${styleName}`)
+          } else {
+            // No other styles - unwrap the span completely
+            const nextSibling = span.nextSibling
+            while (span.firstChild) {
+              parent.insertBefore(span.firstChild, span)
+            }
+            span.remove()
+          }
+        }
+        // Case 2: Selection is at one end - shorten the span
+        else if (startCompare > 0 && endCompare >= 0) {
+          // Selection starts after span start, ends at or after span end
+          // Shorten span from the end
+          console.log('[applyInlineStyle] Case 2: Selection at end - shortening from end')
+          
+          const beforeRange = document.createRange()
+          beforeRange.setStart(spanRange.startContainer, spanRange.startOffset)
+          beforeRange.setEnd(r.startContainer, r.startOffset)
+          
+          const beforeContent = beforeRange.extractContents()
+          const selectedContent = r.extractContents()
+          
+          // Remove the original span
+          const nextSibling = span.nextSibling
+          span.remove()
+          
+          // Insert before content with style (if any)
+          if (beforeContent.textContent && beforeContent.textContent.trim().length > 0) {
+            const beforeSpan = span.cloneNode(true) as HTMLElement
+            beforeSpan.appendChild(beforeContent)
+            parent.insertBefore(beforeSpan, nextSibling)
+          }
+          
+          // Insert selected content without style
+          if (selectedContent.textContent && selectedContent.textContent.trim().length > 0) {
+            const fragment = document.createDocumentFragment()
+            fragment.appendChild(selectedContent)
+            parent.insertBefore(fragment, nextSibling)
+          }
+        }
+        else if (startCompare <= 0 && endCompare < 0) {
+          // Selection starts at or before span start, ends before span end
+          // Shorten span from the start
+          console.log('[applyInlineStyle] Case 2: Selection at start - shortening from start')
+          
+          const afterRange = document.createRange()
+          afterRange.setStart(r.endContainer, r.endOffset)
+          afterRange.setEnd(spanRange.endContainer, spanRange.endOffset)
+          
+          const selectedContent = r.extractContents()
+          const afterContent = afterRange.extractContents()
+          
+          // Remove the original span
+          const nextSibling = span.nextSibling
+          span.remove()
+          
+          // Insert selected content without style
+          if (selectedContent.textContent && selectedContent.textContent.trim().length > 0) {
+            const fragment = document.createDocumentFragment()
+            fragment.appendChild(selectedContent)
+            parent.insertBefore(fragment, nextSibling)
+          }
+          
+          // Insert after content with style (if any)
+          if (afterContent.textContent && afterContent.textContent.trim().length > 0) {
+            const afterSpan = span.cloneNode(true) as HTMLElement
+            afterSpan.appendChild(afterContent)
+            parent.insertBefore(afterSpan, nextSibling)
+          }
+        }
+        // Case 3: Selection is in the middle - split into two spans
+        else if (startCompare > 0 && endCompare < 0) {
+          // Selection is entirely within span - split into two
+          console.log('[applyInlineStyle] Case 3: Selection in middle - splitting into two')
+          
+          const beforeRange = document.createRange()
+          beforeRange.setStart(spanRange.startContainer, spanRange.startOffset)
+          beforeRange.setEnd(r.startContainer, r.startOffset)
+          
+          const selectionRange = r.cloneRange()
+          
+          const afterRange = document.createRange()
+          afterRange.setStart(r.endContainer, r.endOffset)
+          afterRange.setEnd(spanRange.endContainer, spanRange.endOffset)
+          
+          // Extract in reverse order: after, selection, before
+          const afterContent = afterRange.extractContents()
+          const selectedContent = selectionRange.extractContents()
+          const beforeContent = beforeRange.extractContents()
+          
+          // Remove the original span
+          const nextSibling = span.nextSibling
+          span.remove()
+          
+          // Insert parts back in correct order: before, selection, after
+          if (beforeContent.textContent && beforeContent.textContent.trim().length > 0) {
+            const beforeSpan = span.cloneNode(true) as HTMLElement
+            beforeSpan.appendChild(beforeContent)
+            parent.insertBefore(beforeSpan, nextSibling)
+          }
+          
+          if (selectedContent.textContent && selectedContent.textContent.trim().length > 0) {
+            const fragment = document.createDocumentFragment()
+            fragment.appendChild(selectedContent)
+            parent.insertBefore(fragment, nextSibling)
+          }
+          
+          if (afterContent.textContent && afterContent.textContent.trim().length > 0) {
+            const afterSpan = span.cloneNode(true) as HTMLElement
+            afterSpan.appendChild(afterContent)
+            parent.insertBefore(afterSpan, nextSibling)
+          }
         }
       }
     }
     
-    // Apply style wrappers from end to start to preserve offsets
-    for (let i = mergedSegments.length - 1; i >= 0; i--) {
-      const seg = mergedSegments[i]
-      const wrapper = document.createElement('span')
-      const baseClass = toggleStylingOptions ? 'styleTag' : 'styleTagDisabled'
-      wrapper.className = `${baseClass} style-${styleName}`
-      const contents = seg.extractContents()
-      wrapper.appendChild(contents)
-      seg.insertNode(wrapper)
+    // Check if the selection already has this style
+    const hasStyle = selectionHasStyle(range, styleName)
+    
+    console.log('[applyInlineStyle] Checking if selection has style:', {
+      styleName,
+      hasStyle,
+      segmentCount: segments.length,
+    })
+    
+    if (hasStyle) {
+      // Selection has the style - remove it (toggle off)
+      console.log('[applyInlineStyle] Removing style from selection')
+      removeStyleFromRange(range, styleName)
+    } else {
+      // Apply style wrappers from end to start to preserve offsets
+      // Only apply to the exact selected segments, don't merge adjacent segments
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const seg = segments[i]
+        const wrapper = document.createElement('span')
+        const baseClass = toggleStylingOptions ? 'styleTag' : 'styleTagDisabled'
+        wrapper.className = `${baseClass} style-${styleName}`
+        const contents = seg.extractContents()
+        
+        console.log('[applyInlineStyle] Applying style to segment:', {
+          index: i,
+          segmentText: seg.toString().substring(0, 50),
+          contentsNodes: Array.from(contents.childNodes).map(n => ({
+            nodeType: n.nodeType === Node.TEXT_NODE ? 'TEXT_NODE' : 'ELEMENT_NODE',
+            text: n.nodeType === Node.TEXT_NODE ? (n as Text).data.substring(0, 50) : (n as HTMLElement).tagName,
+          })),
+        })
+        
+        wrapper.appendChild(contents)
+        seg.insertNode(wrapper)
+      }
     }
+    
+    console.log('[applyInlineStyle] After applying styles, HTML:', {
+      html: editor.innerHTML.substring(0, 500),
+    })
     const newRange = document.createRange()
     newRange.setStart(range.endContainer, range.endOffset)
     newRange.collapse(true)
@@ -2216,6 +2685,7 @@ span[data-tag] {
     }
 
     // Helper: recursively unwrap all nested style spans within a given range
+    // Preserves link tags (span[data-tag]) that are inside style tags
     const unwrapNestedStylesInRange = (container: Node, r: Range): void => {
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT)
       const toUnwrap: HTMLElement[] = []
@@ -2224,7 +2694,8 @@ span[data-tag] {
       while (node) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           const el = node as HTMLElement
-          if (el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) {
+          // Only unwrap style tags, never unwrap link tags
+          if ((el.matches('span.styleTag') || el.matches('span.styleTagDisabled')) && !el.hasAttribute('data-tag')) {
             const elRange = document.createRange()
             elRange.selectNodeContents(el)
             // Check if this nested style is fully within the selection range
@@ -2257,6 +2728,7 @@ span[data-tag] {
       for (const nestedSpan of toUnwrap) {
         const nestedParent = nestedSpan.parentNode
         if (!nestedParent) continue
+        // When unwrapping, preserve any link tags inside the style tag
         while (nestedSpan.firstChild) {
           nestedParent.insertBefore(nestedSpan.firstChild, nestedSpan)
         }
@@ -2268,6 +2740,17 @@ span[data-tag] {
     const unwrapStyleSpan = (span: HTMLElement): void => {
       const parent = span.parentNode
       if (!parent) return
+      
+      // If parent is a link tag, preserve the link structure
+      // Just unwrap the style but keep all content inside the link tag
+      if (parent instanceof HTMLElement && parent.hasAttribute('data-tag')) {
+        unwrapNestedStylesInRange(span, range)
+        while (span.firstChild) {
+          parent.insertBefore(span.firstChild, span)
+        }
+        parent.removeChild(span)
+        return
+      }
       
       // First unwrap any nested style spans that are fully within the selection
       unwrapNestedStylesInRange(span, range)
@@ -2283,6 +2766,10 @@ span[data-tag] {
     const splitStyleSpan = (span: HTMLElement, r: Range): void => {
       const parent = span.parentNode
       if (!parent) return
+      
+      // If parent is a link tag, we need to preserve it
+      const isInsideLinkTag = parent instanceof HTMLElement && parent.hasAttribute('data-tag')
+      
       const spanRange = document.createRange()
       spanRange.selectNodeContents(span)
       
@@ -2333,10 +2820,13 @@ span[data-tag] {
       const afterContent = afterRange.collapsed ? null : afterRange.extractContents()
 
       // Helper: unwrap all style spans from a DocumentFragment
+      // Preserves link tags (span[data-tag]) that are inside style tags
       const unwrapStylesInFragment = (frag: DocumentFragment): void => {
         const styleSpans = Array.from(frag.querySelectorAll('span.styleTag, span.styleTagDisabled')) as HTMLElement[]
+        // Filter out any elements that are actually link tags (shouldn't happen, but be safe)
+        const actualStyleSpans = styleSpans.filter(s => !s.hasAttribute('data-tag'))
         // Sort from innermost to outermost
-        styleSpans.sort((a, b) => {
+        actualStyleSpans.sort((a, b) => {
           const aRange = document.createRange()
           aRange.selectNodeContents(a)
           const bRange = document.createRange()
@@ -2351,9 +2841,10 @@ span[data-tag] {
           }
           return 0
         })
-        for (const styleSpan of styleSpans) {
+        for (const styleSpan of actualStyleSpans) {
           const styleParent = styleSpan.parentNode
           if (!styleParent) continue
+          // When unwrapping, preserve any link tags inside the style tag
           while (styleSpan.firstChild) {
             styleParent.insertBefore(styleSpan.firstChild, styleSpan)
           }
@@ -2386,6 +2877,7 @@ span[data-tag] {
         while (beforeContent.firstChild) {
           beforeSpan.appendChild(beforeContent.firstChild)
         }
+        // Insert into parent (which is the link tag if isInsideLinkTag is true)
         parent.insertBefore(beforeSpan, currentInsertPoint)
         currentInsertPoint = beforeSpan.nextSibling
       }
@@ -2396,6 +2888,7 @@ span[data-tag] {
         while (selectedContent.firstChild) {
           fragment.appendChild(selectedContent.firstChild)
         }
+        // Insert into parent (which is the link tag if isInsideLinkTag is true)
         if (currentInsertPoint) {
           parent.insertBefore(fragment, currentInsertPoint)
         } else {
@@ -2413,6 +2906,7 @@ span[data-tag] {
         while (afterContent.firstChild) {
           afterSpan.appendChild(afterContent.firstChild)
         }
+        // Insert into parent (which is the link tag if isInsideLinkTag is true)
         if (currentInsertPoint) {
           parent.insertBefore(afterSpan, currentInsertPoint)
         } else {
@@ -2422,11 +2916,13 @@ span[data-tag] {
     }
 
     // Find all style spans that intersect with the selection
+    // Exclude any spans that have data-tag attribute (those are link tags, not style tags)
     const allStyleSpans = Array.from(editor.querySelectorAll('span.styleTag, span.styleTagDisabled')) as HTMLElement[]
     const intersectingSpans: HTMLElement[] = []
 
     for (const span of allStyleSpans) {
-      if (intersectsRange(span, range)) {
+      // Only process actual style tags, not link tags that might have style classes
+      if (!span.hasAttribute('data-tag') && intersectsRange(span, range)) {
         intersectingSpans.push(span)
       }
     }
@@ -2651,7 +3147,36 @@ span[data-tag] {
             onContextMenu={handleEditorContextMenu}
             onMouseMove={(e) => {
               const target = e.target as HTMLElement
-              const span = target && (target.closest && target.closest('span[data-tag]')) as HTMLElement | null
+              // Find the link span, even if target is a style tag inside it or contains it
+              let span: HTMLElement | null = null
+              if (target) {
+                // Check if target itself is a link tag
+                if (target.hasAttribute && target.hasAttribute('data-tag')) {
+                  span = target
+                } else {
+                  // Check parent chain first
+                  let current: HTMLElement | null = target.parentElement
+                  while (current) {
+                    if (current.hasAttribute('data-tag')) {
+                      span = current
+                      break
+                    }
+                    current = current.parentElement
+                  }
+                  // If not found in parents, check if target or any parent contains a link tag
+                  if (!span) {
+                    let checkEl: HTMLElement | null = target
+                    while (checkEl && checkEl !== editorRef.current) {
+                      const linkTag = checkEl.querySelector('span[data-tag]') as HTMLElement | null
+                      if (linkTag) {
+                        span = linkTag
+                        break
+                      }
+                      checkEl = checkEl.parentElement
+                    }
+                  }
+                }
+              }
               if (!span) {
                 lastHoverTagRef.current = null
                 if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
@@ -2747,7 +3272,36 @@ span[data-tag] {
             }}
             onClick={async (e) => {
               const target = e.target as HTMLElement
-              const span = target && (target.closest && target.closest('span[data-tag]')) as HTMLElement | null
+              // Find the link span, even if target is a style tag inside it or contains it
+              let span: HTMLElement | null = null
+              if (target) {
+                // Check if target itself is a link tag
+                if (target.hasAttribute && target.hasAttribute('data-tag')) {
+                  span = target
+                } else {
+                  // Check parent chain first
+                  let current: HTMLElement | null = target.parentElement
+                  while (current) {
+                    if (current.hasAttribute('data-tag')) {
+                      span = current
+                      break
+                    }
+                    current = current.parentElement
+                  }
+                  // If not found in parents, check if target or any parent contains a link tag
+                  if (!span) {
+                    let checkEl: HTMLElement | null = target
+                    while (checkEl && checkEl !== editorRef.current) {
+                      const linkTag = checkEl.querySelector('span[data-tag]') as HTMLElement | null
+                      if (linkTag) {
+                        span = linkTag
+                        break
+                      }
+                      checkEl = checkEl.parentElement
+                    }
+                  }
+                }
+              }
               if (!span) return
               const tagId = span.getAttribute('data-tag') || ''
               if (!tagId) return
@@ -2770,147 +3324,91 @@ span[data-tag] {
               }
             }}
             onKeyDown={(e) => {
-              // Handle Enter key with indentation preservation
+              // Let browser handle Enter key naturally - no manual BR insertion
+              // (Enter handler removed - browser handles it naturally)
               if (e.key === 'Enter') {
+                // Do nothing - let browser handle Enter naturally
+                return
+              }
+              
+              // Disabled Enter handler code below (kept for reference):
+              if (false) {
                 e.preventDefault()
                 const sel = window.getSelection()
                 if (sel && sel.rangeCount > 0) {
                   const range = sel.getRangeAt(0)
                   
-                  // Compute leading indentation for the current visual line using DOM (<br>-aware)
-                  const computeLeadingIndent = (): string => {
-                    const root = editorRef.current!
-                    // Walk backwards from caret to previous <br>
-                    const back = document.createTreeWalker(root, NodeFilter.SHOW_ALL)
-                    back.currentNode = range.startContainer
-                    let prevBreak: Node | null = null
-                    while (back.currentNode && back.currentNode !== root) {
-                      if ((back.currentNode as HTMLElement).tagName === 'BR') { prevBreak = back.currentNode; break }
-                      const prev = back.previousNode()
-                      if (!prev) break
-                    }
-                    // Start scanning forward after the <br> (or root start) to accumulate whitespace
-                    const fwd = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-                    fwd.currentNode = (prevBreak && prevBreak.nextSibling) ? prevBreak.nextSibling : (root.firstChild || root)
-                    const buf: string[] = []
-                    // Advance to the first text node if current is not a text node
-                    if (!fwd.currentNode || fwd.currentNode.nodeType !== Node.TEXT_NODE) {
-                      let advanced: Node | null
-                      while ((advanced = fwd.nextNode())) {
-                        if (fwd.currentNode && fwd.currentNode.nodeType === Node.TEXT_NODE) break
-                      }
-                      if (!fwd.currentNode || fwd.currentNode.nodeType !== Node.TEXT_NODE) {
-                        return buf.join('')
-                      }
-                    }
-                    // Helper to know if we have reached the caret position
-                    const reachedCaret = (node: Node): boolean => {
-                      if (node === range.startContainer) return true
-                      const pos = node.compareDocumentPosition(range.startContainer)
-                      return (pos & Node.DOCUMENT_POSITION_FOLLOWING) === 0 && node !== root
-                    }
-                    while (fwd.currentNode && fwd.currentNode.nodeType === Node.TEXT_NODE) {
-                      const tn = fwd.currentNode as Text
-                      const data = tn.data || ''
-                      for (let i = 0; i < data.length; i++) {
-                        if (tn === range.startContainer && i >= range.startOffset) return buf.join('')
-                        const ch = data[i]
-                        // if (ch === ' ' || ch === '\t') buf.push(ch)
-                        // else return buf.join('')
-                        if (ch === ' ' || ch === '\t') buf.push(ch)
-                        else if (ch === '\u00A0') continue
-                        else return buf.join('')
-                      }
-                      const n = fwd.nextNode()
-                      if (!n) break
-                      if (reachedCaret(n)) return buf.join('')
-                      // Ensure we are on a text node for the next iteration
-                      while (fwd.currentNode && fwd.currentNode.nodeType !== Node.TEXT_NODE) {
-                        const step = fwd.nextNode()
-                        if (!step) break
-                      }
-                    }
-                    return buf.join('')
-                  }
-                  const whitespace = computeLeadingIndent()
+                  console.log('[Enter] Before insertion:', {
+                    startContainer: range.startContainer,
+                    startOffset: range.startOffset,
+                    startContainerType: range.startContainer.nodeType === Node.TEXT_NODE ? 'TEXT_NODE' : 'ELEMENT_NODE',
+                    startContainerText: range.startContainer.nodeType === Node.TEXT_NODE ? (range.startContainer as Text).textContent?.substring(0, 20) : null,
+                    parentElement: range.startContainer.nodeType === Node.ELEMENT_NODE ? (range.startContainer as Element).tagName : range.startContainer.parentElement?.tagName,
+                  })
                   
-                  // Insert a visible line break and then indentation as text
+                  // Insert a visible line break
                   range.deleteContents()
                   const br = document.createElement('br')
                   range.insertNode(br)
-                  let caretAnchor: Node = br
-                  if (whitespace && whitespace.length > 0) {
-                    const ws = document.createTextNode(whitespace)
-                    if (br.nextSibling) {
-                      br.parentNode?.insertBefore(ws, br.nextSibling)
-                    } else {
-                      br.parentNode?.appendChild(ws)
-                    }
-                    caretAnchor = ws
-
-                  } else {
-                    // create a text node with a non-breaking space so caret can sit in it
-                    const empty = document.createTextNode('\u00A0')
-                    if (br.nextSibling) br.parentNode?.insertBefore(empty, br.nextSibling)
-                    else br.parentNode?.appendChild(empty)
-                    caretAnchor = empty
                   
-                    // Put caret *before* the NBSP (offset 0) so typed characters come before it
+                  console.log('[Enter] After BR insertion:', {
+                    br: br,
+                    brParent: br.parentElement?.tagName,
+                    brNextSibling: br.nextSibling,
+                    brNextSiblingType: br.nextSibling ? (br.nextSibling.nodeType === Node.TEXT_NODE ? 'TEXT_NODE' : 'ELEMENT_NODE') : null,
+                    brNextSiblingText: br.nextSibling && br.nextSibling.nodeType === Node.TEXT_NODE ? (br.nextSibling as Text).textContent?.substring(0, 20) : null,
+                    isAtEnd: !br.nextSibling,
+                  })
+                  
+                  // Position caret after the BR (on the new line)
+                  // Check if nextSibling is an empty text node - if so, position caret inside it
+                  const nextSibling = br.nextSibling
+                  const isNextSiblingEmptyText = nextSibling && 
+                    nextSibling.nodeType === Node.TEXT_NODE && 
+                    (nextSibling as Text).textContent === ''
+                  
+                  if (!br.nextSibling) {
+                    console.log('[Enter] At end - creating empty text node for caret')
+                    // Create an empty text node so the caret has a place to sit
+                    const emptyText = document.createTextNode('')
+                    br.parentNode?.appendChild(emptyText)
+                    
                     const newRange = document.createRange()
-                    newRange.setStart(empty, 0)
+                    newRange.setStart(emptyText, 0)
                     newRange.collapse(true)
                     sel.removeAllRanges()
                     sel.addRange(newRange)
-                  
-                    // Handler that cleans up the NBSP once the user types (or finishes an IME composition)
-                    const cleanupNbsp = (event: Event) => {
-                      try {
-                        // If node is gone already, nothing to do
-                        if (!empty.parentNode) {
-                          editorRef.current?.removeEventListener('input', cleanupNbsp)
-                          editorRef.current?.removeEventListener('compositionend', cleanupNbsp)
-                          return
-                        }
-                  
-                        // Record current selection offset so we can restore caret position after modifying node
-                        const s = window.getSelection()
-                        let caretOffset = 0
-                        if (s && s.rangeCount) {
-                          const r = s.getRangeAt(0)
-                          if (r.startContainer === empty) caretOffset = r.startOffset
-                          else caretOffset = empty.length // typed elsewhere; put caret at end of this node
-                        }
-                  
-                        // Remove the NBSP characters (there should usually be only the leading one)
-                        if (empty.data.includes('\u00A0')) {
-                          empty.data = empty.data.replace(/\u00A0/g, '')
-                        }
-                  
-                        // Clamp caretOffset to the new node length, then restore selection inside `empty`
-                        const restore = document.createRange()
-                        const newOffset = Math.max(0, Math.min(empty.length, caretOffset))
-                        restore.setStart(empty, newOffset)
-                        restore.collapse(true)
-                        s?.removeAllRanges()
-                        s?.addRange(restore)
-                      } finally {
-                        // detach listeners after first cleanup
-                        editorRef.current?.removeEventListener('input', cleanupNbsp)
-                        editorRef.current?.removeEventListener('compositionend', cleanupNbsp)
-                      }
-                    }
-                  
-                    // Attach listeners: input for normal typing, compositionend for IME input
-                    editorRef.current?.addEventListener('input', cleanupNbsp)
-                    editorRef.current?.addEventListener('compositionend', cleanupNbsp)
+                    
+                    console.log('[Enter] Positioned caret in empty text node:', {
+                      emptyText: emptyText,
+                      caretOffset: 0,
+                    })
+                  } else if (isNextSiblingEmptyText) {
+                    console.log('[Enter] Next sibling is empty text node - positioning caret inside it')
+                    // Position caret inside the empty text node
+                    const newRange = document.createRange()
+                    newRange.setStart(nextSibling as Text, 0)
+                    newRange.collapse(true)
+                    sel.removeAllRanges()
+                    sel.addRange(newRange)
+                    
+                    console.log('[Enter] Positioned caret in empty text node:', {
+                      emptyText: nextSibling,
+                      caretOffset: 0,
+                    })
+                  } else {
+                    console.log('[Enter] Not at end - positioning after BR')
+                    const newRange = document.createRange()
+                    newRange.setStartAfter(br)
+                    newRange.collapse(true)
+                    sel.removeAllRanges()
+                    sel.addRange(newRange)
+                    
+                    console.log('[Enter] Positioned caret after BR:', {
+                      nextSibling: br.nextSibling,
+                    })
                   }
-
-                  // Move caret after the indentation (or after <br> if no indentation)
-                  const newRange = document.createRange()
-                  newRange.setStartAfter(caretAnchor)
-                  newRange.collapse(true)
-                  sel.removeAllRanges()
-                  sel.addRange(newRange)
+                  
                   // Defer state update so the caret visually settles first
                   setTimeout(() => {
                     if (editorRef.current) setDesc(htmlToDesc(editorRef.current))
@@ -2928,27 +3426,6 @@ span[data-tag] {
                   }
                 }
 
-                // 🧹 Remove NBSPs on previous lines only
-                
-                window.setTimeout(() => {
-                  const editor = editorRef.current
-                  if (editor) {
-                    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
-                    const nbspNodes: Text[] = []
-
-                    while (walker.nextNode()) {
-                      const n = walker.currentNode as Text
-                      if (n.nodeValue === '\u00A0') {
-                        nbspNodes.push(n)
-                      }
-                    }
-
-                    // Remove all but the last NBSP
-                    for (let i = 0; i < nbspNodes.length - 1; i++) {
-                      nbspNodes[i].remove()
-                    }
-                  }
-                }, 100);
                 
 
                 
@@ -2956,79 +3433,9 @@ span[data-tag] {
                 return
               }
 
-              if (e.key === 'Backspace') {
-                const sel = window.getSelection()
-                if (!sel || sel.rangeCount === 0) return
-                const range = sel.getRangeAt(0)
-                const node = range.startContainer
-              
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                  const childNodes = Array.from(node.childNodes)
-                  const offset = range.startOffset
-                  const prevNode = childNodes[offset - 1]
-              
-                  if (prevNode && prevNode.nodeType === Node.TEXT_NODE && prevNode.nodeValue === '\u00A0') {
-                    e.preventDefault()
-              
-                    let brToRemove: ChildNode | null = null
-              
-                    // Find a <br> immediately before the NBSP (but NOT if there’s another <br> before that)
-                    let prev = prevNode.previousSibling
-                    while (prev && prev.nodeType === Node.TEXT_NODE && !(prev.nodeValue || '').trim()) {
-                      prev = prev.previousSibling
-                    }
-                    if (prev && prev.nodeName === 'BR') {
-                      // Only remove if the *previous* sibling isn't another <br>
-                      const beforePrev = prev.previousSibling
-                      if (!beforePrev || beforePrev.nodeName !== 'BR') {
-                        brToRemove = prev
-                      }
-                    }
-              
-                    prevNode.remove() // remove the nbsp
-                    if (brToRemove) brToRemove.remove()
-              
-                    // Move caret to end of previous text node
-                    const newSel = window.getSelection()
-                    const newRange = document.createRange()
-              
-                    let caretTarget: ChildNode | null =
-                      (brToRemove && brToRemove.previousSibling) || node.lastChild
-              
-                    while (caretTarget && caretTarget.nodeType !== Node.TEXT_NODE) {
-                      if (caretTarget.lastChild) caretTarget = caretTarget.lastChild
-                      else caretTarget = caretTarget.previousSibling
-                    }
-              
-                    if (caretTarget && caretTarget.nodeType === Node.TEXT_NODE) {
-                      newRange.setStart(caretTarget, caretTarget.textContent?.length || 0)
-                    } else {
-                      newRange.selectNodeContents(node)
-                      newRange.collapse(false)
-                    }
-              
-                    newSel?.removeAllRanges()
-                    newSel?.addRange(newRange)
-                    return
-                  }
-                }
-              }
-              
-              
-              
               // Insert literal tab characters in the content
               if (e.key === 'Tab') {
                 e.preventDefault()
-
-                const editor = editorRef.current
-                if (editor) {
-                  const children = Array.from(editor.childNodes)
-                  for (const node of children) {
-                    if (node.nodeType === Node.TEXT_NODE && node.nodeValue === '\u00A0') {
-                      node.remove()
-                    }
-                  }
-                }
 
                 const sel = window.getSelection()
                 if (sel && sel.rangeCount > 0) {
@@ -3082,7 +3489,7 @@ span[data-tag] {
                 const newRange = document.createRange()
                 newRange.setStartAfter(space)
                 newRange.collapse(true)
-                sel.removeAllRanges()
+                sel.removeAllRanges() 
                 sel.addRange(newRange)
                 setDesc(htmlToDesc(editorRef.current))
               }
@@ -3123,14 +3530,62 @@ span[data-tag] {
               {toggleStylingOptions && (
                 <>
                   <div className="ctx-menu-formatting-section">
-                    <div className="ctx-menu-item formatting-item" title='Bold' onClick={handleBoldFormatting}><i className="ri-bold"></i></div>
-                    <div className="ctx-menu-item formatting-item" title='Italic' onClick={handleItalicFormatting}><i className="ri-italic"></i></div>
-                    <div className="ctx-menu-item formatting-item" title='Underline' onClick={handleUnderlineFormatting}><i className="ri-underline"></i></div>
-                    <div className="ctx-menu-item formatting-item" title='Strikethrough' onClick={handleStrikethroughFormatting}><i className="ri-strikethrough"></i></div>
-                    <div className="ctx-menu-item formatting-item" title='Heading' onClick={handleHeadingFormatting}><i className="ri-heading"></i></div>
-                    <div className="ctx-menu-item formatting-item" title='Code' onClick={handleCodeFormatting}><i className="ri-braces-line"></i></div>
-                    <div className="ctx-menu-item formatting-item" title='Quote' onClick={handleQuoteFormatting}><i className="ri-double-quotes-r"></i></div>
-                    <div className="ctx-menu-item formatting-item" title='Redacted' onClick={handleRedactedFormatting}><i className="ri-checkbox-indeterminate-fill"></i></div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('bold') ? 'active' : ''}`} 
+                      title='Bold' 
+                      onClick={handleBoldFormatting}
+                    >
+                      <i className="ri-bold"></i>
+                    </div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('italic') ? 'active' : ''}`} 
+                      title='Italic' 
+                      onClick={handleItalicFormatting}
+                    >
+                      <i className="ri-italic"></i>
+                    </div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('underline') ? 'active' : ''}`} 
+                      title='Underline' 
+                      onClick={handleUnderlineFormatting}
+                    >
+                      <i className="ri-underline"></i>
+                    </div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('strike') ? 'active' : ''}`} 
+                      title='Strikethrough' 
+                      onClick={handleStrikethroughFormatting}
+                    >
+                      <i className="ri-strikethrough"></i>
+                    </div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('h1') ? 'active' : ''}`} 
+                      title='Heading' 
+                      onClick={handleHeadingFormatting}
+                    >
+                      <i className="ri-heading"></i>
+                    </div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('code') ? 'active' : ''}`} 
+                      title='Code' 
+                      onClick={handleCodeFormatting}
+                    >
+                      <i className="ri-braces-line"></i>
+                    </div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('quote') ? 'active' : ''}`} 
+                      title='Quote' 
+                      onClick={handleQuoteFormatting}
+                    >
+                      <i className="ri-double-quotes-r"></i>
+                    </div>
+                    <div 
+                      className={`ctx-menu-item formatting-item ${ctxMenu.activeStyles?.has('redacted') ? 'active' : ''}`} 
+                      title='Redacted' 
+                      onClick={handleRedactedFormatting}
+                    >
+                      <i className="ri-checkbox-indeterminate-fill"></i>
+                    </div>
                     <div className="ctx-menu-item formatting-item" title='Clear Formatting' onClick={handleClearFormatting}><i className="ri-format-clear"></i></div>
                   </div>
                   <div className="separator" />

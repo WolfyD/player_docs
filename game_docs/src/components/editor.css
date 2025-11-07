@@ -291,6 +291,14 @@ button {
 .formatting-item:hover {
   background: #3a3a3a;
 }
+.formatting-item.active {
+  background: #6495ED;
+  border-color: #6495ED;
+  color: white;
+}
+.formatting-item.active:hover {
+  background: #5a85dd;
+}
 
 .tag-menu {
   position: fixed;
