@@ -30,6 +30,22 @@ export const ProjectSetup: React.FC = () => {
 
   const [showCreate, setShowCreate] = useState(false)
 
+  // Handle Escape key to close showCreate
+  useEffect(() => {
+    if (!showCreate) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowCreate(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [showCreate])
+
   const onCreate = async () => {
     setBusy(true)
     setError(null)
@@ -74,6 +90,87 @@ export const ProjectSetup: React.FC = () => {
     await (window as any).ipcRenderer.invoke('gamedocs:open-campaign', id)
   }
 
+  const onShowExportToBackup = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await (window as any).ipcRenderer.invoke('gamedocs:create-backup')
+      if (res && res.ok) {
+        toast('Database backup created successfully', 'success')
+        
+        // Ask if user wants to open the folder
+        const openFolder = await confirmDialog({ 
+          title: 'Backup Complete', 
+          message: `Database backup "${res.fileName}" has been created successfully. Would you like to open the folder where it was saved?`, 
+          variant: 'yes-no' 
+        })
+        
+        if (openFolder) {
+          await (window as any).ipcRenderer.invoke('gamedocs:reveal-path', res.filePath)
+        }
+      } else {
+        toast('Backup cancelled', 'info')
+      }
+    } catch (e) {
+      toast('Failed to create backup', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onShowImportFromBackup = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      // Step 2: Open file dialog to select database file
+      const fileRes = await (window as any).ipcRenderer.invoke('gamedocs:choose-database-file')
+      if (fileRes.canceled || !fileRes.filePath) {
+        setBusy(false)
+        return
+      }
+
+      // Step 3: Confirm replacement
+      const confirmReplace = await confirmDialog({
+        title: 'Import Database',
+        message: 'Are you sure you want to replace the current database with the backup? This action cannot be undone.',
+        variant: 'yes-no'
+      })
+
+      // Step 4: If no, cancel
+      if (!confirmReplace) {
+        setBusy(false)
+        return
+      }
+
+      // Step 5: Ask if user wants to backup current DB
+      const createBackup = await confirmDialog({
+        title: 'Backup Current Database',
+        message: 'Do you want to create a backup of the current database before replacing it?',
+        variant: 'yes-no'
+      })
+
+      // Step 6-7: Import the database (IPC handler handles backup, delete, and copy)
+      const importRes = await (window as any).ipcRenderer.invoke('gamedocs:import-from-backup', fileRes.filePath, createBackup)
+      
+      if (importRes && importRes.ok) {
+        toast('Database imported successfully', 'success')
+        
+        // Step 8: Refresh the campaigns list
+        await loadCampaigns()
+        
+        // Reload the window to refresh all games
+        window.location.reload()
+      } else {
+        toast('Import cancelled', 'info')
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Import failed')
+      toast('Failed to import database', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="project-setup">
       <h1 className="project-setup-title">PlayerDocs</h1>
@@ -111,6 +208,9 @@ export const ProjectSetup: React.FC = () => {
         }
         {showCreate && 
         <div style={{ display: 'flex', alignItems: 'center', position: 'absolute', right: 0, bottom: 0 }}>
+          <div className="main-button-cancel-create-container">
+            <button className="main-button-cancel-create" onClick={() => setShowCreate(false)} disabled={busy} title="Cancel"><i className="ri-close-fill"></i></button>
+          </div>
           <input type="text" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { onCreate() } else if (e.key === 'Escape') { setShowCreate(false) } }} placeholder="Campaign name" style={{ fontSize: 28, padding: 3, marginRight: 10 }}/>
           <button className="main-button-create-2" onClick={onCreate} disabled={busy} title="Create new campaign">Create</button>
         </div>
@@ -130,6 +230,24 @@ export const ProjectSetup: React.FC = () => {
         </div>
       )}
       {error && <div style={{ color: 'red', marginTop: 12 }}>{error}</div>}
+
+      {/* Export Database floating button */}
+      <div className="main-button-export-container">
+        {!showCreate && 
+        <button className="main-button-export" onClick={onShowExportToBackup} disabled={busy} title="Export database">
+          <i className="ri-export-line"></i>
+        </button>
+        }
+      </div>
+
+      {/* Import Database floating button */}
+      <div className="main-button-db-import-container">
+        {!showCreate && 
+        <button className="main-button-db-import" onClick={onShowImportFromBackup} disabled={busy} title="Import database">
+          <i className="ri-import-line"></i>
+        </button>
+        }
+      </div>
 
       {/* Rename Campaign modal */}
       {showRename && renameTarget && (

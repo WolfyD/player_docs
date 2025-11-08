@@ -2831,6 +2831,58 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     }
   })
 
+  // Choose a database file to import
+  ipcMain.handle('gamedocs:choose-database-file', async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Select Database File to Import',
+      properties: ['openFile'],
+      filters: [{ name: 'SQLite Database', extensions: ['db'] }]
+    })
+    if (res.canceled || res.filePaths.length === 0) return { canceled: true, filePath: null }
+    return { canceled: false, filePath: res.filePaths[0] }
+  })
+
+  // Import database from backup file
+  ipcMain.handle('gamedocs:import-from-backup', async (_evt, backupFilePath: string, createBackup: boolean) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    
+    try {
+      const currentDbPath = path.join(projectDirCache, 'player_docs.db')
+      
+      // Step 6: Create backup of current DB if requested
+      if (createBackup) {
+        const now = new Date()
+        const pad = (n: number) => String(n).padStart(2, '0')
+        const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
+        const backupFileName = `player_docs_backup_${dateStr}.db`
+        const backupPath = path.join(projectDirCache, backupFileName)
+        
+        // Check if current DB exists before backing up
+        try {
+          await fs.access(currentDbPath)
+          await fs.copyFile(currentDbPath, backupPath)
+        } catch (e) {
+          // Current DB doesn't exist, that's okay
+        }
+      }
+      
+      // Step 7: Delete current player_docs.db and copy selected file
+      try {
+        await fs.access(currentDbPath)
+        await fs.unlink(currentDbPath)
+      } catch (e) {
+        // File doesn't exist, that's okay
+      }
+      
+      // Copy the selected backup file to the project directory and rename to player_docs.db
+      await fs.copyFile(backupFilePath, currentDbPath)
+      
+      return { ok: true }
+    } catch (error) {
+      throw new Error(`Failed to import database: ${error}`)
+    }
+  })
+
   // Delete an object and cascade: children, tag_links, orphan link_tags
   ipcMain.handle('gamedocs:delete-object-cascade', async (_evt, objectId: string) => {
     if (!projectDirCache) throw new Error('No project directory configured')
