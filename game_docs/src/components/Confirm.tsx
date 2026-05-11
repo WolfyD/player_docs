@@ -5,6 +5,8 @@ export type ConfirmOptions = {
   title?: string
   message: string
   variant?: ConfirmVariant
+  posLabel?: string
+  negLabel?: string
   icon?: React.ReactNode
 }
 
@@ -33,8 +35,12 @@ export const ConfirmProvider: React.FC<{ children?: React.ReactNode }> = ({ chil
 
   const labels = useMemo(() => {
     const v = (pending?.opts.variant || 'ok-cancel') as ConfirmVariant
-    return v === 'yes-no' ? { pos: 'Yes', neg: 'No' } : { pos: 'OK', neg: 'Cancel' }
-  }, [pending?.opts.variant])
+    const base = v === 'yes-no' ? { pos: 'Yes', neg: 'No' } : { pos: 'OK', neg: 'Cancel' }
+    return {
+      pos: pending?.opts.posLabel || base.pos,
+      neg: pending?.opts.negLabel || base.neg,
+    }
+  }, [pending?.opts.negLabel, pending?.opts.posLabel, pending?.opts.variant])
 
   useEffect(() => {
     if (!pending) return

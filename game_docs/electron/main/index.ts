@@ -109,6 +109,148 @@ function generateTagId(): string {
   return 'tag_' + crypto.randomUUID().replace(/-/g, '').slice(0, 8)
 }
 
+function generatePrefixedId(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+}
+
+const DEFAULT_TYPE_DEFS = [
+  { id: 'type_other', name: 'Other', icon: 'ri-file-list-3-line', isProtected: true, tags: [] as string[] },
+  { id: 'type_place', name: 'Place', icon: 'ri-map-pin-line', isProtected: false, tags: ['location'] },
+  { id: 'type_person', name: 'Person', icon: 'ri-user-line', isProtected: false, tags: [] as string[] },
+  { id: 'type_lore', name: 'Lore', icon: 'ri-book-open-line', isProtected: false, tags: [] as string[] },
+]
+
+type DbTypeRow = {
+  id: string
+  name: string
+  icon: string
+  is_protected: number
+}
+
+function normalizeTagName(tag: string): string {
+  return String(tag || '').trim().toLowerCase()
+}
+
+function findTypeByValue(db: any, value: string | null | undefined): DbTypeRow | undefined {
+  const raw = String(value || '').trim()
+  if (!raw) return undefined
+  return db.prepare(`
+    SELECT id, name, icon, is_protected
+    FROM types
+    WHERE deleted_at IS NULL
+      AND (id = ? OR lower(name) = lower(?))
+    LIMIT 1
+  `).get(raw, raw) as DbTypeRow | undefined
+}
+
+function getOtherType(db: any): DbTypeRow {
+  const row = db.prepare(`
+    SELECT id, name, icon, is_protected
+    FROM types
+    WHERE deleted_at IS NULL AND lower(name) = 'other'
+    ORDER BY is_protected DESC, created_at ASC
+    LIMIT 1
+  `).get() as DbTypeRow | undefined
+  if (!row) {
+    throw new Error('Required type "Other" is missing')
+  }
+  return row
+}
+
+function resolveTypeOrOther(db: any, value: string | null | undefined): DbTypeRow {
+  return findTypeByValue(db, value) || getOtherType(db)
+}
+
+function upsertTypeTagsByNames(db: any, typeId: string, names: string[], nowIso: string): void {
+  const normalized = Array.from(new Set(names.map(normalizeTagName).filter(Boolean)))
+  const existingRows = db.prepare(`
+    SELECT ttc.type_tag_id AS tag_id, tt.name AS name
+    FROM type_tag_connections ttc
+    JOIN type_tags tt ON tt.id = ttc.type_tag_id
+    WHERE ttc.type_id = ? AND ttc.deleted_at IS NULL AND tt.deleted_at IS NULL
+  `).all(typeId) as Array<{ tag_id: string; name: string }>
+  const existingByName = new Map(existingRows.map(r => [normalizeTagName(r.name), r]))
+
+  // Remove stale tag links
+  for (const row of existingRows) {
+    if (!normalized.includes(normalizeTagName(row.name))) {
+      db.prepare('DELETE FROM type_tag_connections WHERE type_id = ? AND type_tag_id = ?').run(typeId, row.tag_id)
+    }
+  }
+
+  for (const tagName of normalized) {
+    let tag = db.prepare('SELECT id FROM type_tags WHERE lower(name) = lower(?) AND deleted_at IS NULL LIMIT 1')
+      .get(tagName) as { id: string } | undefined
+    if (!tag) {
+      tag = { id: generatePrefixedId('typetag') }
+      db.prepare(`
+        INSERT INTO type_tags (id, name, created_at, updated_at, deleted_at)
+        VALUES (?, ?, ?, ?, NULL)
+      `).run(tag.id, tagName, nowIso, nowIso)
+    }
+    db.prepare(`
+      INSERT OR IGNORE INTO type_tag_connections (type_id, type_tag_id, created_at, deleted_at)
+      VALUES (?, ?, ?, NULL)
+    `).run(typeId, tag.id, nowIso)
+  }
+}
+
+function listTypesForCampaign(db: any, gameId: string) {
+  const rows = db.prepare(`
+    SELECT
+      t.id,
+      t.name,
+      t.icon,
+      t.is_builtin,
+      t.is_protected,
+      CASE WHEN cht.type_id IS NULL THEN 0 ELSE 1 END AS is_hidden,
+      (
+        SELECT COUNT(1)
+        FROM objects o
+        WHERE o.game_id = ? AND o.type_id = t.id AND o.deleted_at IS NULL
+      ) AS usage_count
+    FROM types t
+    LEFT JOIN campaign_hidden_types cht ON cht.type_id = t.id AND cht.game_id = ?
+    WHERE t.deleted_at IS NULL
+    ORDER BY t.name COLLATE NOCASE ASC
+  `).all(gameId, gameId) as Array<{
+    id: string
+    name: string
+    icon: string
+    is_builtin: number
+    is_protected: number
+    is_hidden: number
+    usage_count: number
+  }>
+
+  const tags = db.prepare(`
+    SELECT
+      ttc.type_id AS type_id,
+      tt.id AS tag_id,
+      tt.name AS tag_name
+    FROM type_tag_connections ttc
+    JOIN type_tags tt ON tt.id = ttc.type_tag_id
+    WHERE ttc.deleted_at IS NULL AND tt.deleted_at IS NULL
+  `).all() as Array<{ type_id: string; tag_id: string; tag_name: string }>
+  const tagsByType = new Map<string, Array<{ id: string; name: string }>>()
+  for (const tag of tags) {
+    const list = tagsByType.get(tag.type_id) || []
+    list.push({ id: tag.tag_id, name: tag.tag_name })
+    tagsByType.set(tag.type_id, list)
+  }
+
+  return rows.map(r => ({
+    id: r.id,
+    name: r.name,
+    icon: r.icon,
+    isBuiltin: !!r.is_builtin,
+    isProtected: !!r.is_protected,
+    isHidden: !!r.is_hidden,
+    usageCount: Number(r.usage_count || 0),
+    tags: (tagsByType.get(r.id) || []).sort((a, b) => a.name.localeCompare(b.name)),
+  }))
+}
+
 // Utility function to validate window bounds against available screens
 function validateWindowBounds(savedBounds: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
   const { screen } = require('electron')
@@ -187,6 +329,13 @@ function escapeHtml(text: string): string {
 // Ensure runtime migrations for existing databases
 async function ensureMigrations(db: any) {
   try {
+    const now = new Date().toISOString()
+    const hadTypesTable = !!db.prepare(`
+      SELECT 1
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'types'
+      LIMIT 1
+    `).get()
     const cols = db.prepare('PRAGMA table_info(link_tags)').all() as Array<{ name: string }>
     const hasObjectId = cols.some(c => c.name === 'object_id')
     if (!hasObjectId) {
@@ -199,6 +348,171 @@ async function ensureMigrations(db: any) {
       db.prepare('ALTER TABLE objects ADD COLUMN locked INTEGER NOT NULL DEFAULT 0').run()
       // No backfill needed beyond default
     }
+    const hasTypeId = objCols.some(c => c.name === 'type_id')
+    if (!hasTypeId) {
+      db.prepare('ALTER TABLE objects ADD COLUMN type_id TEXT REFERENCES types(id)').run()
+    }
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS types (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        icon TEXT NOT NULL,
+        is_builtin INTEGER NOT NULL DEFAULT 0,
+        is_protected INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT DEFAULT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_types_name_ci ON types(lower(name)) WHERE deleted_at IS NULL;
+
+      CREATE TABLE IF NOT EXISTS type_tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT DEFAULT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_type_tags_name_ci ON type_tags(lower(name)) WHERE deleted_at IS NULL;
+
+      CREATE TABLE IF NOT EXISTS type_tag_connections (
+        type_id TEXT NOT NULL REFERENCES types(id),
+        type_tag_id TEXT NOT NULL REFERENCES type_tags(id),
+        created_at TEXT NOT NULL,
+        deleted_at TEXT DEFAULT NULL,
+        PRIMARY KEY (type_id, type_tag_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_type_tag_connections_tag ON type_tag_connections(type_tag_id);
+
+      CREATE TABLE IF NOT EXISTS campaign_hidden_types (
+        game_id TEXT NOT NULL REFERENCES games(id),
+        type_id TEXT NOT NULL REFERENCES types(id),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (game_id, type_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_campaign_hidden_types_type ON campaign_hidden_types(type_id);
+
+      CREATE TABLE IF NOT EXISTS attachments (
+        id TEXT PRIMARY KEY,
+        game_id TEXT NOT NULL REFERENCES games(id),
+        object_id TEXT REFERENCES objects(id),
+        tag_id TEXT REFERENCES link_tags(id),
+        file_path TEXT NOT NULL,
+        name TEXT,
+        mime TEXT,
+        ext TEXT,
+        is_main INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT DEFAULT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_attachments_object ON attachments(object_id);
+      CREATE INDEX IF NOT EXISTS idx_attachments_tag ON attachments(tag_id);
+      CREATE INDEX IF NOT EXISTS idx_attachments_game ON attachments(game_id);
+
+      CREATE TABLE IF NOT EXISTS templates (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        source TEXT NOT NULL,
+        style_css TEXT,
+        fields_json TEXT NOT NULL,
+        is_builtin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT DEFAULT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS template_instances (
+        id TEXT PRIMARY KEY,
+        object_id TEXT NOT NULL REFERENCES objects(id),
+        template_id TEXT NOT NULL REFERENCES templates(id),
+        values_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT DEFAULT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_template_instances_object ON template_instances(object_id);
+      CREATE INDEX IF NOT EXISTS idx_template_instances_template ON template_instances(template_id);
+    `)
+
+    const hasOtherType = !!db.prepare(`
+      SELECT 1
+      FROM types
+      WHERE deleted_at IS NULL AND lower(name) = 'other'
+      LIMIT 1
+    `).get()
+    const shouldReloadDefaultTypes = !hadTypesTable || !hasOtherType
+
+    // Reload default types ONLY when table was missing or "Other" is missing.
+    if (shouldReloadDefaultTypes) {
+      for (const def of DEFAULT_TYPE_DEFS) {
+        const existing = db.prepare(`
+          SELECT id, name FROM types
+          WHERE deleted_at IS NULL
+            AND (id = ? OR lower(name) = lower(?))
+          LIMIT 1
+        `).get(def.id, def.name) as { id: string; name: string } | undefined
+        if (existing) {
+          db.prepare(`
+            UPDATE types
+            SET icon = ?, is_builtin = 1, is_protected = ?, updated_at = ?, deleted_at = NULL
+            WHERE id = ?
+          `).run(def.icon, def.isProtected ? 1 : 0, now, existing.id)
+        } else {
+          db.prepare(`
+            INSERT INTO types (id, name, icon, is_builtin, is_protected, created_at, updated_at, deleted_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?, NULL)
+          `).run(def.id, def.name, def.icon, def.isProtected ? 1 : 0, now, now)
+        }
+      }
+
+      // Ensure default tags/connections when defaults were reloaded.
+      for (const def of DEFAULT_TYPE_DEFS) {
+        if (!def.tags.length) continue
+        const typeRow = findTypeByValue(db, def.id) || findTypeByValue(db, def.name)
+        if (!typeRow) continue
+        for (const rawTag of def.tags) {
+          const tagName = normalizeTagName(rawTag)
+          if (!tagName) continue
+          let tag = db.prepare('SELECT id FROM type_tags WHERE lower(name) = lower(?) AND deleted_at IS NULL LIMIT 1')
+            .get(tagName) as { id: string } | undefined
+          if (!tag) {
+            const tagId = generatePrefixedId('typetag')
+            db.prepare(`
+              INSERT INTO type_tags (id, name, created_at, updated_at, deleted_at)
+              VALUES (?, ?, ?, ?, NULL)
+            `).run(tagId, tagName, now, now)
+            tag = { id: tagId }
+          }
+          db.prepare(`
+            INSERT OR IGNORE INTO type_tag_connections (type_id, type_tag_id, created_at, deleted_at)
+            VALUES (?, ?, ?, NULL)
+          `).run(typeRow.id, tag.id, now)
+        }
+      }
+    }
+
+    // Backfill object type_id and normalize type labels.
+    const objects = db.prepare('SELECT id, type, type_id FROM objects').all() as Array<{ id: string; type: string | null; type_id: string | null }>
+    for (const obj of objects) {
+      let resolved = obj.type_id ? findTypeByValue(db, obj.type_id) : undefined
+      if (!resolved) resolved = findTypeByValue(db, obj.type || '')
+      if (!resolved) {
+        const name = String(obj.type || '').trim()
+        if (name) {
+          const createdId = generatePrefixedId('type')
+          db.prepare(`
+            INSERT INTO types (id, name, icon, is_builtin, is_protected, created_at, updated_at, deleted_at)
+            VALUES (?, ?, ?, 0, 0, ?, ?, NULL)
+          `).run(createdId, name, 'ri-price-tag-3-line', now, now)
+          resolved = db.prepare('SELECT id, name, icon, is_protected FROM types WHERE id = ?')
+            .get(createdId) as DbTypeRow | undefined
+        }
+      }
+      if (!resolved) resolved = getOtherType(db)
+      db.prepare('UPDATE objects SET type_id = ?, type = ? WHERE id = ?').run(resolved.id, resolved.name, obj.id)
+    }
+
     // Backfill owner object for legacy rows where missing
     const legacy = db.prepare('SELECT id FROM link_tags WHERE object_id IS NULL AND deleted_at IS NULL').all() as Array<{ id: string }>
     for (const t of legacy) {
@@ -464,9 +778,20 @@ function cleanupLinkData(db: any, gameId?: string) {
   const result2 = db.prepare('DELETE FROM tag_links WHERE object_id NOT IN (SELECT id FROM objects WHERE deleted_at IS NULL)').run()
   removedLinks += result2.changes || 0
   
-  // Remove floating link_tags with no tag_links
-  const result3 = db.prepare('DELETE FROM link_tags WHERE deleted_at IS NULL AND id NOT IN (SELECT DISTINCT tag_id FROM tag_links)').run()
-  removedTags += result3.changes || 0
+  // Remove floating link_tags with no tag_links.
+  // Important: attachments.tag_id references link_tags(id), so attachments must be removed first.
+  const floatingTags = db.prepare(
+    'SELECT id FROM link_tags WHERE deleted_at IS NULL AND id NOT IN (SELECT DISTINCT tag_id FROM tag_links)'
+  ).all() as Array<{ id: string }>
+  if (floatingTags.length > 0) {
+    const stmtDelTagAttachments = db.prepare('DELETE FROM attachments WHERE tag_id = ?')
+    const stmtDelFloatingTag = db.prepare('DELETE FROM link_tags WHERE id = ?')
+    for (const tag of floatingTags) {
+      stmtDelTagAttachments.run(tag.id)
+      stmtDelFloatingTag.run(tag.id)
+      removedTags++
+    }
+  }
   
   // Remove link_tags whose owner object no longer references the token in its description
   const tags = db.prepare('SELECT id, object_id FROM link_tags WHERE deleted_at IS NULL').all() as Array<{ id: string; object_id: string | null }>
@@ -476,6 +801,7 @@ function cleanupLinkData(db: any, gameId?: string) {
     const text = (obj?.description || '') as string
     if (!text.includes(`|${t.id}]`)) {
       db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(t.id)
+      db.prepare('DELETE FROM attachments WHERE tag_id = ?').run(t.id)
       db.prepare('DELETE FROM link_tags WHERE id = ?').run(t.id)
       removedTags++
     }
@@ -529,6 +855,7 @@ function cleanupTagsForObject(db: any, objectId: string) {
   for (const t of tags) {
     if (!present.has(t.id)) {
       db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(t.id)
+      db.prepare('DELETE FROM attachments WHERE tag_id = ?').run(t.id)
       db.prepare('DELETE FROM link_tags WHERE id = ?').run(t.id)
     }
   }
@@ -793,7 +1120,9 @@ async function createWindow() {
   if (VITE_DEV_SERVER_URL) { // #298
     console.log('[Main] Loading dev server URL:', VITE_DEV_SERVER_URL)
     win.loadURL(VITE_DEV_SERVER_URL)
-    win.webContents.openDevTools()
+    if (process.env.PLAYERDOCS_OPEN_DEVTOOLS === '1') {
+      win.webContents.openDevTools()
+    }
   } else {
     console.log('[Main] Loading index.html from:', indexHtml)
     win.loadFile(indexHtml)
@@ -971,9 +1300,10 @@ app.whenReady().then(async () => {
 
     // Create root object for this campaign
     const rootId = generateObjectId(safeName)
+    const otherType = getOtherType(db)
     db.prepare(
-      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)'
-    ).run(rootId, id, safeName, 'Other', '', now, now)
+      'INSERT INTO objects (id, game_id, name, type, type_id, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)'
+    ).run(rootId, id, safeName, otherType.name, otherType.id, '', now, now)
     
     // If this is the example campaign, populate it with content immediately
     if (safeName === 'Demo Campaign') {
@@ -1021,19 +1351,26 @@ app.whenReady().then(async () => {
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     try { ensureMigrations(db); cleanupLinkData(db, gameId); cleanupMissingImages(db, gameId) } catch {}
-    let row = db.prepare('SELECT id, name, type FROM objects WHERE game_id = ? AND parent_id IS NULL AND deleted_at IS NULL LIMIT 1').get(gameId)
+    let row = db.prepare(`
+      SELECT o.id, o.name, o.type, o.type_id, COALESCE(t.icon, 'ri-price-tag-3-line') AS type_icon
+      FROM objects o
+      LEFT JOIN types t ON t.id = o.type_id
+      WHERE o.game_id = ? AND o.parent_id IS NULL AND o.deleted_at IS NULL
+      LIMIT 1
+    `).get(gameId)
     if (!row) {
       // Backfill: create a root object for existing campaigns created before root insertion logic
       const game = db.prepare('SELECT name FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId) as { name?: string } | undefined
       const now = new Date().toISOString()
       const rootId = generateObjectId(game?.name || 'Root')
+      const otherType = getOtherType(db)
       db.prepare(
-        'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)'
-      ).run(rootId, gameId, game?.name || 'Root', 'Other', '', now, now)
-      row = { id: rootId, name: game?.name || 'Root', type: 'Other' }
+        'INSERT INTO objects (id, game_id, name, type, type_id, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)'
+      ).run(rootId, gameId, game?.name || 'Root', otherType.name, otherType.id, '', now, now)
+      row = { id: rootId, name: game?.name || 'Root', type: otherType.name, type_id: otherType.id, type_icon: otherType.icon }
     }
     db.close()
-    return row as { id: string; name: string; type: string }
+    return row as { id: string; name: string; type: string; type_id: string; type_icon: string }
   })
 
   // Get the parent of an object
@@ -1059,12 +1396,38 @@ app.whenReady().then(async () => {
     try { ensureMigrations(db); cleanupLinkData(db, gameId); cleanupMissingImages(db, gameId) } catch {}
     let rows: any[]
     if (parentId) {
-      rows = db.prepare('SELECT id, name, type FROM objects WHERE game_id = ? AND parent_id = ? AND deleted_at IS NULL ORDER BY name COLLATE NOCASE').all(gameId, parentId)
+      rows = db.prepare(`
+        SELECT
+          o.id,
+          o.name,
+          o.type,
+          o.type_id,
+          COALESCE(t.icon, 'ri-price-tag-3-line') AS type_icon,
+          CASE WHEN cht.type_id IS NULL THEN 0 ELSE 1 END AS type_hidden
+        FROM objects o
+        LEFT JOIN types t ON t.id = o.type_id
+        LEFT JOIN campaign_hidden_types cht ON cht.game_id = o.game_id AND cht.type_id = o.type_id
+        WHERE o.game_id = ? AND o.parent_id = ? AND o.deleted_at IS NULL
+        ORDER BY o.name COLLATE NOCASE
+      `).all(gameId, parentId)
     } else {
-      rows = db.prepare('SELECT id, name, type FROM objects WHERE game_id = ? AND parent_id IS NULL AND deleted_at IS NULL ORDER BY name COLLATE NOCASE').all(gameId)
+      rows = db.prepare(`
+        SELECT
+          o.id,
+          o.name,
+          o.type,
+          o.type_id,
+          COALESCE(t.icon, 'ri-price-tag-3-line') AS type_icon,
+          CASE WHEN cht.type_id IS NULL THEN 0 ELSE 1 END AS type_hidden
+        FROM objects o
+        LEFT JOIN types t ON t.id = o.type_id
+        LEFT JOIN campaign_hidden_types cht ON cht.game_id = o.game_id AND cht.type_id = o.type_id
+        WHERE o.game_id = ? AND o.parent_id IS NULL AND o.deleted_at IS NULL
+        ORDER BY o.name COLLATE NOCASE
+      `).all(gameId)
     }
     db.close()
-    return rows as Array<{ id: string; name: string; type: string }>
+    return rows as Array<{ id: string; name: string; type: string; type_id: string; type_icon: string; type_hidden: number }>
   })
 
   ipcMain.handle('gamedocs:get-latest-child', async (_evt, gameId: string, parentId: string | null) => {
@@ -1088,9 +1451,10 @@ app.whenReady().then(async () => {
 
     const now = new Date().toISOString()
     const objectId = generateObjectId(name)
+    const resolvedType = resolveTypeOrOther(db, type)
     db.prepare(
-      'INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)'
-    ).run(objectId, gameId, name, type || null, parentId, '', now, now)
+      'INSERT INTO objects (id, game_id, name, type, type_id, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)'
+    ).run(objectId, gameId, name, resolvedType.name, resolvedType.id, parentId, '', now, now)
 
     const tagId = generateTagId()
     db.prepare('INSERT INTO link_tags (id, game_id, object_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
@@ -1115,11 +1479,9 @@ app.whenReady().then(async () => {
     const exists = db.prepare('SELECT 1 FROM objects WHERE game_id = ? AND parent_id = ? AND LOWER(name) = LOWER(?) AND deleted_at IS NULL LIMIT 1').get(gameId, parentId, name)
     if (exists) { db.close(); throw new Error('A category with this name already exists here.') }
     const newId = generateObjectId(name)
-    const allowed = new Set(['Place', 'Person', 'Lore', 'Other'])
-    const t = (objType || 'Other')
-    const safeType = allowed.has(t) ? t : 'Other'
-    db.prepare('INSERT INTO objects (id, game_id, name, type, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(newId, gameId, name, safeType, parentId, safeDescription, now, now, null)
+    const resolvedType = resolveTypeOrOther(db, objType || 'Other')
+    db.prepare('INSERT INTO objects (id, game_id, name, type, type_id, parent_id, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(newId, gameId, name, resolvedType.name, resolvedType.id, parentId, safeDescription, now, now, null)
     db.close()
     return { id: newId, name }
   })
@@ -1179,6 +1541,162 @@ app.whenReady().then(async () => {
       db.prepare('INSERT INTO settings (id, setting_name, setting_value, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
         .run(id, key, text, now, now)
     }
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:list-types', async (_evt, gameId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = listTypesForCampaign(db, gameId)
+    db.close()
+    return rows
+  })
+
+  ipcMain.handle('gamedocs:list-type-tags', async (_evt, query: string = '') => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const q = String(query || '').trim()
+    const rows = q
+      ? db.prepare(`
+          SELECT id, name
+          FROM type_tags
+          WHERE deleted_at IS NULL AND lower(name) LIKE lower(?)
+          ORDER BY name COLLATE NOCASE ASC
+          LIMIT 30
+        `).all(`%${q}%`)
+      : db.prepare('SELECT id, name FROM type_tags WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE ASC LIMIT 30').all()
+    db.close()
+    return rows as Array<{ id: string; name: string }>
+  })
+
+  ipcMain.handle('gamedocs:create-type', async (_evt, payload: { name: string; icon?: string; tags?: string[] }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    const name = String(payload?.name || '').trim()
+    if (!name) { db.close(); throw new Error('Type name is required') }
+    const exists = db.prepare('SELECT id FROM types WHERE lower(name) = lower(?) AND deleted_at IS NULL').get(name) as { id: string } | undefined
+    if (exists) { db.close(); throw new Error('A type with this name already exists') }
+    const id = generatePrefixedId('type')
+    const icon = String(payload?.icon || 'ri-price-tag-3-line').trim() || 'ri-price-tag-3-line'
+    db.prepare(`
+      INSERT INTO types (id, name, icon, is_builtin, is_protected, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, 0, 0, ?, ?, NULL)
+    `).run(id, name, icon, now, now)
+    upsertTypeTagsByNames(db, id, Array.isArray(payload?.tags) ? payload.tags : [], now)
+    const row = db.prepare('SELECT id, name, icon FROM types WHERE id = ?').get(id)
+    db.close()
+    return row as { id: string; name: string; icon: string }
+  })
+
+  ipcMain.handle('gamedocs:update-type', async (_evt, typeId: string, payload: { name: string; icon?: string; tags?: string[] }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    const row = db.prepare('SELECT id, is_protected FROM types WHERE id = ? AND deleted_at IS NULL').get(typeId) as { id: string; is_protected: number } | undefined
+    if (!row) { db.close(); throw new Error('Type not found') }
+    const name = String(payload?.name || '').trim()
+    if (!name) { db.close(); throw new Error('Type name is required') }
+    const exists = db.prepare('SELECT id FROM types WHERE lower(name) = lower(?) AND deleted_at IS NULL AND id <> ?').get(name, typeId) as { id: string } | undefined
+    if (exists) { db.close(); throw new Error('A type with this name already exists') }
+    const icon = String(payload?.icon || 'ri-price-tag-3-line').trim() || 'ri-price-tag-3-line'
+    db.prepare('UPDATE types SET name = ?, icon = ?, updated_at = ? WHERE id = ?').run(name, icon, now, typeId)
+    db.prepare('UPDATE objects SET type = ?, updated_at = ? WHERE type_id = ? AND deleted_at IS NULL').run(name, now, typeId)
+    upsertTypeTagsByNames(db, typeId, Array.isArray(payload?.tags) ? payload.tags : [], now)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:set-type-hidden', async (_evt, gameId: string, typeId: string, hidden: boolean) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const typeRow = db.prepare('SELECT id, is_protected FROM types WHERE id = ? AND deleted_at IS NULL').get(typeId) as { id: string; is_protected: number } | undefined
+    if (!typeRow) { db.close(); throw new Error('Type not found') }
+    if (typeRow.is_protected && hidden) { db.close(); throw new Error('Protected type cannot be hidden') }
+    if (hidden) {
+      db.prepare('INSERT OR IGNORE INTO campaign_hidden_types (game_id, type_id, created_at) VALUES (?, ?, ?)').run(gameId, typeId, new Date().toISOString())
+    } else {
+      db.prepare('DELETE FROM campaign_hidden_types WHERE game_id = ? AND type_id = ?').run(gameId, typeId)
+    }
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:bulk-reassign-type', async (_evt, gameId: string, fromTypeId: string, toTypeId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    if (fromTypeId === toTypeId) return 0
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const toType = findTypeByValue(db, toTypeId)
+    if (!toType) { db.close(); throw new Error('Destination type not found') }
+    const now = new Date().toISOString()
+    const res = db.prepare(`
+      UPDATE objects
+      SET type_id = ?, type = ?, updated_at = ?
+      WHERE game_id = ? AND type_id = ? AND deleted_at IS NULL
+    `).run(toType.id, toType.name, now, gameId, fromTypeId)
+    db.close()
+    return Number(res.changes || 0)
+  })
+
+  ipcMain.handle('gamedocs:list-objects-by-type', async (_evt, gameId: string, typeId: string, limit: number = 200) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = db.prepare(`
+      SELECT id, name
+      FROM objects
+      WHERE game_id = ? AND type_id = ? AND deleted_at IS NULL
+      ORDER BY name COLLATE NOCASE ASC
+      LIMIT ?
+    `).all(gameId, typeId, Math.max(1, Math.min(1000, Number(limit) || 200)))
+    db.close()
+    return rows as Array<{ id: string; name: string }>
+  })
+
+  ipcMain.handle('gamedocs:delete-type', async (_evt, typeId: string, replacementTypeId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    if (typeId === replacementTypeId) throw new Error('Replacement type must be different')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const row = db.prepare('SELECT id, name, is_protected FROM types WHERE id = ? AND deleted_at IS NULL').get(typeId) as { id: string; name: string; is_protected: number } | undefined
+    if (!row) { db.close(); throw new Error('Type not found') }
+    if (row.is_protected) { db.close(); throw new Error('Protected type cannot be removed') }
+    const replacement = findTypeByValue(db, replacementTypeId)
+    if (!replacement) { db.close(); throw new Error('Replacement type not found') }
+    const now = new Date().toISOString()
+    try { db.prepare('BEGIN IMMEDIATE').run() } catch {}
+    db.prepare(`
+      UPDATE objects
+      SET type_id = ?, type = ?, updated_at = ?
+      WHERE type_id = ? AND deleted_at IS NULL
+    `).run(replacement.id, replacement.name, now, typeId)
+    db.prepare('DELETE FROM campaign_hidden_types WHERE type_id = ?').run(typeId)
+    db.prepare('DELETE FROM type_tag_connections WHERE type_id = ?').run(typeId)
+    db.prepare('UPDATE types SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now, now, typeId)
+    try { db.prepare('COMMIT').run() } catch { try { db.prepare('ROLLBACK').run() } catch {} }
     db.close()
     return true
   })
@@ -1284,6 +1802,424 @@ app.whenReady().then(async () => {
     return { path: res.filePaths[0] }
   })
 
+  const mimeByExt: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.json': 'application/json',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.zip': 'application/zip',
+  }
+  const isImageExt = (ext: string) => ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)
+  const getMimeForExt = (ext: string) => mimeByExt[ext] || 'application/octet-stream'
+
+  ipcMain.handle('gamedocs:choose-attachment-file', async () => {
+    const res = await dialog.showOpenDialog({ title: 'Choose file', properties: ['openFile'] })
+    if (res.canceled || res.filePaths.length === 0) return { path: null }
+    return { path: res.filePaths[0] }
+  })
+
+  ipcMain.handle('gamedocs:open-file-default', async (_evt, filePath: string) => {
+    try {
+      const out = await shell.openPath(filePath)
+      return out === ''
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('gamedocs:open-pdf-window', async (_evt, filePath: string) => {
+    try {
+      const pdfUrl = pathToFileURL(filePath).href
+      const viewer = new BrowserWindow({
+        title: path.basename(filePath),
+        width: 1000,
+        height: 760,
+        backgroundColor: '#111111',
+        webPreferences: { sandbox: false, contextIsolation: true, plugins: true }
+      })
+      await viewer.loadURL(pdfUrl)
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('gamedocs:add-attachment', async (_evt, opts: { objectId?: string | null; tagId?: string | null; sourcePath?: string; name?: string | null; isMain?: boolean; ownerObjectId?: string | null; gameId?: string | null; dataBase64?: string; fileName?: string; mimeHint?: string }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const objectId = opts.objectId || null
+    const tagId = opts.tagId || null
+    if (!objectId && !tagId) throw new Error('Either objectId or tagId is required')
+    if (objectId && tagId) throw new Error('Only one attachment target is allowed')
+    if (!opts.sourcePath && !opts.dataBase64) throw new Error('Either sourcePath or dataBase64 is required')
+
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+
+    let gameId = ''
+    if (objectId) {
+      const obj = db.prepare('SELECT game_id FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { game_id?: string } | undefined
+      if (!obj?.game_id) { db.close(); throw new Error('Object not found') }
+      gameId = obj.game_id
+    } else if (tagId) {
+      let tag = db.prepare('SELECT game_id, id FROM link_tags WHERE id = ? AND deleted_at IS NULL').get(tagId) as { game_id?: string; id?: string } | undefined
+      if ((!tag?.id || !tag.game_id) && opts.ownerObjectId && opts.gameId) {
+        const owner = db.prepare('SELECT id FROM objects WHERE id = ? AND game_id = ? AND deleted_at IS NULL').get(opts.ownerObjectId, opts.gameId) as { id?: string } | undefined
+        if (owner?.id) {
+          const now = new Date().toISOString()
+          db.prepare('INSERT OR IGNORE INTO link_tags (id, game_id, object_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL)')
+            .run(tagId, opts.gameId, opts.ownerObjectId, now, now)
+          tag = db.prepare('SELECT game_id, id FROM link_tags WHERE id = ? AND deleted_at IS NULL').get(tagId) as { game_id?: string; id?: string } | undefined
+        }
+      }
+      if (!tag?.id || !tag.game_id) { db.close(); throw new Error('Tag not found') }
+      const targetsCount = db.prepare('SELECT COUNT(1) AS c FROM tag_links WHERE tag_id = ?').get(tagId) as { c: number }
+      if ((targetsCount?.c || 0) > 0) { db.close(); throw new Error('Cannot add word attachment to linked word') }
+      gameId = tag.game_id
+    }
+
+    const game = db.prepare('SELECT name FROM games WHERE id = ? AND deleted_at IS NULL').get(gameId) as { name?: string } | undefined
+    const campaignFolder = game?.name || 'UnknownCampaign'
+    const sourcePath = String(opts.sourcePath || '')
+    const fallbackName = String(opts.fileName || opts.name || 'dropped-file')
+    const ext = ((sourcePath ? path.extname(sourcePath) : path.extname(fallbackName)) || '').toLowerCase()
+    const mime = String(opts.mimeHint || getMimeForExt(ext))
+    const now = new Date().toISOString()
+    const id = crypto.randomUUID().replace(/-/g, '')
+    const baseDir = path.join(projectDirCache!, 'games', campaignFolder, 'attachments')
+    await fs.mkdir(baseDir, { recursive: true })
+    const destName = `${id}${ext || ''}`
+    const destPath = path.join(baseDir, destName)
+    const srcBuf = sourcePath
+      ? await fs.readFile(sourcePath)
+      : Buffer.from(String(opts.dataBase64 || ''), 'base64')
+    await fs.writeFile(destPath, srcBuf)
+
+    const isMain = objectId ? (opts.isMain ? 1 : 0) : 0
+    if (objectId && isMain) {
+      db.prepare('UPDATE attachments SET is_main = 0 WHERE object_id = ? AND deleted_at IS NULL').run(objectId)
+    }
+
+    db.prepare(`
+      INSERT INTO attachments (id, game_id, object_id, tag_id, file_path, name, mime, ext, is_main, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    `).run(id, gameId, objectId, tagId, destPath, (opts.name || (sourcePath ? path.basename(sourcePath) : fallbackName)), mime, ext, isMain, now, now)
+    const row = db.prepare('SELECT id, game_id, object_id, tag_id, file_path, name, mime, ext, is_main FROM attachments WHERE id = ?').get(id) as any
+    db.close()
+    return row
+  })
+
+  ipcMain.handle('gamedocs:list-object-attachments', async (_evt, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = db.prepare('SELECT id, game_id, object_id, tag_id, file_path, name, mime, ext, is_main FROM attachments WHERE object_id = ? AND deleted_at IS NULL ORDER BY created_at ASC').all(objectId) as any[]
+    db.close()
+    return rows
+  })
+
+  ipcMain.handle('gamedocs:list-tag-attachments', async (_evt, tagId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = db.prepare('SELECT id, game_id, object_id, tag_id, file_path, name, mime, ext, is_main FROM attachments WHERE tag_id = ? AND deleted_at IS NULL ORDER BY created_at ASC').all(tagId) as any[]
+    db.close()
+    return rows
+  })
+
+  ipcMain.handle('gamedocs:set-main-attachment', async (_evt, objectId: string, attachmentId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    db.prepare('UPDATE attachments SET is_main = 0 WHERE object_id = ? AND deleted_at IS NULL').run(objectId)
+    db.prepare('UPDATE attachments SET is_main = 1, updated_at = ? WHERE id = ? AND object_id = ? AND deleted_at IS NULL').run(new Date().toISOString(), attachmentId, objectId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:delete-attachment', async (_evt, attachmentId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const row = db.prepare('SELECT file_path FROM attachments WHERE id = ?').get(attachmentId) as { file_path?: string } | undefined
+    db.prepare('DELETE FROM attachments WHERE id = ?').run(attachmentId)
+    db.close()
+    try { if (row?.file_path) await fs.unlink(row.file_path).catch(() => {}) } catch {}
+    return true
+  })
+
+  ipcMain.handle('gamedocs:move-tag-attachments-to-object', async (_evt, tagId: string, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    db.prepare('UPDATE attachments SET object_id = ?, tag_id = NULL, updated_at = ? WHERE tag_id = ? AND deleted_at IS NULL').run(objectId, new Date().toISOString(), tagId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:remove-tag-attachments', async (_evt, tagId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = db.prepare('SELECT file_path FROM attachments WHERE tag_id = ? AND deleted_at IS NULL').all(tagId) as Array<{ file_path?: string }>
+    db.prepare('DELETE FROM attachments WHERE tag_id = ?').run(tagId)
+    db.close()
+    for (const r of rows) {
+      try { if (r?.file_path) await fs.unlink(r.file_path).catch(() => {}) } catch {}
+    }
+    return true
+  })
+
+  const DEFAULT_TEMPLATES = [
+    {
+      id: 'tpl_builtin_dnd_stat_block',
+      name: 'DnD Stat Block',
+      source: `<div class="stat-block-header">
+  {%text:\"Title\"}
+  {%text:\"Subtitle\"}
+</div>
+<div class="stat-block-body">
+  {%textarea:\"Properties\"}
+  {%textarea:\"Actions\"}
+  {%image:\"Image\"}
+</div>`,
+      style_css: `.stat-block-card{padding:12px;border:2px solid #8b5a2b;border-radius:10px;background:#f4deb0;color:#2f1f12}
+.stat-block-header{display:flex;flex-direction:column;gap:6px;border-bottom:1px solid #8b5a2b;padding-bottom:8px;margin-bottom:10px}
+.stat-block-title{font-size:20px;font-weight:700;line-height:1.15}
+.stat-block-subtitle{opacity:.9;font-style:italic}
+.stat-block-body{display:flex;gap:12px;align-items:flex-start}
+.stat-block-left{flex:1;display:flex;flex-direction:column;gap:10px}
+.stat-block-right{width:220px;display:flex;justify-content:center}
+.stat-block-image{width:100%;max-width:220px;max-height:220px;object-fit:contain;border:1px solid #8b5a2b;border-radius:6px;background:rgba(255,255,255,.15)}
+.stat-block-properties,.stat-block-actions{white-space:pre-wrap;border-top:1px solid #8b5a2b;padding-top:8px}`,
+      fields_json: JSON.stringify({
+        version: 3,
+        cardClass: 'stat-block-card',
+        fields: [
+          { id: 'stat_header', type: 'div', label: 'Header', className: 'stat-block-header', parentId: null, order: 0 },
+          { id: 'stat_title', type: 'text', label: 'Title', className: 'stat-block-title', parentId: 'stat_header', order: 0 },
+          { id: 'stat_subtitle', type: 'text', label: 'Subtitle', className: 'stat-block-subtitle', parentId: 'stat_header', order: 1 },
+          { id: 'stat_body', type: 'div', label: 'Body', className: 'stat-block-body', parentId: null, order: 1 },
+          { id: 'stat_left', type: 'div', label: 'Left column', className: 'stat-block-left', parentId: 'stat_body', order: 0 },
+          { id: 'stat_props', type: 'textarea', label: 'Properties', className: 'stat-block-properties', parentId: 'stat_left', order: 0 },
+          { id: 'stat_actions', type: 'textarea', label: 'Actions', className: 'stat-block-actions', parentId: 'stat_left', order: 1 },
+          { id: 'stat_right', type: 'div', label: 'Right column', className: 'stat-block-right', parentId: 'stat_body', order: 1 },
+          { id: 'stat_image', type: 'image', label: 'Image', className: 'stat-block-image', parentId: 'stat_right', order: 0 }
+        ]
+      })
+    },
+    {
+      id: 'tpl_builtin_callout_card',
+      name: 'Callout',
+      source: `<div class="callout-card">
+  <div class="callout-header">
+    {%image:\"Icon\"}
+    {%text:\"Title\"}
+  </div>
+  <div class="callout-body">
+    {%textarea:\"Message\"}
+  </div>
+  <div class="callout-footer">
+    {%text:\"Color\"}
+  </div>
+</div>`,
+      style_css: `.callout-card{padding:12px;border-radius:10px;border-left:4px solid var(--callout-accent,#6495ed);background:var(--callout-bg,rgba(100,149,237,.12))}
+.callout-header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.callout-icon{width:36px;height:36px;border-radius:50%;border:1px solid rgba(255,255,255,.25)}
+.callout-title{font-weight:700;font-size:16px}
+.callout-message{white-space:pre-wrap}
+.callout-color{font-family:monospace;opacity:.85}`,
+      fields_json: JSON.stringify({
+        version: 3,
+        cardClass: 'callout-card',
+        fields: [
+          { id: 'callout_header', type: 'div', label: 'Header', className: 'callout-header', parentId: null, order: 0 },
+          { id: 'callout_icon', type: 'image', label: 'Icon', className: 'callout-icon', parentId: 'callout_header', order: 0 },
+          { id: 'callout_title', type: 'text', label: 'Title', className: 'callout-title', parentId: 'callout_header', order: 1 },
+          { id: 'callout_body', type: 'div', label: 'Body', className: 'callout-body', parentId: null, order: 1 },
+          { id: 'callout_message', type: 'textarea', label: 'Message', className: 'callout-message', parentId: 'callout_body', order: 0 },
+          { id: 'callout_footer', type: 'div', label: 'Footer', className: 'callout-footer', parentId: null, order: 2 },
+          { id: 'callout_color', type: 'text', label: 'Color', className: 'callout-color', parentId: 'callout_footer', order: 0 }
+        ]
+      })
+    }
+  ]
+
+  ipcMain.handle('gamedocs:seed-default-templates', async () => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    for (const t of DEFAULT_TEMPLATES) {
+      db.prepare(`
+        INSERT OR IGNORE INTO templates (id, name, source, style_css, fields_json, is_builtin, created_at, updated_at, deleted_at)
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL)
+      `).run(t.id, t.name, t.source, t.style_css, t.fields_json, now, now)
+    }
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:list-templates', async () => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = db.prepare('SELECT id, name, source, style_css, fields_json, is_builtin FROM templates WHERE deleted_at IS NULL ORDER BY is_builtin DESC, name COLLATE NOCASE').all()
+    db.close()
+    return rows
+  })
+
+  ipcMain.handle('gamedocs:save-template', async (_evt, payload: { id?: string; name: string; source: string; style_css?: string | null; fields_json: string }) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    const id = payload.id || `tpl_${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`
+    const exists = db.prepare('SELECT id, is_builtin FROM templates WHERE id = ? AND deleted_at IS NULL').get(id) as { id?: string; is_builtin?: number } | undefined
+    if (exists?.id) {
+      db.prepare('UPDATE templates SET name = ?, source = ?, style_css = ?, fields_json = ?, updated_at = ? WHERE id = ?').run(payload.name, payload.source, payload.style_css || null, payload.fields_json, now, id)
+    } else {
+      db.prepare('INSERT INTO templates (id, name, source, style_css, fields_json, is_builtin, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL)').run(id, payload.name, payload.source, payload.style_css || null, payload.fields_json, now, now)
+    }
+    db.close()
+    return { id }
+  })
+
+  ipcMain.handle('gamedocs:delete-template', async (_evt, templateId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    db.prepare('UPDATE templates SET deleted_at = ?, updated_at = ? WHERE id = ? AND is_builtin = 0').run(new Date().toISOString(), new Date().toISOString(), templateId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:create-template-instance', async (_evt, objectId: string, templateId: string, valuesJson: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const now = new Date().toISOString()
+    const id = `ti_${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`
+    db.prepare('INSERT INTO template_instances (id, object_id, template_id, values_json, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, NULL)').run(id, objectId, templateId, valuesJson || '{}', now, now)
+    db.close()
+    return { id }
+  })
+
+  ipcMain.handle('gamedocs:list-template-instances', async (_evt, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = db.prepare(`
+      SELECT ti.id, ti.object_id, ti.template_id, ti.values_json, t.name as template_name, t.source as template_source, t.style_css as template_style, t.fields_json as template_fields
+      FROM template_instances ti
+      JOIN templates t ON t.id = ti.template_id
+      WHERE ti.object_id = ? AND ti.deleted_at IS NULL AND t.deleted_at IS NULL
+      ORDER BY ti.created_at ASC
+    `).all(objectId)
+    db.close()
+    return rows
+  })
+
+  ipcMain.handle('gamedocs:update-template-instance-values', async (_evt, instanceId: string, valuesJson: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    db.prepare('UPDATE template_instances SET values_json = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(valuesJson || '{}', new Date().toISOString(), instanceId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:delete-template-instance', async (_evt, instanceId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    db.prepare('DELETE FROM template_instances WHERE id = ?').run(instanceId)
+    db.close()
+    return true
+  })
+
+  ipcMain.handle('gamedocs:list-template-instances-all', async (_evt, gameId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const rows = db.prepare(`
+      SELECT
+        ti.id,
+        ti.object_id,
+        o.name as object_name,
+        ti.template_id,
+        t.name as template_name,
+        ti.values_json,
+        ti.updated_at
+      FROM template_instances ti
+      JOIN objects o ON o.id = ti.object_id
+      JOIN templates t ON t.id = ti.template_id
+      WHERE o.game_id = ? AND ti.deleted_at IS NULL AND o.deleted_at IS NULL AND t.deleted_at IS NULL
+      ORDER BY ti.updated_at DESC
+    `).all(gameId)
+    db.close()
+    return rows
+  })
+
+  ipcMain.handle('gamedocs:clone-template-instance-to-object', async (_evt, instanceId: string, objectId: string) => {
+    if (!projectDirCache) throw new Error('No project directory configured')
+    const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
+    const schemaSql = await fs.readFile(schemaPath, 'utf8')
+    const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
+    const src = db.prepare('SELECT template_id, values_json FROM template_instances WHERE id = ? AND deleted_at IS NULL').get(instanceId) as { template_id?: string; values_json?: string } | undefined
+    const obj = db.prepare('SELECT id FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId) as { id?: string } | undefined
+    if (!src?.template_id || !obj?.id) { db.close(); throw new Error('Invalid source instance or target object') }
+    const now = new Date().toISOString()
+    const id = `ti_${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`
+    db.prepare('INSERT INTO template_instances (id, object_id, template_id, values_json, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, NULL)')
+      .run(id, objectId, src.template_id, src.values_json || '{}', now, now)
+    db.close()
+    return { id }
+  })
+
   // Choose a font file (TTF/OTF/WOFF) - placeholder for future custom font loading
   ipcMain.handle('gamedocs:choose-font-file', async () => {
     const res = await dialog.showOpenDialog({ title: 'Choose font', properties: ['openFile'], filters: [{ name: 'Fonts', extensions: ['ttf', 'otf', 'woff', 'woff2'] }] })
@@ -1333,7 +2269,7 @@ app.whenReady().then(async () => {
     try {
       const buf = await fs.readFile(filePath)
       const ext = (path.extname(filePath) || '').toLowerCase()
-      const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : ext === '.png' ? 'image/png' : 'application/octet-stream'
+      const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : ext === '.png' ? 'image/png' : ext === '.pdf' ? 'application/pdf' : 'application/octet-stream'
       return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}` }
     } catch (e) {
       return { ok: false, dataUrl: null }
@@ -1409,7 +2345,7 @@ app.whenReady().then(async () => {
   })
 
   // Add image to object, copy file or download URL, create thumb, set default if requested
-  ipcMain.handle('gamedocs:add-image', async (_evt, objectId: string, opts: { name?: string | null; source: { type: 'file' | 'url'; value: string }; isDefault?: boolean }) => {
+  ipcMain.handle('gamedocs:add-image', async (_evt, objectId: string, opts: { name?: string | null; source: { type: 'file' | 'url' | 'data'; value: string }; isDefault?: boolean; mimeHint?: string }) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
@@ -1435,7 +2371,7 @@ app.whenReady().then(async () => {
       buffer = await (await import('node:fs/promises')).readFile(srcPath)
       const guess = path.extname(srcPath).toLowerCase()
       ext = guess && ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(guess) ? guess : '.png'
-    } else {
+    } else if (opts.source.type === 'url') {
       const urlStr = opts.source.value
       const res = await fetch(urlStr)
       if (!res.ok) { db.close(); throw new Error('Failed to download image') }
@@ -1443,6 +2379,14 @@ app.whenReady().then(async () => {
       buffer = Buffer.from(ab)
       const urlExt = path.extname(new URL(urlStr).pathname).toLowerCase()
       ext = urlExt && ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(urlExt) ? urlExt : '.png'
+    } else {
+      const mime = String(opts.mimeHint || '').toLowerCase()
+      const data = String(opts.source.value || '')
+      buffer = Buffer.from(data, 'base64')
+      ext = mime.includes('jpeg') || mime.includes('jpg') ? '.jpg'
+        : mime.includes('gif') ? '.gif'
+        : mime.includes('webp') ? '.webp'
+        : '.png'
     }
 
     console.log('[gamedocs:add-image] Source:', opts.source.type, opts.source.value, 'Ext:', ext)
@@ -1572,9 +2516,14 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    const attRows = db.prepare('SELECT file_path FROM attachments WHERE tag_id = ?').all(tagId) as Array<{ file_path?: string }>
     db.prepare('DELETE FROM tag_links WHERE tag_id = ?').run(tagId)
+    db.prepare('DELETE FROM attachments WHERE tag_id = ?').run(tagId)
     db.prepare('DELETE FROM link_tags WHERE id = ?').run(tagId)
     db.close()
+    for (const a of attRows) {
+      try { if (a.file_path) await fs.unlink(a.file_path).catch(() => {}) } catch {}
+    }
     return true
   })
 
@@ -1607,11 +2556,11 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
+    try { ensureMigrations(db) } catch {}
     const t = (newType || 'Other').trim()
-    const allowed = new Set(['Place', 'Person', 'Lore', 'Other'])
-    if (!allowed.has(t)) { db.close(); throw new Error('Invalid type') }
+    const resolvedType = resolveTypeOrOther(db, t)
     const now = new Date().toISOString()
-    db.prepare('UPDATE objects SET type = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(t, now, objectId)
+    db.prepare('UPDATE objects SET type = ?, type_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(resolvedType.name, resolvedType.id, now, objectId)
     db.close()
     return true
   })
@@ -1677,6 +2626,12 @@ app.whenReady().then(async () => {
       db.close()
       throw new Error(`Tag ${tagId} does not exist in link_tags table. Cannot add link target.`)
     }
+
+    const hasWordAttachments = db.prepare('SELECT COUNT(1) AS c FROM attachments WHERE tag_id = ? AND deleted_at IS NULL').get(tagId) as { c: number }
+    if ((hasWordAttachments?.c || 0) > 0) {
+      db.close()
+      throw new Error('Word attachment exists. Move or remove it before linking.')
+    }
     
     const now = new Date().toISOString()
     db.prepare('INSERT OR IGNORE INTO tag_links (tag_id, object_id, created_at, deleted_at) VALUES (?, ?, ?, NULL)').run(tagId, objectId, now)
@@ -1694,6 +2649,7 @@ app.whenReady().then(async () => {
       SELECT
         CASE WHEN COALESCE(TRIM(description),'') <> '' THEN 1
              WHEN EXISTS(SELECT 1 FROM images WHERE object_id = objects.id AND deleted_at IS NULL) THEN 1
+             WHEN EXISTS(SELECT 1 FROM attachments WHERE object_id = objects.id AND deleted_at IS NULL) THEN 1
              ELSE 0 END AS has
       FROM objects WHERE id = ? AND deleted_at IS NULL
     `).get(objectId) as { has?: number } | undefined
@@ -1728,10 +2684,27 @@ app.whenReady().then(async () => {
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
-    const row = db.prepare('SELECT id, game_id, name, type, parent_id, description, locked FROM objects WHERE id = ? AND deleted_at IS NULL').get(objectId)
+    const row = db.prepare(`
+      SELECT
+        o.id,
+        o.game_id,
+        o.name,
+        o.type,
+        o.type_id,
+        COALESCE(t.icon, 'ri-price-tag-3-line') AS type_icon,
+        CASE WHEN cht.type_id IS NULL THEN 0 ELSE 1 END AS type_hidden,
+        o.parent_id,
+        o.description,
+        o.locked
+      FROM objects o
+      LEFT JOIN types t ON t.id = o.type_id
+      LEFT JOIN campaign_hidden_types cht ON cht.game_id = o.game_id AND cht.type_id = o.type_id
+      WHERE o.id = ? AND o.deleted_at IS NULL
+      LIMIT 1
+    `).get(objectId)
     db.close()
     if (!row) throw new Error('Object not found')
-    return row as { id: string; game_id: string; name: string; type: string; parent_id: string | null; description: string | null; locked: number }
+    return row as { id: string; game_id: string; name: string; type: string; type_id: string; type_icon: string; type_hidden: number; parent_id: string | null; description: string | null; locked: number }
   })
 
   ipcMain.handle('gamedocs:set-object-locked', async (_evt, objectId: string, locked: boolean) => {
@@ -1752,7 +2725,15 @@ app.whenReady().then(async () => {
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     try { ensureMigrations(db) } catch {}
-    const row = db.prepare('SELECT 1 AS has FROM objects WHERE game_id = ? AND type = ? AND deleted_at IS NULL LIMIT 1').get(gameId, 'Place') as any
+    const row = db.prepare(`
+      SELECT 1 AS has
+      FROM objects o
+      JOIN type_tag_connections ttc ON ttc.type_id = o.type_id AND ttc.deleted_at IS NULL
+      JOIN type_tags tt ON tt.id = ttc.type_tag_id AND tt.deleted_at IS NULL
+      LEFT JOIN campaign_hidden_types cht ON cht.game_id = o.game_id AND cht.type_id = o.type_id
+      WHERE o.game_id = ? AND o.deleted_at IS NULL AND cht.type_id IS NULL AND lower(tt.name) = 'location'
+      LIMIT 1
+    `).get(gameId) as any
     db.close()
     return !!row
   })
@@ -1764,13 +2745,33 @@ app.whenReady().then(async () => {
     const { db } = await initGameDatabase(projectDirCache, schemaSql)
     try { ensureMigrations(db) } catch {}
 
-    const rows = db.prepare('SELECT id, name, type, parent_id FROM objects WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<{ id: string; name: string; type: string; parent_id: string | null }>
-    const idToNode = new Map<string, { id: string; name: string; type: string; parent_id: string | null; children: string[] }>()
+    const rows = db.prepare(`
+      SELECT
+        o.id,
+        o.name,
+        o.type,
+        o.type_id,
+        o.parent_id,
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM type_tag_connections ttc
+            JOIN type_tags tt ON tt.id = ttc.type_tag_id
+            WHERE ttc.type_id = o.type_id
+              AND ttc.deleted_at IS NULL
+              AND tt.deleted_at IS NULL
+              AND lower(tt.name) = 'location'
+          ) THEN 1 ELSE 0
+        END AS is_location_type
+      FROM objects o
+      WHERE o.game_id = ? AND o.deleted_at IS NULL
+    `).all(gameId) as Array<{ id: string; name: string; type: string; type_id: string | null; parent_id: string | null; is_location_type: number }>
+    const idToNode = new Map<string, { id: string; name: string; type: string; parent_id: string | null; is_location_type: number; children: string[] }>()
     for (const r of rows) idToNode.set(r.id, { ...r, children: [] })
     for (const r of rows) if (r.parent_id && idToNode.has(r.parent_id)) idToNode.get(r.parent_id)!.children.push(r.id)
 
-    // Count descendants among Place-only nodes
-    const isPlace = (n: { type: string }) => n.type === 'Place'
+    // Count descendants among location-tagged nodes
+    const isPlace = (n: { is_location_type: number }) => n.is_location_type === 1
     function placeDescCount(id: string): number {
       const n = idToNode.get(id)!; let count = 0
       for (const cid of n.children) {
@@ -1780,15 +2781,19 @@ app.whenReady().then(async () => {
       return count
     }
 
-    // Build nodes (only Place)
-    const placeIds = rows.filter(r => r.type === 'Place').map(r => r.id)
+    // Build nodes (location-tagged types only)
+    const placeIds = rows.filter(r => r.is_location_type === 1).map(r => r.id)
+    if (placeIds.length === 0) {
+      db.close()
+      throw new Error('Map requires at least one visible object with a type tagged "location".')
+    }
     const nodes = placeIds.map(pid => {
       const n = idToNode.get(pid)!
       // depth among places: walk up until null, counting only transitions to nearest Place parent
       let depth = 0
       let cur = n.parent_id ? idToNode.get(n.parent_id) || null : null
       while (cur) {
-        if (cur.type === 'Place') depth += 1
+        if (cur.is_location_type === 1) depth += 1
         cur = cur.parent_id ? (idToNode.get(cur.parent_id) || null) : null
       }
       const size = 1 + placeDescCount(pid)
@@ -1805,7 +2810,7 @@ app.whenReady().then(async () => {
       while (curId) {
         const p = idToNode.get(curId)
         if (!p) break
-        if (p.type === 'Place') { to = p.id; break }
+        if (p.is_location_type === 1) { to = p.id; break }
         dashed = true
         curId = p.parent_id
       }
@@ -1875,9 +2880,11 @@ app.whenReady().then(async () => {
     objects: Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }>,
     objImages: Map<string, Array<{ id: string; file_path: string; name: string | null; is_default: number }>>,
     tagToTargets: Map<string, string[]>,
+  templateById: Map<string, { id: string; values_json: string; template_name: string; fields_json: string }>,
     idToObj: Map<string, any>,
     children: Map<string, string[]>,
-    palette: any
+  palette: any,
+  renderTemplatesPlain: boolean
   ): Promise<string> {
     const readAsDataUrl = async (file: string): Promise<string | null> => {
       try { 
@@ -2058,6 +3065,18 @@ app.whenReady().then(async () => {
           result = result.replace(ph.key, safeLabelHtml)
         }
       }
+
+      result = result.replace(/\{\{tpl:([^}]+)\}\}/g, (_m, tid) => {
+        const inst = templateById.get(String(tid))
+        if (!inst) return ''
+        let fields: Array<{ type: string; label: string }> = []
+        let values: Record<string, string> = {}
+        try { fields = JSON.parse(inst.fields_json || '[]') } catch {}
+        try { values = JSON.parse(inst.values_json || '{}') } catch {}
+        const rows = fields.map(f => `<div><strong>${escapeHtml(String(f.label || ''))}:</strong> ${escapeHtml(String(values[f.label] || ''))}</div>`).join('')
+        if (renderTemplatesPlain) return `<div><strong>${escapeHtml(inst.template_name)}</strong>${rows}</div>`
+        return `<div class="template-instance-card"><div class="template-instance-header">${escapeHtml(inst.template_name)}</div>${rows}</div>`
+      })
       
       // Convert newlines to <br>
       result = result.replace(/\n/g, '<br>')
@@ -2281,6 +3300,18 @@ app.whenReady().then(async () => {
         margin-top: 1em; 
         margin-bottom: 0.5em;
       }
+      .template-instance-card {
+        border: 1px solid ${palette.tagBorder};
+        border-radius: 8px;
+        padding: 10px;
+        margin: 8px 0;
+        background: rgba(255,255,255,0.03);
+      }
+      .template-instance-header {
+        font-weight: 700;
+        margin-bottom: 8px;
+        color: ${palette.primary};
+      }
       .styleTag.style-quote { 
         font-family: serif; 
         font-size: 24px; 
@@ -2344,7 +3375,7 @@ app.whenReady().then(async () => {
 </html>`
   }
 
-  ipcMain.handle('gamedocs:export-to-html', async (_evt, gameId: string, opts: { palette: any; zip?: boolean }) => {
+  ipcMain.handle('gamedocs:export-to-html', async (_evt, gameId: string, opts: { palette: any; zip?: boolean; renderTemplatesPlain?: boolean }) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
@@ -2356,6 +3387,14 @@ app.whenReady().then(async () => {
     const objects = db.prepare('SELECT id, name, type, parent_id, description FROM objects WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }>
     const imgs = db.prepare('SELECT id, object_id, file_path, name, is_default FROM images WHERE object_id IN (SELECT id FROM objects WHERE game_id = ? AND deleted_at IS NULL) AND deleted_at IS NULL').all(gameId) as Array<{ id: string; object_id: string; file_path: string; name: string | null; is_default: number }>
     const tagLinks = db.prepare('SELECT tl.tag_id AS tag_id, tl.object_id AS object_id FROM tag_links tl JOIN link_tags lt ON lt.id = tl.tag_id AND lt.deleted_at IS NULL WHERE lt.game_id = ? AND tl.deleted_at IS NULL').all(gameId) as Array<{ tag_id: string; object_id: string }>
+    const templateInstances = db.prepare(`
+      SELECT ti.id, ti.object_id, ti.values_json, t.name AS template_name, t.fields_json
+      FROM template_instances ti
+      JOIN templates t ON t.id = ti.template_id
+      WHERE ti.object_id IN (SELECT id FROM objects WHERE game_id = ? AND deleted_at IS NULL)
+        AND ti.deleted_at IS NULL
+        AND t.deleted_at IS NULL
+    `).all(gameId) as Array<{ id: string; object_id: string; values_json: string; template_name: string; fields_json: string }>
     db.close()
 
     const idToObj = new Map(objects.map(o => [o.id, o]))
@@ -2365,6 +3404,7 @@ app.whenReady().then(async () => {
     for (const im of imgs) { const a = objImages.get(im.object_id) || []; a.push({ id: im.id, file_path: im.file_path, name: im.name, is_default: im.is_default }); objImages.set(im.object_id, a) }
     const tagToTargets = new Map<string, string[]>()
     for (const tl of tagLinks) { const a = tagToTargets.get(tl.tag_id) || []; a.push(tl.object_id); tagToTargets.set(tl.tag_id, a) }
+    const templateById = new Map(templateInstances.map(t => [t.id, t]))
 
     const exportRoot = path.join(projectDirCache, 'export')
     await fs.mkdir(exportRoot, { recursive: true })
@@ -2409,6 +3449,8 @@ a{color:var(--pd-primary)}
 .styleTag.style-redacted:hover{color:var(--pd-surface)}
 .styleTag.style-h1{font-size:1.5em;font-weight:bold;display:block;margin-top:1em;margin-bottom:0.5em}
 .styleTag.style-quote{font-family:serif;font-size:24px;line-height:1.2;color:var(--pd-text);padding:40px 40px 40px 50px;display:inline-block;position:relative;box-sizing:border-box;box-shadow:inset 0 0 0 7px rgba(255,255,255,0.07),4px 4px 4px rgba(0,0,0,0.15);text-align:justify !important;background:url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAALElEQVQIW2N0cHD4z8PDw/DlyxcGEGD08fH5D+OABUAqwFIMDAwglXABmDYAVnIQJU/kBYMAAAAASUVORK5CYII=);margin:0.5em 0}
+.template-instance-card{border:1px solid #444;border-radius:8px;padding:10px;margin:8px 0;background:rgba(255,255,255,0.03)}
+.template-instance-header{font-weight:700;margin-bottom:8px;color:var(--pd-primary)}
 .styleTag.style-quote:before{width:30px;height:20px;position:absolute;left:10px;top:10px;content:'';background:url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEcAAAAWCAYAAACSYoFNAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3wkIDBIR/EbngQAAAq5JREFUWMPtmD9oFFEQxn93XmGhCVFBQiQiCSYo2AiSxKAgsfAPH4IiFlYp1MYmiMGAhQgRRCSlCrEQIaYQwjQptBJMVLQSYxRBTNSQoBGNgoXhLHwH5/Le3u7hFcJ+cNyyM/vNzLcz7+1ujgqQtBU4DOwA6sxsFwkgCTMrHfcA+4DtwGszO0FKSLoBbAaeAeNmdj8aJwHHA+Ab8AS4a2Yv4vwLoaIkHQOuAE1l5rdJi3Ec54DBiOkr1WE9sNv9+iQBDJjZpRQcG4BNwAHggqQPwBkzu+MTOe8haJA0DYxEhEnULe6/Q1LRI8y/xqCkoqSO8vgp0ASMuHobosZ8pLh2YBFoqyZT1y29wGSMW64GIk1K6k06Xh60AYuu/r/FkYSkemAqhuAH8KhC5+wEhmNcPgIPqyzgubs+hGEXPw5PXR0hTEmqL3Vgrqyw6UDHLANXzexshXFa7RY7H74AvWY2lmYBDayFh4CbvjFwqAOW4mJIugz0ASs85ldm1l7eOUdiRqkF6K80TsBQwLxgZmuAsTLfqkbWYczxLQRchxLE6Hd1eUfM6fGncyS9A5o9jqeA6xXuAsBa4FOgqFqsMaXYxYBpHfA5Qd4ngWse84yZbcxJ2gL49vtlMyskTPIoMBoKUkNxQjd1v5mNJ+T4FRivljzQE7jucYo8TwfO36rxVh7iH0jBEarzYB7oDBhfxj3LRNAd4BitsTgh/u6EeQfrBDpzkiYCAr0BZiLn5szseCRo3C51z9OyE2Z2vooRugh0eXbSvaFdy8yWIhy3gcaIXzPQ6nt2KnicS2j1XOR7fVgVU5Mv8e9Vdsk2YE8K/1XAUuRcl3t9SILGPBmCyMTJxMnEycTJxMnEycT5r1EAZoFiQv/ZwPeeOeBnQo75KnOdJ/k37JUuryT5h/D+N8Px49h3fiJsAAAAAElFTkSuQmCC') no-repeat}
 .styleTag.style-quote:after{width:30px;height:20px;position:absolute;right:10px;bottom:10px;content:'';background:url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEcAAAAWCAYAAACSYoFNAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3wkIDBIR/EbngQAAAq5JREFUWMPtmD9oFFEQxn93XmGhCVFBQiQiCSYo2AiSxKAgsfAPH4IiFlYp1MYmiMGAhQgRRCSlCrEQIaYQwjQptBJMVLQSYxRBTNSQoBGNgoXhLHwH5/Le3u7hFcJ+cNyyM/vNzLcz7+1ujgqQtBU4DOwA6sxsFwkgCTMrHfcA+4DtwGszO0FKSLoBbAaeAeNmdj8aJwHHA+Ab8AS4a2Yv4vwLoaIkHQOuAE1l5rdJi3Ec54DBiOkr1WE9sNv9+iQBDJjZpRQcG4BNwAHggqQPwBkzu+MTOe8haJA0DYxEhEnULe6/Q1LRI8y/xqCkoqSO8vgp0ASMuHobosZ8pLh2YBFoqyZT1y29wGSMW64GIk1K6k06Xh60AYuu/r/FkYSkemAqhuAH8KhC5+wEhmNcPgIPqyzgubs+hGEXPw5PXR0hTEmqL3Vgrqyw6UDHLANXzexshXFa7RY7H74AvWY2lmYBDayFh4CbvjFwqAOW4mJIugz0ASs85ldm1l7eOUdiRqkF6K80TsBQwLxgZmuAsTLfqkbWYczxLQRchxLE6Hd1eUfM6fGncyS9A5o9jqeA6xXuAsBa4FOgqFqsMaXYxYBpHfA5Qd4ngWse84yZbcxJ2gL49vtlMyskTPIoMBoKUkNxQjd1v5mNJ+T4FRivljzQE7jucYo8TwfO36rxVh7iH0jBEarzYB7oDBhfxj3LRNAd4BitsTgh/u6EeQfrBDpzkiYCAr0BZiLn5szseCRo3C51z9OyE2Z2vooRugh0eXbSvaFdy8yWIhy3gcaIXzPQ6nt2KnicS2j1XOR7fVgVU5Mv8e9Vdsk2YE8K/1XAUuRcl3t9SILGPBmCyMTJxMnEycTJxMnEycT5r1EAZoFiQv/ZwPeeOeBnQo75KnOdJ/k37JUuryT5h/D+N8Px49h3fiJsAAAAAElFTkSuQmCC') -40px 0px no-repeat}
 .styleTag.style-quote > text{font-family:sans-serif;font-size:14px;color:var(--pd-text);text-decoration:none}
@@ -2581,6 +3623,19 @@ a{color:var(--pd-primary)}
         }
       }
       
+      result = result.replace(/\{\{tpl:([^}]+)\}\}/g, (_m, tid) => {
+        const inst = templateById.get(String(tid))
+        if (!inst) return ''
+        let fields: Array<{ type: string; label: string }> = []
+        let values: Record<string, string> = {}
+        try { fields = JSON.parse(inst.fields_json || '[]') } catch {}
+        try { values = JSON.parse(inst.values_json || '{}') } catch {}
+        const rows = fields.map(f => `<div><strong>${escapeHtml(String(f.label || ''))}:</strong> ${escapeHtml(String(values[f.label] || ''))}</div>`).join('')
+        if (opts?.renderTemplatesPlain) {
+          return `<div><strong>${escapeHtml(inst.template_name)}</strong>${rows}</div>`
+        }
+        return `<div class="template-instance-card"><div class="template-instance-header">${escapeHtml(inst.template_name)}</div>${rows}</div>`
+      })
       result = result.replace(/\n/g, '<br>')
       return result
     }
@@ -2648,7 +3703,7 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     return { ok: true, outDir, zipPath }
   })
 
-  ipcMain.handle('gamedocs:export-to-pdf', async (_evt, gameId: string, opts: { palette: any }) => {
+  ipcMain.handle('gamedocs:export-to-pdf', async (_evt, gameId: string, opts: { palette: any; renderTemplatesPlain?: boolean }) => {
     if (!projectDirCache) throw new Error('No project directory configured')
     const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
     const schemaSql = await fs.readFile(schemaPath, 'utf8')
@@ -2660,6 +3715,14 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     const objects = db.prepare('SELECT id, name, type, parent_id, description FROM objects WHERE game_id = ? AND deleted_at IS NULL').all(gameId) as Array<{ id: string; name: string; type: string; parent_id: string | null; description: string | null }>
     const imgs = db.prepare('SELECT id, object_id, file_path, name, is_default FROM images WHERE object_id IN (SELECT id FROM objects WHERE game_id = ? AND deleted_at IS NULL) AND deleted_at IS NULL').all(gameId) as Array<{ id: string; object_id: string; file_path: string; name: string | null; is_default: number }>
     const tagLinks = db.prepare('SELECT tl.tag_id AS tag_id, tl.object_id AS object_id FROM tag_links tl JOIN link_tags lt ON lt.id = tl.tag_id AND lt.deleted_at IS NULL WHERE lt.game_id = ? AND tl.deleted_at IS NULL').all(gameId) as Array<{ tag_id: string; object_id: string }>
+    const templateInstances = db.prepare(`
+      SELECT ti.id, ti.object_id, ti.values_json, t.name AS template_name, t.fields_json
+      FROM template_instances ti
+      JOIN templates t ON t.id = ti.template_id
+      WHERE ti.object_id IN (SELECT id FROM objects WHERE game_id = ? AND deleted_at IS NULL)
+        AND ti.deleted_at IS NULL
+        AND t.deleted_at IS NULL
+    `).all(gameId) as Array<{ id: string; object_id: string; values_json: string; template_name: string; fields_json: string }>
     db.close()
 
     const idToObj = new Map(objects.map(o => [o.id, o]))
@@ -2669,6 +3732,7 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     for (const im of imgs) { const a = objImages.get(im.object_id) || []; a.push({ id: im.id, file_path: im.file_path, name: im.name, is_default: im.is_default }); objImages.set(im.object_id, a) }
     const tagToTargets = new Map<string, string[]>()
     for (const tl of tagLinks) { const a = tagToTargets.get(tl.tag_id) || []; a.push(tl.object_id); tagToTargets.set(tl.tag_id, a) }
+    const templateById = new Map(templateInstances.map(t => [t.id, t]))
 
     // Ask for save location FIRST, before doing any generation
     const { canceled, filePath } = await dialog.showSaveDialog({
@@ -2684,7 +3748,7 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     const palette = opts?.palette || { primary: '#6495ED', surface: '#1e1e1e', text: '#e5e5e5', tagBg: 'rgba(100,149,237,0.2)', tagBorder: '#6495ED' }
 
     // Generate single HTML document for PDF
-    const htmlContent = await generatePdfHtml(game, objects, objImages, tagToTargets, idToObj, children, palette)
+    const htmlContent = await generatePdfHtml(game, objects, objImages, tagToTargets, templateById, idToObj, children, palette, !!opts?.renderTemplatesPlain)
     
     // Create temporary HTML file
     const tempHtmlPath = path.join(os.tmpdir(), `playerdocs-export-${Date.now()}.html`)
@@ -2773,57 +3837,34 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
       // Copy the database file
       await fs.copyFile(currentDbPath, filePath)
       
-      // Add log entry to the database
+      // Add log entry to the database when a campaign exists
       const schemaPath = path.join(process.env.APP_ROOT!, 'db', 'schema.sql')
       const schemaSql = await fs.readFile(schemaPath, 'utf8')
       const { db } = await initGameDatabase(projectDirCache, schemaSql)
       try { ensureMigrations(db) } catch {}
-      
-      // Insert backup log entry
-      const logId = crypto.randomUUID().replace(/-/g, '')
-      const now = new Date().toISOString()
-      
-      // Get the first available game_id or create a default one
-      let firstGame = db.prepare('SELECT id FROM games LIMIT 1').get() as { id: string } | undefined
-      let gameId = firstGame?.id
-      
-      if (!gameId) {
-        // Create a default game if none exists
-        gameId = 'default'
-        const defaultGameId = crypto.randomUUID().replace(/-/g, '')
-        db.prepare(`
-          INSERT INTO games (id, name, type, description, parent_id, images, tags, created, updated, deleted) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          defaultGameId,
-          'Default Game',
-          'game',
-          'Default game for system operations',
-          null,
-          '[]',
-          '[]',
-          now,
-          now,
-          null
-        )
-        gameId = defaultGameId
+      try {
+        const firstGame = db.prepare('SELECT id FROM games LIMIT 1').get() as { id: string } | undefined
+        const gameId = firstGame?.id
+        if (gameId) {
+          const logId = crypto.randomUUID().replace(/-/g, '')
+          const now = new Date().toISOString()
+          db.prepare(`
+            INSERT INTO logs (id, game_id, event_type, level, category, message, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            logId,
+            gameId,
+            'backup_created',
+            'info',
+            'backup',
+            `Database backup created: ${path.basename(filePath)}`,
+            JSON.stringify({ backupFile: path.basename(filePath), backupPath: filePath }),
+            now
+          )
+        }
+      } finally {
+        db.close()
       }
-      
-      db.prepare(`
-        INSERT INTO logs (id, game_id, event_type, level, category, message, metadata, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        logId,
-        gameId, // Use existing game_id or 'default'
-        'backup_created',
-        'info',
-        'backup',
-        `Database backup created: ${path.basename(filePath)}`,
-        JSON.stringify({ backupFile: path.basename(filePath), backupPath: filePath }),
-        now
-      )
-      
-      db.close()
       
       return { ok: true, filePath, fileName: path.basename(filePath) }
     } catch (error) {
@@ -2911,6 +3952,12 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     // Remove tag_links to these objects
     const stmtDelLinks = db.prepare('DELETE FROM tag_links WHERE object_id = ?')
     for (const id of toDelete) stmtDelLinks.run(id)
+    // Remove template instances for these objects
+    const stmtDelTplInst = db.prepare('DELETE FROM template_instances WHERE object_id = ?')
+    for (const id of toDelete) stmtDelTplInst.run(id)
+    // Remove object-scoped attachments for these objects
+    const stmtDelAttObj = db.prepare('DELETE FROM attachments WHERE object_id = ?')
+    for (const id of toDelete) stmtDelAttObj.run(id)
     // Remove floating link_tags
     cleanupLinkData(db, gameId)
     cleanupMissingImages(db, gameId)
@@ -2928,6 +3975,7 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     if (!obj) { db.close(); throw new Error('Object not found') }
     // Prefer default image; if none, take the first available image
     const img = db.prepare('SELECT thumb_path, file_path FROM images WHERE object_id = ? AND deleted_at IS NULL ORDER BY is_default DESC, created_at ASC LIMIT 1').get(objectId) as { thumb_path?: string; file_path?: string } | undefined
+    const mainAttachment = db.prepare('SELECT id, file_path, name, ext, mime FROM attachments WHERE object_id = ? AND is_main = 1 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1').get(objectId) as { id?: string; file_path?: string; name?: string | null; ext?: string | null; mime?: string | null } | undefined
     db.close()
     const raw = obj.description || ''
     // Preserve tag labels in snippet: [[Label|tag_xxx]] -> Label
@@ -2954,7 +4002,7 @@ ${childIds.length ? `<div class=\"children\"><h4>Children</h4>${childLinks}</div
     } catch {}
     // fileUrl retained for legacy fallback; computed from thumbPath if present
     try { if (thumbPath) fileUrl = pathToFileURL(thumbPath).href } catch {}
-    return { id: obj.id, name: obj.name, snippet, thumbPath, imagePath, fileUrl, thumbDataUrl }
+    return { id: obj.id, name: obj.name, snippet, thumbPath, imagePath, fileUrl, thumbDataUrl, mainAttachment: mainAttachment || null }
   })
 
   ipcMain.handle('gamedocs:update-object-description', async (_evt, objectId: string, description: string) => {

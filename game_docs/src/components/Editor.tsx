@@ -1,23 +1,229 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './editor.css'
 import Fuse from 'fuse.js'
 import { confirmDialog, toast } from './Confirm'
 import { logger } from '../utils/logger'
 import ShortcutInput from './ShortcutInput'
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
+import remixIconCssText from 'remixicon/fonts/remixicon.scss?raw'
 
 
 type Campaign = { id: string; name: string }
+type TypeTag = { id: string; name: string }
+type ObjectType = {
+  id: string
+  name: string
+  icon: string
+  isBuiltin: boolean
+  isProtected: boolean
+  isHidden: boolean
+  usageCount: number
+  tags: TypeTag[]
+}
+type Attachment = {
+  id: string
+  game_id: string
+  object_id?: string | null
+  tag_id?: string | null
+  file_path: string
+  name: string | null
+  mime: string | null
+  ext: string | null
+  is_main: number
+}
+type TemplateDef = {
+  id: string
+  name: string
+  source: string
+  style_css?: string | null
+  fields_json: string
+  is_builtin?: number
+}
+type TemplateVisualField = {
+  id: string
+  type: 'text' | 'textarea' | 'image' | 'attachment' | 'richtext' | 'div'
+  label: string
+  placeholder: string
+  required: boolean
+  className: string
+  parentId: string | null
+  order: number
+}
+type TemplateStyleDecl = {
+  id: string
+  property: string
+  value: string
+}
+type TemplateStyleBlock = {
+  id: string
+  className: string
+  customClassName: string
+  modifier: '' | ':hover' | ':active' | ':focus' | '::before' | '::after'
+  declarations: TemplateStyleDecl[]
+  rawMode: boolean
+  rawCss: string
+}
+type TemplateInstance = {
+  id: string
+  object_id: string
+  template_id: string
+  values_json: string
+  template_name: string
+  template_source: string
+  template_style?: string | null
+  template_fields: string
+}
+type TemplateInstanceLibraryRow = {
+  id: string
+  object_id: string
+  object_name: string
+  template_id: string
+  template_name: string
+  values_json: string
+  updated_at: string
+}
+
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+
+const ALL_REMIX_ICONS = Array.from(
+  new Set(
+    (remixIconCssText.match(/\.ri-[a-z0-9-]+(?=:before)/g) || []).map(v => v.slice(1))
+  )
+).sort((a, b) => a.localeCompare(b))
+
+const InlinePdfViewer: React.FC<{
+  filePath: string
+  onPopout: () => void
+  onExternal: () => void
+}> = ({ filePath, onPopout, onExternal }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [pdfDoc, setPdfDoc] = useState<any | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [errorDetail, setErrorDetail] = useState<string | null>(null)
+  const [pageCount, setPageCount] = useState(0)
+  const [page, setPage] = useState(1)
+  const [zoom, setZoom] = useState(1)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    setErrorDetail(null)
+    setPdfDoc(null)
+    setPageCount(0)
+    setPage(1)
+    ;(async () => {
+      const res = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', filePath).catch((e: any) => {
+        console.error('[InlinePdfViewer] get-file-dataurl failed', { filePath, message: e?.message || String(e) })
+        return null
+      }) as { ok?: boolean; dataUrl?: string | null } | null
+      const dataUrl = String(res?.dataUrl || '')
+      const m = dataUrl.match(/^data:([^;,]+);base64,/i)
+      const mime = (m?.[1] || '').toLowerCase()
+      if (!res?.ok || !dataUrl || !m) {
+        console.error('[InlinePdfViewer] invalid data URL response', { filePath, ok: !!res?.ok, hasDataUrl: !!dataUrl, mime })
+        if (!cancelled) {
+          setError('Inline PDF loading failed for this file.')
+          setErrorDetail(`Invalid data URL from backend${mime ? ` (${mime})` : ''}`)
+          setLoading(false)
+        }
+        return
+      }
+      try {
+        if (mime && mime !== 'application/pdf') {
+          console.warn('[InlinePdfViewer] unexpected mime for pdf', { filePath, mime })
+        }
+        const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+        const binary = atob(base64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        console.log('[InlinePdfViewer] loading PDF bytes', { filePath, bytes: bytes.length, mime: mime || 'unknown' })
+        const task = getDocument({ data: bytes })
+        const doc = await task.promise
+        if (cancelled) {
+          try { await doc.destroy() } catch {}
+          return
+        }
+        setPdfDoc(doc)
+        setPageCount(doc.numPages || 1)
+      } catch (e: any) {
+        console.error('[InlinePdfViewer] PDF.js load error', { filePath, message: e?.message || String(e), name: e?.name || '' })
+        if (!cancelled) {
+          setError('Inline PDF rendering failed. Opened pop-out fallback.')
+          setErrorDetail(e?.message ? String(e.message) : 'Unknown PDF.js error')
+          onPopout()
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [filePath, onPopout])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!pdfDoc || !canvasRef.current) return
+      try {
+        const p = await pdfDoc.getPage(page)
+        if (cancelled || !canvasRef.current) return
+        const viewport = p.getViewport({ scale: zoom })
+        const canvas = canvasRef.current
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        const ratio = window.devicePixelRatio || 1
+        canvas.width = Math.floor(viewport.width * ratio)
+        canvas.height = Math.floor(viewport.height * ratio)
+        canvas.style.width = `${Math.floor(viewport.width)}px`
+        canvas.style.height = `${Math.floor(viewport.height)}px`
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
+        await p.render({ canvasContext: ctx, viewport }).promise
+      } catch (e: any) {
+        console.error('[InlinePdfViewer] page render error', { filePath, page, zoom, message: e?.message || String(e) })
+        if (!cancelled) {
+          setError('Inline PDF page render failed.')
+          setErrorDetail(e?.message ? String(e.message) : 'Unknown render error')
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [filePath, page, pdfDoc, zoom])
+
+  return (
+    <div className="grid-gap-8" style={{ height: '100%' }}>
+      <div className="flex-row" style={{ justifyContent: 'space-between' }}>
+        <div className="flex-gap-6 items-center">
+          <button disabled={!pdfDoc || page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>Prev</button>
+          <div>{page}/{pageCount || 1}</div>
+          <button disabled={!pdfDoc || page >= pageCount} onClick={() => setPage(p => Math.min(pageCount || 1, p + 1))}>Next</button>
+          <button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))}>-</button>
+          <div>{Math.round(zoom * 100)}%</div>
+          <button onClick={() => setZoom(z => Math.min(3, z + 0.1))}>+</button>
+        </div>
+        <div className="flex-gap-6">
+          <button onClick={onPopout}>Pop out</button>
+          <button onClick={onExternal}>Open externally</button>
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid #333', borderRadius: 6, background: '#1b1b1b', display: 'flex', justifyContent: 'center', alignItems: loading ? 'center' : 'flex-start', padding: 8 }}>
+        {loading ? <div className="muted">Loading PDF…</div> : error ? <div className="muted">{error}{errorDetail ? ` (${errorDetail})` : ''}</div> : <canvas ref={canvasRef} />}
+      </div>
+    </div>
+  )
+}
 
 export const Editor: React.FC = () => {
   const [campaign, setCampaign] = useState<Campaign | null>(null)
   const [toggleStylingOptions, setToggleStylingOptions] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [root, setRoot] = useState<{ id: string; name: string; type: string } | null>(null)
-  const [children, setChildren] = useState<Array<{ id: string; name: string; type: string }>>([])
+  const [root, setRoot] = useState<{ id: string; name: string; type: string; type_id?: string; type_icon?: string } | null>(null)
+  const [children, setChildren] = useState<Array<{ id: string; name: string; type: string; type_id?: string; type_icon?: string; type_hidden?: number }>>([])
   const [parent, setParent] = useState<{ id: string; name: string } | null>(null)
   const [showCat, setShowCat] = useState(false)
   const [catName, setCatName] = useState('')
-  const [catType, setCatType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
+  const [catType, setCatType] = useState<string>('type_other')
   const [catErr, setCatErr] = useState<string | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(200)
   const [catDescription, setCatDescription] = useState<string>('')
@@ -74,7 +280,29 @@ export const Editor: React.FC = () => {
   }>({ visible: false, x: 0, y: 0, selText: '', selId: '' })
   const [showWizard, setShowWizard] = useState(false)
   const [wizardName, setWizardName] = useState('')
-  const [wizardType, setWizardType] = useState<'Place' | 'Person' | 'Lore' | 'Other'>('Other')
+  const [wizardType, setWizardType] = useState<string>('type_other')
+  const [objectTypes, setObjectTypes] = useState<ObjectType[]>([])
+  const [showTypeManager, setShowTypeManager] = useState(false)
+  const [typeEditorOpen, setTypeEditorOpen] = useState(false)
+  const [typeEditorIsNew, setTypeEditorIsNew] = useState(false)
+  const [typeEditorErr, setTypeEditorErr] = useState<string | null>(null)
+  const [typeEditorId, setTypeEditorId] = useState<string>('')
+  const [typeEditorName, setTypeEditorName] = useState<string>('')
+  const [typeEditorIcon, setTypeEditorIcon] = useState<string>('ri-price-tag-3-line')
+  const [typeIconQuery, setTypeIconQuery] = useState<string>('')
+  const [typeEditorTags, setTypeEditorTags] = useState<string[]>([])
+  const [typeTagInput, setTypeTagInput] = useState<string>('')
+  const [typeTagSuggestions, setTypeTagSuggestions] = useState<Array<{ id: string; name: string }>>([])
+  const [deleteTypeTarget, setDeleteTypeTarget] = useState<ObjectType | null>(null)
+  const [deleteTypeReplacementId, setDeleteTypeReplacementId] = useState<string>('')
+  const [deleteTypeItems, setDeleteTypeItems] = useState<Array<{ id: string; name: string }>>([])
+  const [switchTypeTarget, setSwitchTypeTarget] = useState<ObjectType | null>(null)
+  const [switchTypeReplacementId, setSwitchTypeReplacementId] = useState<string>('')
+  const filteredRemixIcons = useMemo(() => {
+    const q = typeIconQuery.trim().toLowerCase()
+    const base = q ? ALL_REMIX_ICONS.filter(icon => icon.toLowerCase().includes(q)) : ALL_REMIX_ICONS
+    return base.slice(0, 240)
+  }, [typeIconQuery])
   // Edit target picker when a tag links to multiple objects
   const [showEditPicker, setShowEditPicker] = useState(false)
   const [editPickerItems, setEditPickerItems] = useState<Array<{ id: string; tag_id: string; name: string; path: string }>>([])
@@ -91,19 +319,40 @@ export const Editor: React.FC = () => {
   const [pathChoices, setPathChoices] = useState<Array<{ id: string; name: string; path: string }>>([])
   const fuseRef = useRef<Fuse<any> | null>(null)
   const [ctxLinkedTargets, setCtxLinkedTargets] = useState<Array<{ id: string; name: string; path: string; tag_id: string }>>([])
+  const [ctxTagId, setCtxTagId] = useState<string | null>(null)
+  const [ctxTagAttachments, setCtxTagAttachments] = useState<Attachment[]>([])
   // Hover preview for single-target tags
   const [hoverCard, setHoverCard] = useState<{ visible: boolean; x: number; y: number; name: string; snippet: string; imageUrl: string | null }>({ visible: false, x: 0, y: 0, name: '', snippet: '', imageUrl: null })
   const [imageModal, setImageModal] = useState<{ visible: boolean; dataUrl: string | null }>({ visible: false, dataUrl: null })
+  const [pdfModal, setPdfModal] = useState<{ visible: boolean; dataUrl: string | null; filePath: string | null; name: string }>({ visible: false, dataUrl: null, filePath: null, name: '' })
   const lastHoverTagRef = useRef<string | null>(null)
   const hoverDebounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   // Left-click menu for multi-target tags
   const [tagMenu, setTagMenu] = useState<{ visible: boolean; x: number; y: number; items: Array<{ id: string; name: string; path: string }>; hoverPreview: { id: string; name: string; snippet: string; imageUrl: string | null } | null; source?: 'dropdown' | 'tag' }>({ visible: false, x: 0, y: 0, items: [], hoverPreview: null, source: undefined })
+  const [tagMenuWordAttachments, setTagMenuWordAttachments] = useState<Attachment[]>([])
   const ctxMenuRef = useRef<HTMLDivElement | null>(null)
   const childCtxMenuRef = useRef<HTMLDivElement | null>(null)
   const tagMenuRef = useRef<HTMLDivElement | null>(null)
   const menuButtonRef = useRef<HTMLButtonElement | null>(null)
   const childItemMouseStateRef = useRef<Map<string, { mouseDownOnItem: boolean; hasMoved: boolean; startX: number; startY: number; startItemId: string }>>(new Map())
   const [images, setImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [templateDefs, setTemplateDefs] = useState<TemplateDef[]>([])
+  const [templateInstances, setTemplateInstances] = useState<TemplateInstance[]>([])
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
+  const [templateInstanceLibraryOpen, setTemplateInstanceLibraryOpen] = useState(false)
+  const [templateInstanceLibraryRows, setTemplateInstanceLibraryRows] = useState<TemplateInstanceLibraryRow[]>([])
+  const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
+  const [templateEditId, setTemplateEditId] = useState<string | null>(null)
+  const [templateNameInput, setTemplateNameInput] = useState('')
+  const [templateSourceInput, setTemplateSourceInput] = useState('')
+  const [templateCssInput, setTemplateCssInput] = useState('')
+  const [templateRawMode, setTemplateRawMode] = useState(false)
+  const [templateVisualFields, setTemplateVisualFields] = useState<TemplateVisualField[]>([])
+  const [templateLayoutColumns, setTemplateLayoutColumns] = useState<number>(1)
+  const [templateCardClassInput, setTemplateCardClassInput] = useState('')
+  const [templateStyleBlocks, setTemplateStyleBlocks] = useState<TemplateStyleBlock[]>([])
+  const [templateInstanceEditor, setTemplateInstanceEditor] = useState<{ open: boolean; instance: TemplateInstance | null; values: Record<string, string> }>({ open: false, instance: null, values: {} })
   const [editImages, setEditImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
   const [addPictureModal, setAddPictureModal] = useState(false)
   const [picName, setPicName] = useState('')
@@ -112,6 +361,9 @@ export const Editor: React.FC = () => {
   const [showMisc, setShowMisc] = useState(false)
   const [ctrlKeyPressed, setCtrlKeyPressed] = useState(false)
   const [hoverDebounce, setHoverDebounce] = useState(300) // milliseconds
+  const [exportTemplateStyled, setExportTemplateStyled] = useState(true)
+  const [showTemplateFieldLabels, setShowTemplateFieldLabels] = useState(false)
+  const [pdfInlinePreferred, setPdfInlinePreferred] = useState(true)
 
   // Command palette: commands and parameter flow
   const [isCommandMode, setIsCommandMode] = useState(false)
@@ -132,6 +384,118 @@ export const Editor: React.FC = () => {
       toast(`Image cleanup failed: ${error?.message || 'Unknown error'}`)
     }
   }, [campaign?.id])
+
+  const refreshTypeCatalog = useCallback(async () => {
+    if (!campaign?.id) return
+    try {
+      const rows = await window.ipcRenderer.invoke('gamedocs:list-types', campaign.id).catch(() => [])
+      setObjectTypes(Array.isArray(rows) ? rows : [])
+    } catch {
+      setObjectTypes([])
+    }
+  }, [campaign?.id])
+
+  const getTypeByValue = useCallback((value: string | null | undefined): ObjectType | undefined => {
+    const v = String(value || '').trim()
+    if (!v) return undefined
+    return objectTypes.find(t => t.id === v || t.name.toLowerCase() === v.toLowerCase())
+  }, [objectTypes])
+
+  const getSelectableTypes = useCallback((currentValue?: string) => {
+    const visible = objectTypes.filter(t => !t.isHidden)
+    if (!currentValue) return visible
+    const current = getTypeByValue(currentValue)
+    if (current && !visible.some(v => v.id === current.id)) return [...visible, current]
+    return visible
+  }, [objectTypes, getTypeByValue])
+
+  const resetTypeEditor = useCallback(() => {
+    setTypeEditorErr(null)
+    setTypeEditorId('')
+    setTypeEditorName('')
+    setTypeEditorIcon('ri-price-tag-3-line')
+    setTypeIconQuery('')
+    setTypeEditorTags([])
+    setTypeTagInput('')
+    setTypeTagSuggestions([])
+  }, [])
+
+  const openNewTypeEditor = useCallback(() => {
+    resetTypeEditor()
+    setTypeEditorIsNew(true)
+    setTypeEditorOpen(true)
+  }, [resetTypeEditor])
+
+  const openEditTypeEditor = useCallback((typeRow: ObjectType) => {
+    setTypeEditorErr(null)
+    setTypeEditorIsNew(false)
+    setTypeEditorId(typeRow.id)
+    setTypeEditorName(typeRow.name)
+    setTypeEditorIcon(typeRow.icon || 'ri-price-tag-3-line')
+    setTypeIconQuery(typeRow.icon || '')
+    setTypeEditorTags((typeRow.tags || []).map(t => t.name))
+    setTypeTagInput('')
+    setTypeTagSuggestions([])
+    setTypeEditorOpen(true)
+  }, [])
+
+  const addTypeTagDraft = useCallback((rawValue: string) => {
+    const tag = String(rawValue || '').trim()
+    if (!tag) return
+    setTypeEditorTags(prev => {
+      if (prev.some(p => p.toLowerCase() === tag.toLowerCase())) return prev
+      return [...prev, tag]
+    })
+    setTypeTagInput('')
+  }, [])
+
+  const closeTypeManager = useCallback(async () => {
+    setShowTypeManager(false)
+    await refreshTypeCatalog()
+    if (activeId) {
+      await selectObject(activeId, activeName || '')
+    } else if (campaign?.id) {
+      const has = await window.ipcRenderer.invoke('gamedocs:has-places', campaign.id).catch(() => false)
+      setHasPlaces(!!has)
+    }
+  }, [refreshTypeCatalog, activeId, activeName, campaign?.id])
+
+  useEffect(() => {
+    refreshTypeCatalog()
+  }, [refreshTypeCatalog])
+
+  useEffect(() => {
+    if (!typeEditorOpen) return
+    const q = typeTagInput.trim()
+    let cancelled = false
+    ;(async () => {
+      const rows = await window.ipcRenderer.invoke('gamedocs:list-type-tags', q).catch(() => [])
+      if (!cancelled) setTypeTagSuggestions(Array.isArray(rows) ? rows : [])
+    })()
+    return () => { cancelled = true }
+  }, [typeEditorOpen, typeTagInput])
+
+  useEffect(() => {
+    if (objectTypes.length === 0) return
+    const other = objectTypes.find(t => t.name.toLowerCase() === 'other') || objectTypes.find(t => !t.isHidden) || objectTypes[0]
+    if (other) {
+      if (!getTypeByValue(catType)) setCatType(other.id)
+      if (!getTypeByValue(wizardType)) setWizardType(other.id)
+    }
+  }, [objectTypes, catType, wizardType, getTypeByValue])
+
+  useEffect(() => {
+    if (!showTypeManager && !typeEditorOpen && !deleteTypeTarget && !switchTypeTarget) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (typeEditorOpen) { setTypeEditorOpen(false); return }
+      if (deleteTypeTarget) { setDeleteTypeTarget(null); return }
+      if (switchTypeTarget) { setSwitchTypeTarget(null); return }
+      if (showTypeManager) { void closeTypeManager() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showTypeManager, typeEditorOpen, deleteTypeTarget, switchTypeTarget, closeTypeManager])
 
   // Build a recursive tree of children for the current object and append as a nicely
   // formatted listing three lines below the existing description
@@ -245,7 +609,7 @@ export const Editor: React.FC = () => {
         tagBg: (cs.getPropertyValue('--pd-tag-bg') || 'rgba(100,149,237,0.2)').trim(),
         tagBorder: (cs.getPropertyValue('--pd-tag-border') || '#6495ED').trim(),
       }
-      const res = await window.ipcRenderer.invoke('gamedocs:export-to-html', campaign.id, { palette, zip })
+      const res = await window.ipcRenderer.invoke('gamedocs:export-to-html', campaign.id, { palette, zip, renderTemplatesPlain: !exportTemplateStyled })
       if (res && res.ok) {
         toast('HTML export completed', 'success')
         if (reveal) await window.ipcRenderer.invoke('gamedocs:reveal-path', res.outDir)
@@ -255,7 +619,7 @@ export const Editor: React.FC = () => {
     } catch (e) {
       toast('Export to HTML failed', 'error')
     }
-  }, [campaign])
+  }, [campaign, exportTemplateStyled])
 
   const handleExportToPdf = useCallback(async () => {
     if (!campaign) return
@@ -268,7 +632,7 @@ export const Editor: React.FC = () => {
         tagBg: (cs.getPropertyValue('--pd-tag-bg') || 'rgba(100,149,237,0.2)').trim(),
         tagBorder: (cs.getPropertyValue('--pd-tag-border') || '#6495ED').trim(),
       }
-      const res = await window.ipcRenderer.invoke('gamedocs:export-to-pdf', campaign.id, { palette })
+      const res = await window.ipcRenderer.invoke('gamedocs:export-to-pdf', campaign.id, { palette, renderTemplatesPlain: !exportTemplateStyled })
       if (res && res.ok) {
         toast('PDF export completed', 'success')
         
@@ -288,7 +652,136 @@ export const Editor: React.FC = () => {
     } catch (e) {
       toast('Export to PDF failed', 'error')
     }
-  }, [campaign])
+  }, [campaign, exportTemplateStyled])
+
+  const handleAddObjectAttachment = useCallback(async () => {
+    if (!activeId) return
+    const pick = await window.ipcRenderer.invoke('gamedocs:choose-attachment-file').catch(() => null)
+    if (!pick?.path) return
+    await window.ipcRenderer.invoke('gamedocs:add-attachment', { objectId: activeId, sourcePath: pick.path, isMain: attachments.length === 0 }).catch((e: any) => {
+      toast(e?.message || 'Failed to add attachment', 'error')
+    })
+    await loadObjectScopedData(activeId)
+    toast('Attachment added', 'success')
+  }, [activeId, attachments.length, loadObjectScopedData])
+
+  const handleDropObjectAttachments = useCallback(async (files: FileList | null) => {
+    if (!activeId || activeLocked || !files || files.length === 0) return
+    const dropped = Array.from(files)
+    let addedFiles = 0
+    let addedImages = 0
+    for (let i = 0; i < dropped.length; i++) {
+      const file = dropped[i] as any
+      const sourcePath = String((file && (file.path || '')) || '').trim()
+      const extPart = sourcePath ? sourcePath.split('.').pop() : String(file?.name || '').split('.').pop()
+      const ext = String(extPart || '').toLowerCase()
+      const mime = String(file?.type || '').toLowerCase()
+      const isImage = mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)
+      let res: any = null
+      let imageRes: any = null
+      if (sourcePath) {
+        if (isImage) {
+          imageRes = await window.ipcRenderer.invoke('gamedocs:add-image', activeId, {
+            name: String(file?.name || ''),
+            source: { type: 'file', value: sourcePath },
+            isDefault: false,
+          }).catch(() => null)
+        } else {
+          res = await window.ipcRenderer.invoke('gamedocs:add-attachment', {
+            objectId: activeId,
+            sourcePath,
+            isMain: (attachments.length + addedFiles) === 0,
+          }).catch(() => null)
+        }
+      } else if (file?.arrayBuffer) {
+        const ab = await file.arrayBuffer().catch(() => null)
+        if (ab) {
+          const bytes = new Uint8Array(ab)
+          let binary = ''
+          const chunk = 0x8000
+          for (let j = 0; j < bytes.length; j += chunk) {
+            const slice = bytes.subarray(j, Math.min(j + chunk, bytes.length))
+            binary += String.fromCharCode(...slice)
+          }
+          const b64 = btoa(binary)
+          if (isImage) {
+            imageRes = await window.ipcRenderer.invoke('gamedocs:add-image', activeId, {
+              name: String(file.name || `image_${i + 1}`),
+              source: { type: 'data', value: b64 },
+              mimeHint: String(file.type || ''),
+              isDefault: false,
+            }).catch(() => null)
+          } else {
+            res = await window.ipcRenderer.invoke('gamedocs:add-attachment', {
+              objectId: activeId,
+              dataBase64: b64,
+              fileName: String(file.name || `drop_${i + 1}`),
+              mimeHint: String(file.type || ''),
+              isMain: (attachments.length + addedFiles) === 0,
+            }).catch(() => null)
+          }
+        }
+      }
+      if (res?.id) addedFiles += 1
+      if (imageRes?.id) addedImages += 1
+    }
+    if (addedFiles > 0 || addedImages > 0) {
+      await loadObjectScopedData(activeId)
+      try {
+        const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', activeId).catch(() => [])
+        setImages((imgs || []) as any[])
+      } catch {}
+      const msgParts = [
+        addedImages > 0 ? `${addedImages} image${addedImages > 1 ? 's' : ''}` : '',
+        addedFiles > 0 ? `${addedFiles} file${addedFiles > 1 ? 's' : ''}` : '',
+      ].filter(Boolean)
+      toast(`${msgParts.join(' and ')} added`, 'success')
+    } else {
+      toast('Could not attach dropped file(s)', 'error')
+    }
+  }, [activeId, activeLocked, attachments.length, loadObjectScopedData])
+
+  const handleOpenAttachment = useCallback(async (att: Attachment) => {
+    const ext = (att.ext || '').toLowerCase()
+    const mime = String(att.mime || '').toLowerCase()
+    const isImage = mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)
+    if (isImage) {
+      const res = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', att.file_path).catch(() => null)
+      if (res?.ok && res.dataUrl) {
+        setImageModal({ visible: true, dataUrl: res.dataUrl })
+        return
+      }
+      await window.ipcRenderer.invoke('gamedocs:open-file-default', att.file_path).catch(() => null)
+      return
+    }
+    const isPdf = ext === '.pdf' || mime === 'application/pdf'
+    if (isPdf) {
+      if (pdfInlinePreferred) {
+        setPdfModal({ visible: true, dataUrl: null, filePath: att.file_path, name: (att.name || '').trim() || 'Attachment PDF' })
+      } else {
+        const ok = await window.ipcRenderer.invoke('gamedocs:open-pdf-window', att.file_path).catch(() => false)
+        if (!ok) {
+          await window.ipcRenderer.invoke('gamedocs:open-file-default', att.file_path).catch(() => null)
+        }
+      }
+      return
+    }
+    await window.ipcRenderer.invoke('gamedocs:open-file-default', att.file_path).catch(() => null)
+  }, [pdfInlinePreferred])
+
+  const handleOpenWordAttachment = useCallback(async (att: Attachment) => {
+    const ext = String(att.ext || '').toLowerCase()
+    const mime = String(att.mime || '').toLowerCase()
+    const isImage = mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)
+    if (isImage) {
+      const res = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', att.file_path).catch(() => null)
+      if (res?.ok && res.dataUrl) {
+        setImageModal({ visible: true, dataUrl: res.dataUrl })
+        return
+      }
+    }
+    await handleOpenAttachment(att)
+  }, [handleOpenAttachment])
 
 
   const listOfCommands = [
@@ -306,6 +799,8 @@ export const Editor: React.FC = () => {
     { id: 'chooseFontFile', name: 'Choose font file', description: 'Choose a font file for the custom font', setting: true },
     { id: 'createBackup', name: 'Create backup', description: 'Create a backup of the current object' },
     { id: 'listAllItems', name: 'List all items', description: 'List all the items in the current object' },
+    { id: 'insertTemplate', name: 'Insert template', description: 'Insert a template block at current selection' },
+    { id: 'manageTemplates', name: 'Manage templates', description: 'Open template definition manager', setting: true },
     { id: 'lockObject', name: 'Lock object', description: 'Make the current object read-only' },
     { id: 'unlockObject', name: 'Unlock object', description: 'Allow editing the current object' },
     { id: 'selectColorPalette', name: 'Select color palette', parameters: { palette: 'string', setting: true, choices: ['dracula', 'solarized-dark', 'solarized-light', 'github-dark', 'github-light', 'night-owl', 'monokai', 'parchment', 'primary-blue', 'primary-green', 'custom']}, description: 'Select a color palette for the editor' },
@@ -438,19 +933,13 @@ export const Editor: React.FC = () => {
       const stylingEnabled = typeof savedStylingEnabled === 'boolean' ? savedStylingEnabled : true
       loadedStylingEnabledRef.current = stylingEnabled
       setToggleStylingOptions(stylingEnabled)
+      const savedExportStyled = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.exportStyledTemplates').catch(() => null)
+      if (typeof savedExportStyled === 'boolean') setExportTemplateStyled(savedExportStyled)
+      const savedShowFieldLabels = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.templateShowFieldLabels').catch(() => null)
+      if (typeof savedShowFieldLabels === 'boolean') setShowTemplateFieldLabels(savedShowFieldLabels)
+      const savedPdfInlinePreferred = await window.ipcRenderer.invoke('gamedocs:get-setting', 'ui.pdfInlinePreferred').catch(() => null)
+      if (typeof savedPdfInlinePreferred === 'boolean') setPdfInlinePreferred(savedPdfInlinePreferred)
       settingsLoadedRef.current = true
-      // Force re-render of description if it exists, now that settings are loaded
-      // Use the loaded value directly instead of waiting for state update
-      if (editorRef.current && desc !== undefined) {
-        const scrollTop = editorRef.current.scrollTop
-        const currentDesc = desc || ''
-        editorRef.current.innerHTML = descToHtml(currentDesc, stylingEnabled)
-        requestAnimationFrame(() => {
-          if (editorRef.current) {
-            editorRef.current.scrollTop = scrollTop
-          }
-        })
-      }
     })()
   }, [])
 
@@ -539,6 +1028,418 @@ span[data-tag] {
     rootEl.style.setProperty('--pd-text', f.color)
   }
 
+  const parseTemplateFields = useCallback((source: string): Array<{ type: string; label: string }> => {
+    const out: Array<{ type: string; label: string }> = []
+    const re = /\{\%([a-zA-Z0-9_]+):"([^"]+)"\}/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(source || ''))) {
+      out.push({ type: String(m[1] || '').toLowerCase(), label: String(m[2] || '').trim() })
+    }
+    return out
+  }, [])
+
+  const createVisualField = useCallback((seed?: Partial<Omit<TemplateVisualField, 'type'>> & { type?: string }): TemplateVisualField => {
+    const rawType = String(seed?.type || 'text').toLowerCase()
+    const mappedType: TemplateVisualField['type'] =
+      rawType === 'div' ? 'div' :
+      rawType === 'richtext' ? 'richtext' :
+      rawType === 'textarea' ? 'textarea' :
+      rawType === 'image' ? 'image' :
+      rawType === 'attachment' ? 'attachment' :
+      'text'
+    return {
+      id: seed?.id || `tvf_${Math.random().toString(16).slice(2, 10)}`,
+      type: mappedType,
+      label: seed?.label || '',
+      placeholder: seed?.placeholder || '',
+      required: !!seed?.required,
+      className: seed?.className || '',
+      parentId: seed?.parentId === undefined ? null : (seed?.parentId || null),
+      order: typeof seed?.order === 'number' ? seed.order : 0,
+    }
+  }, [])
+
+  const parseTemplateMeta = useCallback((fieldsJson: string): { fields: Array<{ id?: string; type: string; label: string; placeholder?: string; required?: boolean; className?: string; parentId?: string | null; order?: number }>; cardClass: string } => {
+    try {
+      const parsed = JSON.parse(fieldsJson || '[]')
+      if (Array.isArray(parsed)) {
+        return { fields: parsed, cardClass: '' }
+      }
+      if (parsed && Array.isArray(parsed.fields)) {
+        return { fields: parsed.fields, cardClass: String(parsed.cardClass || '') }
+      }
+    } catch {}
+    return { fields: [], cardClass: '' }
+  }, [])
+
+  const normalizeTemplateFields = useCallback((fields: Array<{ id?: string; type: string; label: string; placeholder?: string; required?: boolean; className?: string; parentId?: string | null; order?: number }>): TemplateVisualField[] => {
+    const normalized = fields.map((f, idx) => createVisualField({
+      id: f.id || `tvf_${Math.random().toString(16).slice(2, 10)}`,
+      type: f.type || 'text',
+      label: f.label || '',
+      placeholder: f.placeholder || '',
+      required: !!f.required,
+      className: f.className || '',
+      parentId: f.parentId ?? null,
+      order: typeof f.order === 'number' ? f.order : idx,
+    }))
+    const ids = new Set(normalized.map(f => f.id))
+    return normalized.map((f, idx) => ({
+      ...f,
+      parentId: f.parentId && ids.has(f.parentId) ? f.parentId : null,
+      order: typeof f.order === 'number' ? f.order : idx,
+    }))
+  }, [createVisualField])
+
+  const createStyleDecl = useCallback((seed?: Partial<TemplateStyleDecl>): TemplateStyleDecl => ({
+    id: seed?.id || `tsd_${Math.random().toString(16).slice(2, 10)}`,
+    property: seed?.property || 'color',
+    value: seed?.value || '',
+  }), [])
+
+  const createStyleBlock = useCallback((seed?: Partial<TemplateStyleBlock>): TemplateStyleBlock => ({
+    id: seed?.id || `tsb_${Math.random().toString(16).slice(2, 10)}`,
+    className: seed?.className || '',
+    customClassName: seed?.customClassName || '',
+    modifier: (seed?.modifier as any) || '',
+    declarations: seed?.declarations || [createStyleDecl()],
+    rawMode: !!seed?.rawMode,
+    rawCss: seed?.rawCss || '',
+  }), [createStyleDecl])
+
+  const buildCssFromStyleBlocks = useCallback((blocks: TemplateStyleBlock[]): string => {
+    const cssParts: string[] = []
+    for (const b of blocks) {
+      if (b.rawMode) {
+        const raw = (b.rawCss || '').trim()
+        if (raw) cssParts.push(raw)
+        continue
+      }
+      const cls = (b.className === '__custom__' ? b.customClassName : b.className).trim()
+      if (!cls) continue
+      const decls = b.declarations
+        .filter(d => d.property.trim() && d.value.trim())
+        .map(d => `  ${d.property.trim()}: ${d.value.trim()};`)
+        .join('\n')
+      if (!decls) continue
+      cssParts.push(`.${cls}${b.modifier} {\n${decls}\n}`)
+    }
+    return cssParts.join('\n\n')
+  }, [])
+
+  const parseCssToStyleBlocks = useCallback((css: string): TemplateStyleBlock[] => {
+    const src = String(css || '').trim()
+    if (!src) return []
+    const blocks: TemplateStyleBlock[] = []
+    const re = /\.([a-zA-Z0-9_-]+)(::before|::after|:hover|:active|:focus)?\s*\{([\s\S]*?)\}/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src))) {
+      const cls = String(m[1] || '').trim()
+      const modifier = (String(m[2] || '') as TemplateStyleBlock['modifier']) || ''
+      const body = String(m[3] || '')
+      const declarations = body
+        .split(';')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const idx = line.indexOf(':')
+          if (idx === -1) return null
+          const property = line.slice(0, idx).trim()
+          const value = line.slice(idx + 1).trim()
+          if (!property) return null
+          return createStyleDecl({ property, value })
+        })
+        .filter(Boolean) as TemplateStyleDecl[]
+      blocks.push(createStyleBlock({
+        className: cls,
+        modifier,
+        declarations: declarations.length ? declarations : [createStyleDecl()],
+        rawMode: false,
+      }))
+    }
+    if (!blocks.length && src) {
+      blocks.push(createStyleBlock({ className: '__custom__', rawMode: true, rawCss: src }))
+    }
+    return blocks
+  }, [createStyleBlock, createStyleDecl])
+
+  const buildTemplateSourceFromVisual = useCallback((name: string, fields: TemplateVisualField[], columns: number) => {
+    const safeCols = Math.max(1, Math.min(3, columns || 1))
+    const tokenFor = (f: TemplateVisualField) => `{%${f.type}:"${String(f.label || '').replace(/"/g, '\\"')}"}` 
+    const byParent = new Map<string | null, TemplateVisualField[]>()
+    for (const f of fields) {
+      const k = f.parentId ?? null
+      const arr = byParent.get(k) || []
+      arr.push(f)
+      byParent.set(k, arr)
+    }
+    for (const [k, arr] of byParent.entries()) {
+      arr.sort((a, b) => a.order - b.order)
+      byParent.set(k, arr)
+    }
+    const renderRows = (parentId: string | null, depth: number): string[] => {
+      const out: string[] = []
+      const nodes = (byParent.get(parentId) || []).filter(f => (f.label || '').trim())
+      for (let i = 0; i < nodes.length;) {
+        const n = nodes[i]
+        if (n.type === 'div') {
+          const cls = (n.className || n.label || 'group').trim()
+          out.push(`${'  '.repeat(depth)}<div class="${cls}">`)
+          out.push(`${'  '.repeat(depth + 1)}# ${n.label}`)
+          out.push(...renderRows(n.id, depth + 1))
+          out.push(`${'  '.repeat(depth)}</div>`)
+          i += 1
+          continue
+        }
+        if (safeCols === 1) {
+          out.push(`${'  '.repeat(depth)}${n.label}: ${tokenFor(n)}`)
+          i += 1
+          continue
+        }
+        const row: TemplateVisualField[] = []
+        while (i < nodes.length && row.length < safeCols && nodes[i].type !== 'div') {
+          row.push(nodes[i]); i++
+        }
+        if (row.length) out.push(`${'  '.repeat(depth)}${row.map(f => `${f.label}: ${tokenFor(f)}`).join(' | ')}`)
+      }
+      return out
+    }
+    const lines: string[] = []
+    const title = (name || '').trim()
+    if (title) lines.push(`## ${title}`)
+    lines.push(...renderRows(null, 0))
+    return lines.join('\n')
+  }, [])
+
+  const normalizeTemplateSpacing = useCallback((input: string): string => {
+    const src = String(input || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    return src.replace(/\{\{tpl:[^}]+\}\}/g, (m: string, offset: number, full: string) => {
+      const start = offset
+      const end = offset + m.length
+      const hasBefore = start > 0 && full[start - 1] === '\n'
+      const hasAfter = end < full.length && full[end] === '\n'
+      let out = m
+      if (!hasBefore) out = '\n' + out
+      if (!hasAfter) out = out + '\n'
+      return out
+    })
+  }, [])
+
+  const templateInstancesById = useCallback(() => {
+    const map = new Map<string, TemplateInstance>()
+    for (const t of templateInstances) map.set(t.id, t)
+    return map
+  }, [templateInstances])
+
+  const loadTemplates = useCallback(async () => {
+    await window.ipcRenderer.invoke('gamedocs:seed-default-templates').catch(() => null)
+    const defs = await window.ipcRenderer.invoke('gamedocs:list-templates').catch(() => []) as TemplateDef[]
+    setTemplateDefs(defs || [])
+  }, [])
+
+  const loadTemplateInstanceLibrary = useCallback(async () => {
+    if (!campaign?.id) return
+    const rows = await window.ipcRenderer.invoke('gamedocs:list-template-instances-all', campaign.id).catch(() => []) as TemplateInstanceLibraryRow[]
+    setTemplateInstanceLibraryRows(rows || [])
+  }, [campaign?.id])
+
+  async function loadObjectScopedData(objectId: string) {
+    const [atts, tins] = await Promise.all([
+      window.ipcRenderer.invoke('gamedocs:list-object-attachments', objectId).catch(() => []),
+      window.ipcRenderer.invoke('gamedocs:list-template-instances', objectId).catch(() => []),
+    ])
+    setAttachments((atts || []) as Attachment[])
+    setTemplateInstances((tins || []) as TemplateInstance[])
+  }
+
+  const saveTemplateDefinition = useCallback(async () => {
+    const name = (templateNameInput || '').trim()
+    if (!name) return
+    const source = templateRawMode
+      ? (templateSourceInput || '')
+      : buildTemplateSourceFromVisual(templateNameInput, templateVisualFields, templateLayoutColumns)
+    const fields = templateRawMode
+      ? parseTemplateFields(source).map((f, idx) => ({ ...f, id: `tvf_${idx}`, className: '', parentId: null, order: idx }))
+      : templateVisualFields
+          .filter(f => (f.label || '').trim())
+          .map(f => ({ id: f.id, type: f.type, label: f.label.trim(), placeholder: f.placeholder || '', required: !!f.required, className: f.className || '', parentId: f.parentId || null, order: f.order }))
+    const cardClass = (templateCardClassInput || '').trim()
+    const fieldsPayload = {
+      version: 3,
+      cardClass,
+      fields: fields.map((f: any) => ({
+        ...f,
+        className: typeof f.className === 'string' ? f.className.trim() : ''
+      })),
+    }
+    const effectiveCss = templateRawMode ? (templateCssInput || null) : (buildCssFromStyleBlocks(templateStyleBlocks) || null)
+    const payload = {
+      id: templateEditId || undefined,
+      name,
+      source,
+      style_css: effectiveCss,
+      fields_json: JSON.stringify(fieldsPayload),
+    }
+    const res = await window.ipcRenderer.invoke('gamedocs:save-template', payload).catch(() => null)
+    if (res?.id) {
+      await loadTemplates()
+      setTemplateEditorOpen(false)
+      setTemplateEditId(null)
+      setTemplateNameInput('')
+      setTemplateSourceInput('')
+      setTemplateCssInput('')
+      setTemplateVisualFields([])
+      setTemplateLayoutColumns(1)
+      setTemplateCardClassInput('')
+      setTemplateStyleBlocks([])
+      toast('Template saved', 'success')
+    }
+  }, [buildCssFromStyleBlocks, buildTemplateSourceFromVisual, loadTemplates, parseTemplateFields, templateCardClassInput, templateCssInput, templateEditId, templateLayoutColumns, templateNameInput, templateRawMode, templateSourceInput, templateStyleBlocks, templateVisualFields])
+
+  const openTemplateEditor = useCallback((tpl?: TemplateDef | null) => {
+    setTemplateEditId(tpl?.id || null)
+    setTemplateNameInput(tpl?.name || '')
+    setTemplateSourceInput(tpl?.source || '')
+    setTemplateCssInput(tpl?.style_css || '')
+    const meta = parseTemplateMeta(tpl?.fields_json || '[]')
+    let parsedFields: Array<{ id?: string; type?: string; label?: string; placeholder?: string; required?: boolean; className?: string; parentId?: string | null; order?: number }> = meta.fields
+    if (!Array.isArray(parsedFields) || parsedFields.length === 0) parsedFields = parseTemplateFields(tpl?.source || '')
+    setTemplateVisualFields(normalizeTemplateFields(parsedFields.map((f, idx) => ({
+      id: f.id || `tvf_${idx}`,
+      type: ((f.type as any) || 'text'),
+      label: String(f.label || ''),
+      placeholder: String((f as any).placeholder || ''),
+      required: !!(f as any).required,
+      className: String((f as any).className || ''),
+      parentId: (f as any).parentId ?? null,
+      order: typeof (f as any).order === 'number' ? (f as any).order : idx,
+    }))))
+    setTemplateCardClassInput(meta.cardClass || '')
+    setTemplateStyleBlocks(parseCssToStyleBlocks(tpl?.style_css || ''))
+    setTemplateLayoutColumns(1)
+    setTemplateEditorOpen(true)
+  }, [normalizeTemplateFields, parseCssToStyleBlocks, parseTemplateFields, parseTemplateMeta])
+
+  const openTemplateInstanceLibrary = useCallback(async () => {
+    await loadTemplateInstanceLibrary()
+    setTemplateInstanceLibraryOpen(true)
+  }, [loadTemplateInstanceLibrary])
+
+  const getTemplateChildren = useCallback((parentId: string | null) => {
+    return templateVisualFields
+      .filter(f => (f.parentId || null) === (parentId || null))
+      .sort((a, b) => a.order - b.order)
+  }, [templateVisualFields])
+
+  const addTemplateField = useCallback((parentId: string | null, type: TemplateVisualField['type']) => {
+    setTemplateVisualFields(prev => {
+      const siblings = prev.filter(f => (f.parentId || null) === (parentId || null))
+      const nextOrder = siblings.length ? Math.max(...siblings.map(s => s.order)) + 1 : 0
+      return [...prev, createVisualField({ type, parentId, order: nextOrder, label: type === 'div' ? 'Group' : `Field ${prev.length + 1}` })]
+    })
+  }, [createVisualField])
+
+  const removeTemplateField = useCallback((fieldId: string) => {
+    setTemplateVisualFields(prev => {
+      const removeIds = new Set<string>([fieldId])
+      let changed = true
+      while (changed) {
+        changed = false
+        for (const f of prev) {
+          if (f.parentId && removeIds.has(f.parentId) && !removeIds.has(f.id)) {
+            removeIds.add(f.id); changed = true
+          }
+        }
+      }
+      return prev.filter(f => !removeIds.has(f.id))
+    })
+  }, [])
+
+  const moveTemplateField = useCallback((fieldId: string, dir: -1 | 1) => {
+    setTemplateVisualFields(prev => {
+      const current = prev.find(f => f.id === fieldId)
+      if (!current) return prev
+      const siblings = prev.filter(f => (f.parentId || null) === (current.parentId || null)).sort((a, b) => a.order - b.order)
+      const idx = siblings.findIndex(s => s.id === fieldId)
+      const swapIdx = idx + dir
+      if (idx < 0 || swapIdx < 0 || swapIdx >= siblings.length) return prev
+      const a = siblings[idx]
+      const b = siblings[swapIdx]
+      return prev.map(f => {
+        if (f.id === a.id) return { ...f, order: b.order }
+        if (f.id === b.id) return { ...f, order: a.order }
+        return f
+      })
+    })
+  }, [])
+
+  useEffect(() => {
+    loadTemplates()
+  }, [loadTemplates])
+
+  useEffect(() => {
+    const styleId = 'pd-template-user-styles'
+    let st = document.getElementById(styleId) as HTMLStyleElement | null
+    const css = (templateDefs || [])
+      .map(t => (t.style_css || '').trim())
+      .filter(Boolean)
+      .join('\n\n')
+    if (!st) {
+      st = document.createElement('style')
+      st.id = styleId
+      document.head.appendChild(st)
+    }
+    st.textContent = css
+  }, [templateDefs])
+
+  useEffect(() => {
+    if (!templateEditorOpen || templateRawMode) return
+    const generated = buildTemplateSourceFromVisual(templateNameInput, templateVisualFields, templateLayoutColumns)
+    setTemplateSourceInput(generated)
+  }, [buildTemplateSourceFromVisual, templateEditorOpen, templateLayoutColumns, templateNameInput, templateRawMode, templateVisualFields])
+
+  useEffect(() => {
+    if (!templateEditorOpen) return
+    if (templateRawMode) {
+      setTemplateCssInput(buildCssFromStyleBlocks(templateStyleBlocks))
+    } else if (templateCssInput.trim()) {
+      setTemplateStyleBlocks(parseCssToStyleBlocks(templateCssInput))
+    }
+  }, [buildCssFromStyleBlocks, parseCssToStyleBlocks, templateCssInput, templateEditorOpen, templateRawMode])
+
+  useEffect(() => {
+    // Template instances load asynchronously after object selection.
+    // Re-render description once they arrive so {{tpl:*}} markers resolve to cards.
+    // Do NOT run on every `desc` keystroke, otherwise caret position resets while typing.
+    if (!editorRef.current) return
+    if (!desc || !desc.includes('{{tpl:')) return
+    const stylingEnabledToUse = settingsLoadedRef.current ? loadedStylingEnabledRef.current : toggleStylingOptions
+    const scrollTop = editorRef.current.scrollTop
+    editorRef.current.innerHTML = descToHtml(desc, stylingEnabledToUse)
+    requestAnimationFrame(() => {
+      if (editorRef.current) editorRef.current.scrollTop = scrollTop
+    })
+  }, [templateInstances])
+
+  useEffect(() => {
+    if (!activeId || !desc || !desc.includes('{{tpl:')) return
+    const ids = Array.from(desc.matchAll(/\{\{tpl:([^}]+)\}\}/g)).map(m => String(m[1] || '').trim()).filter(Boolean)
+    if (!ids.length) return
+    const map = templateInstancesById()
+    const missing = ids.some(id => !map.has(id))
+    if (!missing) return
+    const t = setTimeout(() => { loadObjectScopedData(activeId).catch(() => null) }, 200)
+    return () => clearTimeout(t)
+  }, [activeId, desc, loadObjectScopedData, templateInstances, templateInstancesById])
+
+  const openTemplateInstanceEditor = useCallback((instanceId: string) => {
+    const inst = templateInstances.find(t => t.id === instanceId) || null
+    if (!inst) return
+    let values: Record<string, string> = {}
+    try { values = JSON.parse(inst.values_json || '{}') } catch {}
+    setTemplateInstanceEditor({ open: true, instance: inst, values })
+  }, [templateInstances])
+
   function safeThumbSrc(img: { thumb_data_url?: string | null; thumb_url?: string | null; thumb_path: string }) {
     const data = (img.thumb_data_url || '').trim()
     if (data.startsWith('data:') && data.length > 30) return data
@@ -617,6 +1518,8 @@ span[data-tag] {
         e.preventDefault(); setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true)
       } else if (matchShortcut(e, shortcuts.addImage)) {
         e.preventDefault(); setAddPictureModal(true)
+      } else if (matchShortcut(e, shortcuts.exportShare)) {
+        e.preventDefault(); handleExportToShare()
       } else if (matchShortcut(e, shortcuts.miscStuff)) {
         e.preventDefault(); setShowMisc(true)
       } else if (matchShortcut(e, shortcuts.goToParent)) {
@@ -630,23 +1533,19 @@ span[data-tag] {
       } else if (matchShortcut(e, shortcuts.showHelp)) {
         e.preventDefault(); setShowHelp(true)
       } else if (matchShortcut(e, shortcuts.toggleLock)) {
-        e.preventDefault();
-        if(!activeLocked){
-          window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true);
-          setActiveLocked(true); 
-          toast('Object locked', 'success');
-          window.location.reload();
-        } else {
-          window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, false);
-          setActiveLocked(false); 
-          toast('Object unlocked', 'success');
-          window.location.reload();
-        }
+        e.preventDefault()
+        ;(async () => {
+          if (!activeId) return
+          const nextLocked = !activeLocked
+          await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, nextLocked)
+          setActiveLocked(nextLocked)
+          toast(nextLocked ? 'Object locked' : 'Object unlocked', 'success')
+        })()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [shortcuts, activeName])
+  }, [shortcuts, activeName, activeId, activeLocked, campaign?.id])
 
   useEffect(() => {
     const run = setTimeout(async () => {
@@ -732,13 +1631,25 @@ span[data-tag] {
   function runCommand(cmdId: string) {
     switch (cmdId) {
       case 'settings': setShowSettings(true); setShowPalette(false); return
-      case 'editObject': if (activeLocked) { toast('Object is locked', 'error'); return } setEditName(activeName); setShowEditObject(true); setShowPalette(false); return
+      case 'editObject':
+        if (activeLocked) { toast('Object is locked', 'error'); return }
+        ;(async () => {
+          const obj = await window.ipcRenderer.invoke('gamedocs:get-object', activeId).catch(() => null)
+          setEditName(activeName)
+          setWizardType((obj?.type_id as string) || (obj?.type as string) || 'type_other')
+          setEditTargetId(null)
+          setShowEditObject(true)
+          setShowPalette(false)
+        })()
+        return
       case 'newChild': setCatErr(null); setCatName(''); setCatDescription(''); setShowCat(true); setShowPalette(false); return
       case 'addImage': setAddPictureModal(true); setShowPalette(false); return
       case 'miscStuff': setShowMisc(true); setShowPalette(false); return
       case 'exportShare': handleExportToShare(); setShowPalette(false); return
       case 'testImageCleanup': handleTestImageCleanup(); setShowPalette(false); return
       case 'listAllItems': if (activeLocked) { toast('Object is locked', 'error'); return } handleListAllItems(); setShowPalette(false); return
+      case 'insertTemplate': setTemplatePickerOpen(true); setShowPalette(false); return
+      case 'manageTemplates': setShowSettings(true); setTemplateEditorOpen(true); setShowPalette(false); return
       case 'command': setShowPalette(true); return
       case 'lockObject': (async () => { if (!activeId) return; await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, true); setActiveLocked(true); toast('Object locked', 'success'); setShowPalette(false) })(); return
       case 'unlockObject': (async () => { if (!activeId) return; await window.ipcRenderer.invoke('gamedocs:set-object-locked', activeId, false); setActiveLocked(false); toast('Object unlocked', 'success'); setShowPalette(false) })(); return
@@ -853,10 +1764,10 @@ span[data-tag] {
   useEffect(() => {
     if (!activeId) return
     const handler = setTimeout(async () => {
-      await window.ipcRenderer.invoke('gamedocs:update-object-description', activeId, desc)
+      await window.ipcRenderer.invoke('gamedocs:update-object-description', activeId, normalizeTemplateSpacing(desc))
     }, 500)
     return () => clearTimeout(handler)
-  }, [desc, activeId])
+  }, [desc, activeId, normalizeTemplateSpacing])
 
   // Helper function to get character offset of cursor position in contentEditable
   const getCursorOffset = useCallback((container: HTMLElement, range: Range): number => {
@@ -947,10 +1858,10 @@ span[data-tag] {
     const el = editorRef.current
     if (el) {
       // Debug: log HTML structure before conversion
-      const desc = htmlToDesc(el)
+      const desc = normalizeTemplateSpacing(htmlToDesc(el))
       setDesc(desc)
     }
-  }, [])
+  }, [normalizeTemplateSpacing])
 
   const expandSelectionToWord = useCallback((sel: Selection, e: React.MouseEvent) => {
     const caretRange = (document as any).caretRangeFromPoint ? (document as any).caretRangeFromPoint(e.clientX, e.clientY) : null
@@ -1040,8 +1951,13 @@ span[data-tag] {
     if (tagId) {
       const rows = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId).catch(() => [])
       setCtxLinkedTargets(rows || [])
+      setCtxTagId(tagId)
+      const atts = await window.ipcRenderer.invoke('gamedocs:list-tag-attachments', tagId).catch(() => [])
+      setCtxTagAttachments((atts || []) as Attachment[])
     } else {
       setCtxLinkedTargets([])
+      setCtxTagId(null)
+      setCtxTagAttachments([])
     }
     setCtxMenu({ visible: true, x: e.clientX, y: e.clientY, selText, activeStyles })
   }, [expandSelectionToWord, activeLocked])
@@ -1093,7 +2009,7 @@ span[data-tag] {
     setEditTargetId(targetId)
     setEditName(targetName)
     const obj = await window.ipcRenderer.invoke('gamedocs:get-object', targetId)
-    setWizardType((obj?.type as any) || 'Other')
+    setWizardType((obj?.type_id as string) || (obj?.type as string) || 'type_other')
     const [ot, inc] = await Promise.all([
       window.ipcRenderer.invoke('gamedocs:list-owner-tags', targetId).catch(() => []),
       window.ipcRenderer.invoke('gamedocs:list-incoming-links', targetId).catch(() => []),
@@ -1410,21 +2326,84 @@ span[data-tag] {
   //   }
   // }, [allObjects])
 
+  const ensureWordAttachmentTransition = useCallback(async (tagId: string, targetObjectId: string): Promise<boolean> => {
+    const rows = await window.ipcRenderer.invoke('gamedocs:list-tag-attachments', tagId).catch(() => []) as Attachment[]
+    if (!rows || rows.length === 0) return true
+    const move = await confirmDialog({
+      title: 'Word attachment found',
+      message: 'This word has direct attachments. Would you like to move them to the linked object or remove them?',
+      variant: 'yes-no',
+      posLabel: 'Move',
+      negLabel: 'Remove',
+    })
+    if (move) {
+      await window.ipcRenderer.invoke('gamedocs:move-tag-attachments-to-object', tagId, targetObjectId).catch(() => null)
+      toast('Word attachment moved to linked object', 'success')
+      return true
+    }
+    await window.ipcRenderer.invoke('gamedocs:remove-tag-attachments', tagId).catch(() => null)
+    toast('Word attachment removed', 'info')
+    return true
+  }, [])
+
+  const handleAttachFileToWord = useCallback(async () => {
+    if (!campaign || !activeId || activeLocked) return
+    const range = selectionRangeRef.current
+    const selected = (range?.toString?.() || '').trim()
+    if (!selected) {
+      toast('Select a word first', 'info')
+      return
+    }
+    // If selection is already inside tag, enforce unlinked-only rule.
+    let existingTagId: string | null = null
+    let el: HTMLElement | null = (range?.startContainer as any)?.parentElement || null
+    while (el) {
+      if (el instanceof HTMLElement && el.hasAttribute('data-tag')) { existingTagId = el.getAttribute('data-tag'); break }
+      el = el.parentElement
+    }
+    let resolvedTagId = existingTagId
+    if (existingTagId) {
+      const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', existingTagId).catch(() => [])
+      if ((targets || []).length > 0) {
+        toast('Linked words cannot have direct attachments', 'error')
+        return
+      }
+    } else {
+      const created = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign.id, activeId).catch(() => null)
+      const tid = created?.tagId as string | undefined
+      if (!tid) return
+      replaceSelectionWithSpan(selected, tid, isLinkLastWordMode)
+      resolvedTagId = tid
+      setDesc(htmlToDesc(editorRef.current!))
+    }
+    const pick = await window.ipcRenderer.invoke('gamedocs:choose-attachment-file').catch(() => null)
+    if (!pick?.path) return
+    if (!resolvedTagId) return
+    const added = await window.ipcRenderer.invoke('gamedocs:add-attachment', { tagId: resolvedTagId, sourcePath: pick.path, name: null, ownerObjectId: activeId, gameId: campaign.id }).catch((e: any) => {
+      toast(e?.message || 'Failed adding word attachment', 'error')
+      return null
+    })
+    if (added) toast('Word attachment added', 'success')
+  }, [activeId, activeLocked, campaign, isLinkLastWordMode])
+
   const handleSelectPathChoice = useCallback(async (pc: { id: string; name: string; path: string }) => {
     const createdNew = !linkerTagId
     let tid = linkerTagId
     if (!tid) {
-      const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id)
+      const ownerId = activeId || root?.id
+      if (!ownerId) return
+      const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id, ownerId)
       tid = res.tagId
       setLinkerTagId(tid)
     }
     if (!tid) return
+    await ensureWordAttachmentTransition(tid, pc.id)
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, pc.id)
     if (createdNew) {
     replaceSelectionWithSpan(linkerInput || pc.name, tid, isLinkLastWordMode)
     }
     setShowLinker(false)
-  }, [campaign, linkerInput, linkerTagId, isLinkLastWordMode])
+  }, [activeId, campaign, linkerInput, linkerTagId, isLinkLastWordMode, ensureWordAttachmentTransition, root?.id])
 
   const handleSelectMatch = useCallback(async (m: { id: string; name: string }) => {
     const same = await window.ipcRenderer.invoke('gamedocs:get-objects-by-name-with-paths', campaign!.id, m.name)
@@ -1435,17 +2414,20 @@ span[data-tag] {
     const createdNew = !linkerTagId
     let tid = linkerTagId
     if (!tid) {
-      const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id)
+      const ownerId = activeId || root?.id
+      if (!ownerId) return
+      const res = await window.ipcRenderer.invoke('gamedocs:create-link-tag', campaign!.id, ownerId)
       tid = res.tagId
       setLinkerTagId(tid)
     }
     if (!tid) return
+    await ensureWordAttachmentTransition(tid, m.id)
     await window.ipcRenderer.invoke('gamedocs:add-link-target', tid, m.id)
     if (createdNew) {
     replaceSelectionWithSpan(linkerInput || m.name, tid, isLinkLastWordMode)
     }
     setShowLinker(false)
-  }, [campaign, linkerInput, linkerTagId, isLinkLastWordMode])
+  }, [activeId, campaign, linkerInput, linkerTagId, isLinkLastWordMode, ensureWordAttachmentTransition, root?.id])
 
   // const handleWizardCreate = useCallback(async () => {
   //   const label = (wizardName || '').trim()
@@ -1542,7 +2524,7 @@ span[data-tag] {
     requestAnimationFrame(async () => {
       if (editorRef.current) {
         // Strip broken/empty references: remove tokens whose tag id no longer exists
-        const cleaned = await removeMissingTags(text)
+        const cleaned = normalizeTemplateSpacing(await removeMissingTags(text))
         // Use loaded value directly if settings have loaded, otherwise use current state
         const stylingEnabledToUse = settingsLoadedRef.current ? loadedStylingEnabledRef.current : toggleStylingOptions
         editorRef.current.innerHTML = descToHtml(cleaned, stylingEnabledToUse)
@@ -1556,6 +2538,12 @@ span[data-tag] {
       const imgs = await window.ipcRenderer.invoke('gamedocs:list-images', obj.id)
       setImages(imgs || [])
     } catch { setImages([]) }
+    try {
+      await loadObjectScopedData(obj.id)
+    } catch {
+      setAttachments([])
+      setTemplateInstances([])
+    }
     const pId = obj?.parent_id as string | null
     if (pId) {
       const pobj = await window.ipcRenderer.invoke('gamedocs:get-object', pId)
@@ -1822,6 +2810,8 @@ span[data-tag] {
 
   function descToHtml(text: string, forceStylingEnabled?: boolean): string {
     const stylingEnabled = forceStylingEnabled !== undefined ? forceStylingEnabled : toggleStylingOptions
+    const esc = (v: string) => String(v || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    const templateMap = templateInstancesById()
     // Helper: render style tokens in plain text using classed spans. Supports [{italic|...}] initially.
     function renderStylesToHtml(input: string): string {
       const OPEN = '[{'
@@ -1892,12 +2882,24 @@ span[data-tag] {
 
     // Phase 1: protect tags with placeholders and collect them (scanner supports styles in label)
     const placeholders: Array<{ key: string; label: string; tag: string }> = []
+    const templatePlaceholders: Array<{ key: string; id: string }> = []
     let phIndex = 0
     const src = String(text)
     let iScan = 0
     const protectedParts: string[] = []
     while (iScan < src.length) {
       if (src[iScan] === '\\' && iScan + 1 < src.length) { protectedParts.push(src[iScan + 1]); iScan += 2; continue }
+      if (src.startsWith('{{tpl:', iScan)) {
+        const close = src.indexOf('}}', iScan + 6)
+        if (close !== -1) {
+          const id = src.substring(iScan + 6, close).trim()
+          const key = `\u0001TPL${phIndex++}\u0001`
+          templatePlaceholders.push({ key, id })
+          protectedParts.push(key)
+          iScan = close + 2
+          continue
+        }
+      }
       if (src.startsWith('[[', iScan)) {
         const start = iScan
         iScan += 2
@@ -1945,6 +2947,65 @@ span[data-tag] {
       const safeLabelHtml = renderStylesToHtml(ph.label)
       const tagSpan = `<span data-tag="${ph.tag}" style="background: var(--pd-tag-bg, rgba(100,149,237,0.2)); border-bottom: 1px dotted var(--pd-tag-border, #6495ED); cursor: pointer;">${safeLabelHtml}</span>`
       restored = restored.split(ph.key).join(tagSpan)
+    }
+    for (const ph of templatePlaceholders) {
+      const inst = templateMap.get(ph.id)
+      if (!inst) {
+        restored = restored.split(ph.key).join(`<div class="template-instance-missing" data-template-instance-id="${esc(ph.id)}">Template instance loading…</div>`)
+        continue
+      }
+      const meta = parseTemplateMeta(inst.template_fields || '[]')
+      const fields = normalizeTemplateFields(meta.fields as any[])
+      const values = (() => { try { return JSON.parse(inst.values_json || '{}') as Record<string, string> } catch { return {} as Record<string, string> } })()
+      const byParent = new Map<string | null, TemplateVisualField[]>()
+      for (const f of fields) {
+        const k = f.parentId ?? null
+        const arr = byParent.get(k) || []
+        arr.push(f)
+        byParent.set(k, arr)
+      }
+      for (const [k, arr] of byParent.entries()) {
+        arr.sort((a, b) => a.order - b.order)
+        byParent.set(k, arr)
+      }
+      const renderRows = (parentId: string | null): string => {
+        const nodes = byParent.get(parentId) || []
+        return nodes.map((f) => {
+          const rowCls = String(f.className || '').trim()
+          const clsAttr = rowCls ? ` ${esc(rowCls)}` : ''
+          if (f.type === 'div') {
+            const inner = renderRows(f.id)
+            return `<div class="template-field-group${clsAttr}">${inner}</div>`
+          }
+          const val = values[f.label] || ''
+          const labelHtml = showTemplateFieldLabels ? `<span class="template-field-label">${esc(f.label)}:</span> ` : ''
+          if (f.type === 'image') {
+            const looksData = /^data:image\//i.test(val)
+            const looksPath = /^[A-Za-z]:[\\/]|^\\\\|^\//.test(val)
+            const imgSrc = looksData
+              ? val
+              : looksPath
+                ? `file:///${val.replace(/\\/g, '/').replace(/^\/+/, '')}`
+                : ''
+            if (imgSrc) {
+              return `<div class="template-field-row template-field-user${clsAttr}">${labelHtml}<img class="template-field-image" src="${esc(imgSrc)}" alt="${esc(f.label)}" /></div>`
+            }
+          }
+          if (f.type === 'richtext') {
+            const richHtml = val.trim() ? renderStylesToHtml(val).replace(/\n/g, '<br>') : `<span class="template-field-placeholder">${esc(String(f.placeholder || ''))}</span>`
+            return `<div class="template-field-row template-field-user${clsAttr}">${labelHtml}<div class="template-field-richtext">${richHtml}</div></div>`
+          }
+          const shown = val.trim() ? esc(val) : `<span class="template-field-placeholder">${esc(String(f.placeholder || ''))}</span>`
+          return `<div class="template-field-row template-field-user${clsAttr}">${labelHtml}<span class="template-field-value">${shown}</span></div>`
+        }).join('')
+      }
+      const rows = renderRows(null)
+      const cardCls = String(meta.cardClass || '').trim()
+      const cardClsAttr = cardCls ? ` ${esc(cardCls)}` : ''
+      const colorValue = String(values.Color || values.color || '').trim()
+      const colorStyle = colorValue ? ` style="--callout-accent:${esc(colorValue)}"` : ''
+      const card = `<div class="template-instance-card${cardClsAttr}"${colorStyle} data-template-instance-id="${esc(inst.id)}" contenteditable="false"><button class="template-instance-remove-btn" data-template-remove="${esc(inst.id)}" type="button" title="Remove instance">X</button>${rows || '<div class="template-field-row muted">No fields</div>'}<button class="template-instance-edit-btn" data-template-edit="${esc(inst.id)}" type="button">Edit</button></div>`
+      restored = restored.split(ph.key).join(card)
     }
 
     // Preserve explicit newlines using <br>
@@ -2033,6 +3094,10 @@ span[data-tag] {
       if (node.nodeType !== Node.ELEMENT_NODE) return ''
       const el = node as HTMLElement
       if (el.tagName === 'BR') return '\n'
+      if (el.matches('[data-template-instance-id]')) {
+        const id = el.getAttribute('data-template-instance-id') || ''
+        return `{{tpl:${id}}}`
+      }
       if (el.tagName === 'DIV') {
         let s = ''
         // mimic existing behavior: newline before div content when there is a previous sibling
@@ -2093,13 +3158,29 @@ span[data-tag] {
     let parent = await window.ipcRenderer.invoke('gamedocs:get-parent', campaign!.id, activeId || root!.id) as { id: string; name: string }
     if (parent) selectObject(parent.id, parent.name)
   }
+  async function handleGoToSibling(step: -1 | 1) {
+    if (!campaign || !root) return
+    const currentId = activeId || root.id
+    const parent = await window.ipcRenderer.invoke('gamedocs:get-parent', campaign.id, currentId).catch(() => null) as { id: string; name: string } | null
+    const siblings = await window.ipcRenderer.invoke('gamedocs:list-children', campaign.id, parent?.id || null).catch(() => []) as Array<{ id: string; name: string }>
+    if (!siblings.length) return
+    const idx = siblings.findIndex(s => s.id === currentId)
+    if (idx < 0) return
+    const nextIdx = idx + step
+    if (nextIdx < 0 || nextIdx >= siblings.length) {
+      toast(step < 0 ? 'No previous sibling' : 'No next sibling', 'info')
+      return
+    }
+    const target = siblings[nextIdx]
+    if (target) {
+      selectObject(target.id, target.name)
+    }
+  }
   function handleGoToPreviousSibling() {
-    // TODO: Implement this
-    //if (previousSibling) selectObject(previousSibling.id, previousSibling.name)
+    void handleGoToSibling(-1)
   }
   function handleGoToNextSibling() {
-    // TODO: Implement this
-    //if (nextSibling) selectObject(nextSibling.id, nextSibling.name)
+    void handleGoToSibling(1)
   }
   function handleLinkLastWord() {
     const editor = editorRef.current
@@ -2173,6 +3254,68 @@ span[data-tag] {
     }
   }
 
+  function insertTemplateMarkerAtSelection(marker: string) {
+    const editor = editorRef.current
+    if (!editor) return
+    const sel = window.getSelection()
+    let range: Range | null = null
+
+    if (sel && sel.rangeCount > 0) {
+      const candidate = sel.getRangeAt(0)
+      if (editor.contains(candidate.startContainer)) {
+        range = candidate.cloneRange()
+      }
+    }
+
+    if (!range && selectionRangeRef.current && editor.contains(selectionRangeRef.current.startContainer)) {
+      range = selectionRangeRef.current.cloneRange()
+    }
+
+    let usedFallbackToEnd = false
+    // If we don't have an editor-local selection, append to the end of editor content.
+    if (!range) {
+      range = document.createRange()
+      range.selectNodeContents(editor)
+      range.collapse(false)
+      usedFallbackToEnd = true
+    }
+
+    range.deleteContents()
+    const textNode = document.createTextNode(marker)
+    range.insertNode(textNode)
+    range.setStartAfter(textNode)
+    range.collapse(true)
+    if (sel) {
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+    selectionRangeRef.current = range.cloneRange()
+
+    const next = normalizeTemplateSpacing(htmlToDesc(editor))
+    setDesc(next)
+    // Re-render immediately so template markers become cards instead of visible raw tokens.
+    editor.innerHTML = descToHtml(next)
+    if (usedFallbackToEnd) {
+      toast('Template inserted at end of editor (selection was not in editor)', 'info')
+    }
+  }
+
+  const handleInsertTemplateInstance = useCallback(async (tpl: TemplateDef) => {
+    if (!activeId) return
+    const fields = normalizeTemplateFields(parseTemplateMeta(tpl.fields_json || '[]').fields as any[])
+    const values: Record<string, string> = {}
+    for (const f of fields) {
+      if (f.type !== 'div') values[f.label] = ''
+    }
+    const created = await window.ipcRenderer.invoke('gamedocs:create-template-instance', activeId, tpl.id, JSON.stringify(values)).catch(() => null)
+    const instanceId = created?.id as string | undefined
+    if (!instanceId) return
+    insertTemplateMarkerAtSelection(`{{tpl:${instanceId}}}`)
+    await loadObjectScopedData(activeId)
+    setTemplatePickerOpen(false)
+    toast('Template inserted', 'success')
+  }, [activeId, loadObjectScopedData, normalizeTemplateFields, parseTemplateMeta])
+
   async function removeMissingTags(text: string): Promise<string> {
     const tokenRe = /\[\[([^\]|]+)\|([^\]]+)\]\]/g
     let m: RegExpExecArray | null
@@ -2184,10 +3327,12 @@ span[data-tag] {
       if (seen.has(tagId) || missing.has(tagId)) continue
       try {
         const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId)
-        if (!Array.isArray(targets) || targets.length === 0) {
-          missing.add(tagId)
-        } else {
+        if (Array.isArray(targets) && targets.length > 0) {
           seen.add(tagId)
+        } else {
+          const atts = await window.ipcRenderer.invoke('gamedocs:list-tag-attachments', tagId).catch(() => [])
+          if (!Array.isArray(atts) || atts.length === 0) missing.add(tagId)
+          else seen.add(tagId)
         }
       } catch {
         missing.add(tagId)
@@ -2203,7 +3348,7 @@ span[data-tag] {
   if (!campaign) return <div className="pad-16">Loading…</div>
 
   function createOverlayClickHandler(
-    closeFn: React.Dispatch<React.SetStateAction<boolean>>
+    closeFn: React.Dispatch<React.SetStateAction<boolean>> | ((next: boolean) => void)
   ) {
     let mouseDownOnOverlay = false
   
@@ -2214,19 +3359,20 @@ span[data-tag] {
       onClick: (e: React.MouseEvent<HTMLDivElement>) => {
         e.stopPropagation()
         if (mouseDownOnOverlay && e.target === e.currentTarget) {
-          closeFn(false)
+          ;(closeFn as any)(false)
         }
       }
     }
   }
 
-  function getIconForType(type: string) {
-    switch (type) {
-      case 'Place': return <span className="icon-container"><i className="ri-map-pin-2-line"></i></span>
-      case 'Person': return <span className="icon-container"><i className="ri-user-line"></i></span>
-      case 'Lore': return <span className="icon-container"><i className="ri-quill-pen-ai-line"></i></span>
-      default:
-      case 'Other': return <span className="icon-container"><i className="ri-route-line"></i></span>
+  function getIconForType(typeValue: string, typeIcon?: string) {
+    const resolvedIcon = String(typeIcon || getTypeByValue(typeValue)?.icon || '').trim()
+    if (resolvedIcon) return <span className="icon-container"><i className={resolvedIcon}></i></span>
+    switch ((typeValue || '').toLowerCase()) {
+      case 'place': return <span className="icon-container"><i className="ri-map-pin-2-line"></i></span>
+      case 'person': return <span className="icon-container"><i className="ri-user-line"></i></span>
+      case 'lore': return <span className="icon-container"><i className="ri-quill-pen-ai-line"></i></span>
+      default: return <span className="icon-container"><i className="ri-route-line"></i></span>
     }
   }
 
@@ -3104,7 +4250,9 @@ span[data-tag] {
                       className="child-item"
                       data-child-id={c.id}
                     >
-                      {getIconForType(c.type)}{c.name}
+                      {getIconForType((c.type_id as string) || c.type, c.type_icon)}
+                      {c.name}
+                      {c.type_hidden ? <i className="ri-eye-off-line" title="Type hidden for this campaign" style={{ marginLeft: 6, opacity: 0.75 }}></i> : null}
                     </div>
                   )
                 })}
@@ -3121,6 +4269,16 @@ span[data-tag] {
             contentEditable={!activeLocked}
             suppressContentEditableWarning
             onInput={handleEditorInput}
+            onDragOver={(e) => {
+              const hasFiles = !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'))
+              if (hasFiles && !activeLocked) e.preventDefault()
+            }}
+            onDrop={async (e) => {
+              const hasFiles = !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'))
+              if (!hasFiles || activeLocked) return
+              e.preventDefault()
+              await handleDropObjectAttachments(e.dataTransfer?.files || null)
+            }}
             onContextMenu={handleEditorContextMenu}
             onMouseMove={(e) => {
               const target = e.target as HTMLElement
@@ -3197,46 +4355,70 @@ span[data-tag] {
               hoverDebounceTimeoutRef.current = setTimeout(async () => {
                 lastHoverTagRef.current = tagId
                 const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId).catch(() => []) as Array<{ id: string; name: string; path: string }>
-                if (!Array.isArray(targets) || targets.length !== 1) {
+                if (!Array.isArray(targets) || targets.length > 1) {
                   if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
                   return
                 }
-                const only = targets[0]
-                const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
-                if (!preview) return
-                let imgUrl = (preview as any).thumbDataUrl || null
-                if (!imgUrl || imgUrl == 'data:image/png;base64,' || /^data:[^;]+;base64,?$/i.test(imgUrl as any) || (typeof imgUrl === 'string' && (imgUrl as string).length < 32)) {
-                  const primary = (preview as any).thumbPath as (string | undefined)
-                  const secondary = (preview as any).imagePath as (string | undefined)
-                  if (primary) {
-                    const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
-                    if (resA?.ok) imgUrl = resA.dataUrl
+                const pad = 10
+                const CARD_W = 300
+                const baseX = anchorX
+                const baseY = anchorY + 10 + 30
+                const targetX = baseX - (CARD_W / 2)
+                const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
+                const ny = baseY
+
+                // Linked tag -> show linked object preview
+                if (targets.length === 1) {
+                  const only = targets[0]
+                  const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', only.id).catch(() => null) as { id: string; name: string; snippet: string; fileUrl?: string | null; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
+                  if (!preview) return
+                  const mainAttachment = (preview as any)?.mainAttachment as { name?: string | null; ext?: string | null } | null
+                  let imgUrl = (preview as any).thumbDataUrl || null
+                  if (!imgUrl || imgUrl == 'data:image/png;base64,' || /^data:[^;]+;base64,?$/i.test(imgUrl as any) || (typeof imgUrl === 'string' && (imgUrl as string).length < 32)) {
+                    const primary = (preview as any).thumbPath as (string | undefined)
+                    const secondary = (preview as any).imagePath as (string | undefined)
+                    if (primary) {
+                      const resA = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', primary).catch(() => null)
+                      if (resA?.ok) imgUrl = resA.dataUrl
+                    }
+                    if (!imgUrl && secondary) {
+                      const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
+                      if (resB?.ok) imgUrl = resB.dataUrl
+                    }
+                    if (!imgUrl && (preview as any).fileUrl) {
+                      try {
+                        const u = new URL((preview as any).fileUrl)
+                        let p = decodeURIComponent(u.pathname)
+                        if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
+                        const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
+                        if (res2?.ok) imgUrl = res2.dataUrl
+                      } catch {}
+                    }
                   }
-                  if (!imgUrl && secondary) {
-                    const resB = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', secondary).catch(() => null)
-                    if (resB?.ok) imgUrl = resB.dataUrl
-                  }
-                  if (!imgUrl && (preview as any).fileUrl) {
-                    try {
-                      const u = new URL((preview as any).fileUrl)
-                      let p = decodeURIComponent(u.pathname)
-                      if (p.startsWith('/') && p[2] === ':') p = p.slice(1)
-                      const res2 = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', p).catch(() => null)
-                      if (res2?.ok) imgUrl = res2.dataUrl
-                    } catch {}
-                  }
+                  const attachmentText = mainAttachment ? `\nMain file: ${(mainAttachment.name || '').trim() || ((mainAttachment.ext || '').toUpperCase() || 'FILE')}` : ''
+                  setHoverCard({ visible: true, x: nx, y: ny, name: preview.name || only.name, snippet: (preview.snippet || '') + attachmentText, imageUrl: imgUrl })
+                  return
                 }
-                // Debug dump for hover preview resolution
-                {
-                  const pad = 10
-                  const CARD_W = 300
-                  const baseX = anchorX // Number.isFinite(clientX) ? clientX : anchorX
-                  const baseY = anchorY + 10 + 30 // Number.isFinite(clientY) ? clientY : anchorY
-                  const targetX = baseX - (CARD_W / 2)
-                  const nx = Math.max(pad, Math.min(targetX, window.innerWidth - pad - CARD_W))
-                  const ny = baseY
-                  setHoverCard({ visible: true, x: nx, y: ny, name: preview.name || only.name, snippet: preview.snippet || '', imageUrl: imgUrl })
+
+                // Unlinked tag -> show word attachment preview
+                const rows = await window.ipcRenderer.invoke('gamedocs:list-tag-attachments', tagId).catch(() => []) as Attachment[]
+                if (!rows || rows.length === 0) {
+                  if (hoverCard.visible) setHoverCard(h => ({ ...h, visible: false }))
+                  return
                 }
+                const first = rows[0]
+                let imgUrl: string | null = null
+                const mime = String(first.mime || '').toLowerCase()
+                const ext = String(first.ext || '').toLowerCase()
+                const isImage = mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)
+                if (isImage && first.file_path) {
+                  const res = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', first.file_path).catch(() => null)
+                  if (res?.ok) imgUrl = res.dataUrl
+                }
+                const word = (span.textContent || '').trim() || 'Word attachment'
+                const names = rows.slice(0, 3).map(r => (r.name || '').trim() || (r.ext || 'file').toUpperCase()).join(', ')
+                const more = rows.length > 3 ? ` (+${rows.length - 3} more)` : ''
+                setHoverCard({ visible: true, x: nx, y: ny, name: word, snippet: `Attached: ${names}${more}\nRight-click this word to remove attachments.`, imageUrl: imgUrl })
               }, hoverDebounce)
             }}
             onMouseLeave={() => { 
@@ -3249,6 +4431,28 @@ span[data-tag] {
             }}
             onClick={async (e) => {
               const target = e.target as HTMLElement
+              const removeBtn = target.closest('[data-template-remove]') as HTMLElement | null
+              if (removeBtn && editorRef.current) {
+                const id = removeBtn.getAttribute('data-template-remove') || ''
+                const card = removeBtn.closest('[data-template-instance-id]') as HTMLElement | null
+                if (card) {
+                  card.remove()
+                  const next = normalizeTemplateSpacing(htmlToDesc(editorRef.current))
+                  setDesc(next)
+                  if (id && !next.includes(`{{tpl:${id}}}`)) {
+                    await window.ipcRenderer.invoke('gamedocs:delete-template-instance', id).catch(() => null)
+                  }
+                  if (activeId) await loadObjectScopedData(activeId)
+                  toast('Template instance removed', 'success')
+                }
+                return
+              }
+              const editBtn = target.closest('[data-template-edit]') as HTMLElement | null
+              if (editBtn) {
+                const id = editBtn.getAttribute('data-template-edit') || ''
+                if (id) openTemplateInstanceEditor(id)
+                return
+              }
               // Find the link span, even if target is a style tag inside it or contains it
               let span: HTMLElement | null = null
               if (target) {
@@ -3283,7 +4487,29 @@ span[data-tag] {
               const tagId = span.getAttribute('data-tag') || ''
               if (!tagId) return
               const targets = await window.ipcRenderer.invoke('gamedocs:list-link-targets', tagId).catch(() => []) as Array<{ id: string; name: string; path: string }>
-              if (!Array.isArray(targets) || targets.length === 0) return
+              if (!Array.isArray(targets) || targets.length === 0) {
+                const rows = await window.ipcRenderer.invoke('gamedocs:list-tag-attachments', tagId).catch(() => []) as Attachment[]
+                if (!rows || rows.length === 0) return
+                if (rows.length === 1) {
+                  await handleOpenWordAttachment(rows[0])
+                  return
+                }
+                setTagMenuWordAttachments(rows)
+                setTagMenu({
+                  visible: true,
+                  x: (e as any).clientX,
+                  y: (e as any).clientY,
+                  items: rows.map((r, idx) => ({
+                    id: `__ATTACHMENT__${r.id}`,
+                    name: (r.name || '').trim() || `Attachment ${idx + 1}`,
+                    path: (r.ext || '').toUpperCase()
+                  })),
+                  hoverPreview: null,
+                  source: 'tag'
+                })
+                setHoverCard(h => ({ ...h, visible: false }))
+                return
+              }
               // Shift+click jumps to first
               if ((e as React.MouseEvent).shiftKey) {
                 const t0 = targets[0]
@@ -3298,6 +4524,14 @@ span[data-tag] {
               } else {
                 setTagMenu({ visible: true, x: (e as any).clientX, y: (e as any).clientY, items: targets, hoverPreview: null, source: 'tag' })
                 setHoverCard(h => ({ ...h, visible: false }))
+              }
+            }}
+            onDoubleClick={(e) => {
+              const target = e.target as HTMLElement
+              const card = target.closest('[data-template-instance-id]') as HTMLElement | null
+              if (card) {
+                const id = card.getAttribute('data-template-instance-id') || ''
+                if (id) openTemplateInstanceEditor(id)
               }
             }}
             onKeyDown={(e) => {
@@ -3571,6 +4805,16 @@ span[data-tag] {
               <div className="ctx-menu-section-title">Links</div>
               <div className="separator" />
               <div className="ctx-menu-item"  onClick={handleAddLinkOpen}>Link Object</div>
+              <div className="ctx-menu-item" onClick={async () => { await handleAttachFileToWord(); setCtxMenu(m => ({ ...m, visible: false })) }}>Attach File to Word</div>
+              {ctxTagId && ctxTagAttachments.length > 0 ? (
+                <div className="ctx-menu-item" onClick={async () => {
+                  await window.ipcRenderer.invoke('gamedocs:remove-tag-attachments', ctxTagId).catch(() => null)
+                  setCtxTagAttachments([])
+                  toast('Word attachment removed', 'info')
+                  setCtxMenu(m => ({ ...m, visible: false }))
+                }}>Remove Word Attachment{ctxTagAttachments.length > 1 ? 's' : ''}</div>
+              ) : null}
+              <div className="ctx-menu-item" onClick={() => { setTemplatePickerOpen(true); setCtxMenu(m => ({ ...m, visible: false })) }}>Insert Template</div>
 
               {/* Only show edit and clear if there are linked targets */}
               {ctxLinkedTargets.length > 0 ? (
@@ -3642,6 +4886,7 @@ span[data-tag] {
                   <div key={t.id} className="tag-menu-item"
                     onMouseEnter={async () => {
                       if (tagMenu.source !== 'tag') return
+                      if (t.id.startsWith('__ATTACHMENT__')) return
                       // fetch preview for object menu items
                       const preview = await window.ipcRenderer.invoke('gamedocs:get-object-preview', t.id).catch(() => null) as { id: string; name: string; snippet: string; thumbDataUrl?: string | null; thumbPath?: string | null; imagePath?: string | null } | null
                       let imgUrl = (preview as any)?.thumbDataUrl || null
@@ -3661,6 +4906,13 @@ span[data-tag] {
                     }}
                     onClick={async () => {
                       if (/^__SEPARATOR/.test(t.id)) return
+                      if (t.id.startsWith('__ATTACHMENT__')) {
+                        const aid = t.id.replace('__ATTACHMENT__', '')
+                        const row = tagMenuWordAttachments.find(r => r.id === aid)
+                        if (row) await handleOpenWordAttachment(row)
+                        setTagMenu(m => ({ ...m, visible: false, hoverPreview: null }))
+                        return
+                      }
                       if (t.id === '__DELETE__') {
                         const ok = await confirmDialog({ title: 'Delete', message: `Delete '${activeName}' and all descendants?`, variant: 'yes-no' })
                         if (!ok) { setTagMenu(m => ({ ...m, visible: false, hoverPreview: null })); return }
@@ -3693,7 +4945,7 @@ span[data-tag] {
                         setEditName(activeName)
                         // preload relations
                         const obj = await window.ipcRenderer.invoke('gamedocs:get-object', activeId)
-                        setWizardType((obj?.type as any) || 'Other')
+                        setWizardType((obj?.type_id as string) || (obj?.type as string) || 'type_other')
                         const [ot, inc] = await Promise.all([
                           window.ipcRenderer.invoke('gamedocs:list-owner-tags', activeId).catch(() => []),
                           window.ipcRenderer.invoke('gamedocs:list-incoming-links', activeId).catch(() => []),
@@ -3845,6 +5097,27 @@ span[data-tag] {
             </div>
           )}
 
+          {attachments.length > 0 && (
+            <div className="images-section">
+              <div className="images-title">Files</div>
+              <div className="thumb-list">
+                {attachments.map(att => (
+                  <div key={att.id} className="thumb-card w-200">
+                    <div className="thumb-row">
+                      <strong title={att.name || ''}>{att.name || '(unnamed)'}</strong>
+                      {att.is_main ? <span title='Main file'>⭐</span> : null}
+                    </div>
+                    <div className="muted">{(att.ext || '').replace('.', '').toUpperCase() || 'FILE'}</div>
+                    <div className="justify-between mt-6 items-center">
+                      <button onClick={async () => { await handleOpenAttachment(att) }}>Open</button>
+                      <button onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-attachment', att.id); await loadObjectScopedData(activeId) }}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Edit Object modal */}
           {showEditObject && (
             <div className="edit-modal-overlay" {...createOverlayClickHandler(setShowEditObject)}>
@@ -3874,10 +5147,11 @@ span[data-tag] {
                         <label className="flex-1">Name <input value={editName} onChange={e => setEditName(e.target.value)} className="input-100" /></label>
                         <label className="w-160">Type
                           <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} className="input-100">
-                            <option value='Other'>Other</option>
-                            <option value='Place'>Place</option>
-                            <option value='Person'>Person</option>
-                            <option value='Lore'>Lore</option>
+                            {getSelectableTypes(wizardType).map(t => (
+                              <option key={t.id} value={t.id}>
+                                {t.name}{t.isHidden ? ' (hidden)' : ''}
+                              </option>
+                            ))}
                           </select>
                         </label>
                       </div>
@@ -3914,6 +5188,7 @@ span[data-tag] {
                     </div>
                     <div className="boxed">
                       <div className="box-title">Images</div>
+                      <div className="mt-6"><button onClick={handleAddObjectAttachment}>Add file attachment</button></div>
                       {images.length === 0 ? <div className="muted">No images</div> : (
                         <div className="thumb-list">
                           {images.map(img => (
@@ -3934,6 +5209,21 @@ span[data-tag] {
                             </div>
                           ))}
                         </div>
+                      )}
+                      <div className="box-title mt-12">Files</div>
+                      {attachments.length === 0 ? <div className="muted">No files</div> : (
+                        <ul className="list-reset">
+                          {attachments.map(att => (
+                            <li key={att.id} className="list-item-row">
+                              <span className="tag-name">{att.name || '(unnamed)'} {att.is_main ? '⭐' : ''}</span>
+                              <div className="flex-gap-6">
+                                <button onClick={async () => { await handleOpenAttachment(att) }}>Open</button>
+                                <button onClick={async () => { await window.ipcRenderer.invoke('gamedocs:set-main-attachment', activeId, att.id); await loadObjectScopedData(activeId) }}>Main</button>
+                                <button onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-attachment', att.id); await loadObjectScopedData(activeId) }}>Delete</button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
                       )}
                     </div>
                   </div>
@@ -4143,6 +5433,27 @@ span[data-tag] {
             </div>
           )}
 
+          {/* PDF lightbox modal */}
+          {pdfModal.visible && (
+            <div className="image-modal-overlay" onClick={() => setPdfModal({ visible: false, dataUrl: null, filePath: null, name: '' })}>
+              <div className="image-modal-content" style={{ width: 'min(96vw, 1100px)', height: 'min(92vh, 900px)', background: '#121212', padding: 12 }} onClick={e => e.stopPropagation()}>
+                <div className="flex-row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div>{pdfModal.name || 'PDF'}</div>
+                  <button onClick={() => setPdfModal({ visible: false, dataUrl: null, filePath: null, name: '' })}>Close</button>
+                </div>
+                {pdfModal.filePath ? (
+                  <InlinePdfViewer
+                    filePath={pdfModal.filePath}
+                    onPopout={async () => { await window.ipcRenderer.invoke('gamedocs:open-pdf-window', pdfModal.filePath).catch(() => null) }}
+                    onExternal={async () => { await window.ipcRenderer.invoke('gamedocs:open-file-default', pdfModal.filePath).catch(() => null) }}
+                  />
+                ) : (
+                  <div className="muted">Unable to load PDF preview.</div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Help modal */}
           {showHelp && (
             <div className="help-modal-overlay" onKeyDown={e => { if (e.key === 'Escape'){setShowHelp(false);} }} {...createOverlayClickHandler(setShowHelp)}>
@@ -4197,6 +5508,9 @@ span[data-tag] {
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.hoverDebounce', hoverDebounce)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.sidebarWidth', sidebarWidth)
                         await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.stylingEnabled', toggleStylingOptions)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.exportStyledTemplates', exportTemplateStyled)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.templateShowFieldLabels', showTemplateFieldLabels)
+                        await window.ipcRenderer.invoke('gamedocs:set-setting', 'ui.pdfInlinePreferred', pdfInlinePreferred)
                         applyPalette(paletteKey, paletteKey === 'custom' ? customColors : null)
                         applyFonts(fonts)
                         setShowSettings(false)
@@ -4232,6 +5546,19 @@ span[data-tag] {
                             <button onClick={() => applyPalette('custom', customColors)}>Preview</button>
                           </div>
                         )}
+                      </div>
+
+                      <div className="settings-group">
+                        <label className="box-title">Type management</label>
+                        <div className="settings-flex-wrap">
+                          <button onClick={async () => {
+                            setShowSettings(false)
+                            await refreshTypeCatalog()
+                            setShowTypeManager(true)
+                          }}>
+                            Open Type Manager
+                          </button>
+                        </div>
                       </div>
 
                       <div className="settings-group">
@@ -4346,9 +5673,26 @@ span[data-tag] {
                       <div className="settings-group">
                         <label className="box-title">Toggle Styling Options</label>
                         <div className="styling-settings settings-flex-wrap">
-                          <label className="styling-label">Toggle Styling Options
-                            <input type="checkbox" checked={toggleStylingOptions} onChange={() => setToggleStylingOptions(!toggleStylingOptions)} />
-                          </label>
+                            <div className="single-column-checkbox">
+                              <label className="styling-label">Toggle Styling Options
+                                <input type="checkbox" checked={toggleStylingOptions} onChange={() => setToggleStylingOptions(!toggleStylingOptions)} />
+                              </label>
+                            </div>
+                            <div className="single-column-checkbox">
+                              <label className="styling-label">Styled template export
+                                <input type="checkbox" checked={exportTemplateStyled} onChange={() => setExportTemplateStyled(v => !v)} />
+                              </label>
+                            </div>
+                            <div className="single-column-checkbox">
+                              <label className="styling-label">Show template field labels
+                                <input type="checkbox" checked={showTemplateFieldLabels} onChange={() => setShowTemplateFieldLabels(v => !v)} />
+                              </label>
+                            </div>
+                            <div className="single-column-checkbox">
+                              <label className="styling-label">Open PDFs inline
+                                <input type="checkbox" checked={pdfInlinePreferred} onChange={() => setPdfInlinePreferred(v => !v)} />
+                              </label>
+                            </div>
                         </div>
                       </div>
                     </div>
@@ -4371,8 +5715,644 @@ span[data-tag] {
                         {/* <div className="settings-shortcut-row"><label htmlFor="goToPreviousSibling">Go to previous sibling </label><ShortcutInput value={shortcuts.goToPreviousSibling} onChange={value => setShortcuts(s => ({ ...s, goToPreviousSibling: value }))} placeholder='Ctrl+ArrowLeft' /></div>
                         <div className="settings-shortcut-row"><label htmlFor="goToNextSibling">Go to next sibling </label><ShortcutInput value={shortcuts.goToNextSibling} onChange={value => setShortcuts(s => ({ ...s, goToNextSibling: value }))} placeholder='Ctrl+ArrowRight' /></div> */}
                       </div>
+                      <div className="settings-title mt-12">Templates</div>
+                      <div className="settings-group-right">
+                        <div className="actions">
+                          <button onClick={() => openTemplateEditor(null)}>New template</button>
+                          <button onClick={openTemplateInstanceLibrary}>Manage instances</button>
+                          <button onClick={() => {
+                            if (templateRawMode) {
+                              setTemplateStyleBlocks(parseCssToStyleBlocks(templateCssInput))
+                              setTemplateRawMode(false)
+                            } else {
+                              setTemplateCssInput(buildCssFromStyleBlocks(templateStyleBlocks))
+                              setTemplateRawMode(true)
+                            }
+                          }}>{templateRawMode ? 'Visual mode' : 'Advanced source mode'}</button>
+                        </div>
+                        <div className="maxh-260 border-top mt-10">
+                          <ul className="list-reset">
+                            {templateDefs.map(tpl => (
+                              <li key={tpl.id} className="list-item-row">
+                                <span className="tag-name">{tpl.name}{tpl.is_builtin ? ' (built-in)' : ''}</span>
+                                <div className="flex-gap-6">
+                                  <button onClick={() => openTemplateEditor(tpl)}>Edit</button>
+                                  {tpl.is_builtin ? null : <button onClick={async () => { await window.ipcRenderer.invoke('gamedocs:delete-template', tpl.id); await loadTemplates() }}>Delete</button>}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showTypeManager && (
+            <div className="modal-overlay" {...createOverlayClickHandler(() => { void closeTypeManager() })}>
+              <div className="dialog-card" style={{ width: 'min(1080px, 94vw)', maxHeight: '86vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+                <div className="edit-modal-header">
+                  <h3 className="m-0">Type Manager</h3>
+                  <div className="flex-gap-8">
+                    <button onClick={openNewTypeEditor}><i className="ri-add-line"></i> Add type</button>
+                    <button onClick={async () => { await closeTypeManager() }}>Close</button>
+                  </div>
+                </div>
+                <table className="input-100" style={{ borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #333' }}>ID</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #333' }}>Name</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #333' }}>Icon</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #333' }}>Tags</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #333' }}>Visible</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #333' }}>Usage</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #333' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {objectTypes.map(typeRow => (
+                      <tr key={typeRow.id}>
+                        <td style={{ padding: 8, borderBottom: '1px solid #222' }}><code>{typeRow.id}</code></td>
+                        <td style={{ padding: 8, borderBottom: '1px solid #222' }}>
+                          {typeRow.name}
+                          {typeRow.isHidden ? <span style={{ marginLeft: 8, opacity: 0.85 }} title="Hidden in this campaign"><i className="ri-eye-off-line"></i></span> : null}
+                        </td>
+                        <td style={{ padding: 8, borderBottom: '1px solid #222' }}><i className={typeRow.icon || 'ri-price-tag-3-line'}></i> <code>{typeRow.icon}</code></td>
+                        <td style={{ padding: 8, borderBottom: '1px solid #222' }}>{(typeRow.tags || []).map(t => t.name).join(', ') || <span className="muted">none</span>}</td>
+                        <td style={{ padding: 8, borderBottom: '1px solid #222' }}>
+                          <label className="items-center flex-gap-6">
+                            <input
+                              type="checkbox"
+                              checked={!typeRow.isHidden}
+                              disabled={!!typeRow.isProtected}
+                              onChange={async (e) => {
+                                await window.ipcRenderer.invoke('gamedocs:set-type-hidden', campaign.id, typeRow.id, !e.target.checked).catch((err: any) => {
+                                  toast(err?.message || 'Failed to update visibility', 'error')
+                                })
+                                await refreshTypeCatalog()
+                              }}
+                            />
+                            <span>{typeRow.isHidden ? 'Hidden' : 'Visible'}</span>
+                          </label>
+                        </td>
+                        <td style={{ padding: 8, borderBottom: '1px solid #222' }}>{typeRow.usageCount}</td>
+                        <td style={{ padding: 8, borderBottom: '1px solid #222' }}>
+                          <div className="flex-gap-6">
+                            <button onClick={() => openEditTypeEditor(typeRow)}>Edit</button>
+                            <button onClick={() => { setSwitchTypeTarget(typeRow); setSwitchTypeReplacementId('') }}>Switch</button>
+                            {typeRow.isProtected ? null : (
+                              <button onClick={async () => {
+                                const rows = await window.ipcRenderer.invoke('gamedocs:list-objects-by-type', campaign.id, typeRow.id, 120).catch(() => [])
+                                setDeleteTypeItems(Array.isArray(rows) ? rows : [])
+                                setDeleteTypeTarget(typeRow)
+                                setDeleteTypeReplacementId('')
+                              }}>Delete</button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {typeEditorOpen && (
+            <div className="modal-overlay" {...createOverlayClickHandler(setTypeEditorOpen)}>
+              <div className="dialog-card w-520" onClick={e => e.stopPropagation()}>
+                <h3 className="mt-0">{typeEditorIsNew ? 'Add type' : 'Edit type'}</h3>
+                <div className="grid-gap-8">
+                  <label>
+                    <div>ID</div>
+                    <input value={typeEditorIsNew ? '(generated on save)' : typeEditorId} readOnly className="input-100" />
+                  </label>
+                  <label>
+                    <div>Name</div>
+                    <input value={typeEditorName} onChange={e => { setTypeEditorName(e.target.value); setTypeEditorErr(null) }} className="input-100" />
+                  </label>
+                  <label>
+                    <div>Remix icon</div>
+                    <div className="type-icon-picker">
+                      <div className="type-icon-picker-top">
+                        <input
+                          value={typeIconQuery}
+                          onChange={e => setTypeIconQuery(e.target.value)}
+                          placeholder="Search Remix icons (e.g. map, user, sword)"
+                          className="input-100"
+                        />
+                        <div className="type-icon-preview" title={typeEditorIcon}>
+                          <i className={typeEditorIcon || 'ri-price-tag-3-line'}></i>
+                          <code>{typeEditorIcon}</code>
+                        </div>
+                      </div>
+                      <div className="type-icon-grid">
+                        {filteredRemixIcons.map(iconName => (
+                          <button
+                            key={iconName}
+                            type="button"
+                            className={`type-icon-item ${typeEditorIcon === iconName ? 'active' : ''}`}
+                            onClick={() => setTypeEditorIcon(iconName)}
+                            title={iconName}
+                          >
+                            <i className={iconName}></i>
+                            <span>{iconName}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {filteredRemixIcons.length === 0 ? <div className="muted">No icon matches found.</div> : null}
+                    </div>
+                  </label>
+                  <label>
+                    <div>Tags</div>
+                    <div className="grid-gap-8">
+                      <input
+                        value={typeTagInput}
+                        onChange={e => setTypeTagInput(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ',') {
+                            e.preventDefault()
+                            addTypeTagDraft(typeTagInput)
+                          }
+                        }}
+                        placeholder="Type a tag and press Enter"
+                        className="input-100"
+                      />
+                      {typeTagSuggestions.length > 0 && typeTagInput.trim() ? (
+                        <div className="maxh-260 border-top">
+                          <ul className="list-reset">
+                            {typeTagSuggestions.map(s => (
+                              <li key={s.id} className="list-item-click" onClick={() => addTypeTagDraft(s.name)}>
+                                {s.name}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      <div className="flex-gap-6 settings-flex-wrap">
+                        {typeEditorTags.map(tag => (
+                          <span key={tag} className="tag-span">
+                            {tag}
+                            <button
+                              type="button"
+                              className="icon-btn"
+                              title="Remove tag"
+                              onClick={() => setTypeEditorTags(prev => prev.filter(p => p.toLowerCase() !== tag.toLowerCase()))}
+                            >
+                              <i className="ri-close-line"></i>
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </label>
+                  {typeEditorErr ? <div className="text-tomato">{typeEditorErr}</div> : null}
+                </div>
+                <div className="actions">
+                  <button onClick={() => setTypeEditorOpen(false)}>Cancel</button>
+                  <button onClick={async () => {
+                    const name = typeEditorName.trim()
+                    if (!name) { setTypeEditorErr('Name is required.'); return }
+                    const dup = objectTypes.find(t => t.id !== typeEditorId && t.name.trim().toLowerCase() === name.toLowerCase())
+                    if (dup) { setTypeEditorErr('A type with that name already exists.'); return }
+                    const payload = { name, icon: typeEditorIcon, tags: typeEditorTags }
+                    const result = typeEditorIsNew
+                      ? await window.ipcRenderer.invoke('gamedocs:create-type', payload).catch((err: any) => ({ error: err?.message || 'Failed to create type' }))
+                      : await window.ipcRenderer.invoke('gamedocs:update-type', typeEditorId, payload).catch((err: any) => ({ error: err?.message || 'Failed to update type' }))
+                    if ((result as any)?.error) { setTypeEditorErr((result as any).error); return }
+                    setTypeEditorOpen(false)
+                    await refreshTypeCatalog()
+                  }}>Save</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {deleteTypeTarget && (
+            <div className="modal-overlay" {...createOverlayClickHandler(() => setDeleteTypeTarget(null))}>
+              <div className="dialog-card w-520" onClick={e => e.stopPropagation()}>
+                <h3 className="mt-0">Delete type: {deleteTypeTarget.name}</h3>
+                <div className="muted">Objects using this type in current campaign: {deleteTypeTarget.usageCount}</div>
+                <label className="mt-8">
+                  <div>Reassign affected objects to</div>
+                  <select value={deleteTypeReplacementId} onChange={e => setDeleteTypeReplacementId(e.target.value)} className="input-100">
+                    <option value="">Select replacement type…</option>
+                    {objectTypes.filter(t => t.id !== deleteTypeTarget.id && !t.isHidden).map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="maxh-260 border-top mt-10">
+                  <ul className="list-reset">
+                    {deleteTypeItems.map(it => (
+                      <li key={it.id} className="list-item-row"><span>{it.name}</span><code>{it.id}</code></li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="actions">
+                  <button onClick={() => setDeleteTypeTarget(null)}>Cancel</button>
+                  <button onClick={async () => {
+                    if (!deleteTypeReplacementId) { toast('Pick a replacement type first', 'error'); return }
+                    await window.ipcRenderer.invoke('gamedocs:delete-type', deleteTypeTarget.id, deleteTypeReplacementId).catch((err: any) => {
+                      toast(err?.message || 'Failed to delete type', 'error')
+                    })
+                    setDeleteTypeTarget(null)
+                    setDeleteTypeItems([])
+                    await refreshTypeCatalog()
+                  }}>Delete and reassign</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {switchTypeTarget && (
+            <div className="modal-overlay" {...createOverlayClickHandler(() => setSwitchTypeTarget(null))}>
+              <div className="dialog-card w-460" onClick={e => e.stopPropagation()}>
+                <h3 className="mt-0">Switch type: {switchTypeTarget.name}</h3>
+                <div className="muted">This updates all objects in current campaign with this type.</div>
+                <label className="mt-8">
+                  <div>Switch to</div>
+                  <select value={switchTypeReplacementId} onChange={e => setSwitchTypeReplacementId(e.target.value)} className="input-100">
+                    <option value="">Select destination type…</option>
+                    {objectTypes.filter(t => t.id !== switchTypeTarget.id && !t.isHidden).map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="actions">
+                  <button onClick={() => setSwitchTypeTarget(null)}>Cancel</button>
+                  <button onClick={async () => {
+                    if (!switchTypeReplacementId) { toast('Pick a destination type', 'error'); return }
+                    const changed = await window.ipcRenderer.invoke('gamedocs:bulk-reassign-type', campaign.id, switchTypeTarget.id, switchTypeReplacementId).catch(() => 0)
+                    setSwitchTypeTarget(null)
+                    toast(`Updated ${Number(changed || 0)} object(s).`, 'success')
+                    await refreshTypeCatalog()
+                    if (activeId) await selectObject(activeId, activeName || '')
+                  }}>Apply switch</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {templateEditorOpen && (
+            <div className="modal-overlay" {...createOverlayClickHandler(setTemplateEditorOpen)}>
+              <div className="dialog-card w-p80 overflow-y-scroll  h-p95">
+                <h3 className="mt-0">{templateEditId ? 'Edit Template' : 'New Template'}</h3>
+                <div className="grid-gap-8">
+                  <label>
+                    <div>Name</div>
+                    <input autoFocus value={templateNameInput} onChange={e => setTemplateNameInput(e.target.value)} className="input-100" />
+                  </label>
+                  {!templateRawMode ? (
+                    <>
+                      <div className="boxed">
+                        <div className="box-title">Layout</div>
+                        <div className="flex-row">
+                          <label className="w-160">Columns
+                            <select value={templateLayoutColumns} onChange={e => setTemplateLayoutColumns(parseInt(e.target.value || '1', 10))} className="input-100">
+                              <option value={1}>1 column</option>
+                              <option value={2}>2 columns</option>
+                              <option value={3}>3 columns</option>
+                            </select>
+                          </label>
+                          <input className="flex-1" placeholder="Card class (optional)" value={templateCardClassInput} onChange={e => setTemplateCardClassInput(e.target.value)} />
+                          <button onClick={() => setTemplateVisualFields(prev => [...prev, createVisualField({ type: 'text', label: `Field ${prev.length + 1}` })])}>Add Field</button>
+                        </div>
+                      </div>
+
+                      <div className="boxed">
+                        <div className="box-title">Fields</div>
+                        <div className="actions">
+                          <button onClick={() => addTemplateField(null, 'text')}>Add Text</button>
+                          <button onClick={() => addTemplateField(null, 'richtext')}>Add Rich Text</button>
+                          <button onClick={() => addTemplateField(null, 'textarea')}>Add Long Text</button>
+                          <button onClick={() => addTemplateField(null, 'image')}>Add Image</button>
+                          <button onClick={() => addTemplateField(null, 'attachment')}>Add Attachment</button>
+                          <button onClick={() => addTemplateField(null, 'div')}>Add Div/Group</button>
+                        </div>
+                        {templateVisualFields.length === 0 ? (
+                          <div className="muted">No fields yet. Click "Add Field".</div>
+                        ) : (
+                          <div className="grid-gap-8">
+                            {(() => {
+                              const renderFieldEditor = (parentId: string | null, depth: number): React.ReactNode => {
+                                const nodes = getTemplateChildren(parentId)
+                                return nodes.map((f) => (
+                                  <div key={f.id} className="grid-gap-8" style={{ marginLeft: depth * 16 }}>
+                                    <div className="list-item-row">
+                                      <div className="flex-1 grid-gap-8">
+                                        <div className="flex-row">
+                                          <select value={f.type} onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, type: e.target.value as any } : x))}>
+                                            <option value="text">Text</option>
+                                            <option value="richtext">Rich text</option>
+                                            <option value="textarea">Long text</option>
+                                            <option value="image">Image</option>
+                                            <option value="attachment">Attachment</option>
+                                            <option value="div">Div / Group</option>
+                                          </select>
+                                          <input value={f.label} placeholder={f.type === 'div' ? 'Group name' : 'Label'} onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, label: e.target.value } : x))} className="flex-1" />
+                                        </div>
+                                        <div className="flex-row">
+                                          {f.type === 'div' ? null : (
+                                            <input value={f.placeholder} placeholder="Placeholder (optional)" onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, placeholder: e.target.value } : x))} className="flex-1" />
+                                          )}
+                                          <input value={f.className} placeholder="Class name (optional)" onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, className: e.target.value } : x))} className="flex-1" />
+                                          {f.type === 'div' ? null : (
+                                            <label className="items-center flex-gap-6"><input type="checkbox" checked={f.required} onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, required: e.target.checked } : x))} /> Required</label>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="flex-gap-6">
+                                        <button onClick={() => moveTemplateField(f.id, -1)}>↑</button>
+                                        <button onClick={() => moveTemplateField(f.id, 1)}>↓</button>
+                                        <button onClick={() => removeTemplateField(f.id)}>Remove</button>
+                                      </div>
+                                    </div>
+                                    {f.type === 'div' ? (
+                                      <div className="actions" style={{ marginLeft: 8 }}>
+                                        <button onClick={() => addTemplateField(f.id, 'text')}>+ Text</button>
+                                        <button onClick={() => addTemplateField(f.id, 'richtext')}>+ Rich Text</button>
+                                        <button onClick={() => addTemplateField(f.id, 'textarea')}>+ Long Text</button>
+                                        <button onClick={() => addTemplateField(f.id, 'image')}>+ Image</button>
+                                        <button onClick={() => addTemplateField(f.id, 'attachment')}>+ Attachment</button>
+                                        <button onClick={() => addTemplateField(f.id, 'div')}>+ Div</button>
+                                      </div>
+                                    ) : null}
+                                    {renderFieldEditor(f.id, depth + 1)}
+                                  </div>
+                                ))
+                              }
+                              return renderFieldEditor(null, 0)
+                            })()}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="boxed">
+                        <div className="box-title">Live Preview</div>
+                        <div className={`template-instance-card ${templateCardClassInput || ''}`.trim()}>
+                          <div className="template-instance-header">{templateNameInput || 'Template Preview'}</div>
+                          {templateVisualFields.length === 0 ? (
+                            <div className="muted">Add fields to preview the template.</div>
+                          ) : (
+                            (() => {
+                              const renderPreview = (parentId: string | null): React.ReactNode => {
+                                const nodes = getTemplateChildren(parentId)
+                                return nodes.map(f => {
+                                  if (f.type === 'div') {
+                                    return (
+                                      <div key={`preview_${f.id}`} className={`template-field-group ${f.className || ''}`.trim()}>
+                                        <div className="template-field-group-title">{f.label || 'Group'}</div>
+                                        {renderPreview(f.id)}
+                                      </div>
+                                    )
+                                  }
+                                  return (
+                                    <div key={`preview_${f.id}`} className={`template-field-row ${f.className || ''}`.trim()}>
+                                      <span className="template-field-label">{f.label || '(unnamed field)'}:</span>{' '}
+                                      <span className="muted">{f.placeholder || `[${f.type}]`}{f.required ? ' *' : ''}</span>
+                                    </div>
+                                  )
+                                })
+                              }
+                              return renderPreview(null)
+                            })()
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="boxed">
+                        <div className="box-title">Styles</div>
+                        <div className="actions">
+                          <button onClick={() => setTemplateStyleBlocks(prev => [...prev, createStyleBlock()])}>Add style block</button>
+                        </div>
+                        {templateStyleBlocks.length === 0 ? (
+                          <div className="muted">No style blocks yet. Add one to define class styles.</div>
+                        ) : (
+                          <div className="grid-gap-8 mt-10">
+                            {templateStyleBlocks.map((block) => (
+                              <div key={block.id} className="boxed">
+                                <div className="flex-row">
+                                  <select value={block.className || ''} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, className: e.target.value } : b))}>
+                                    <option value="">Select class</option>
+                                    {Array.from(new Set([
+                                      ...(templateCardClassInput ? [templateCardClassInput] : []),
+                                      ...templateVisualFields.map(f => (f.className || '').trim()).filter(Boolean),
+                                    ])).map(cls => <option key={cls} value={cls}>{cls}</option>)}
+                                    <option value="__custom__">Custom...</option>
+                                  </select>
+                                  {block.className === '__custom__' ? (
+                                    <input className="flex-1" placeholder="custom_class" value={block.customClassName} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, customClassName: e.target.value } : b))} />
+                                  ) : null}
+                                  <select value={block.modifier} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, modifier: e.target.value as any } : b))}>
+                                    <option value="">(no modifier)</option>
+                                    <option value=":hover">:hover</option>
+                                    <option value=":active">:active</option>
+                                    <option value=":focus">:focus</option>
+                                    <option value="::before">::before</option>
+                                    <option value="::after">::after</option>
+                                  </select>
+                                  <button onClick={() => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, rawMode: !b.rawMode } : b))}>{block.rawMode ? 'Property mode' : 'Edit raw'}</button>
+                                  <button onClick={() => setTemplateStyleBlocks(prev => prev.filter(b => b.id !== block.id))}>Remove block</button>
+                                </div>
+                                {block.rawMode ? (
+                                  <textarea className="new-child-description input-100 mt-10" value={block.rawCss} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, rawCss: e.target.value } : b))} />
+                                ) : (
+                                  <div className="grid-gap-8 mt-10">
+                                    {block.declarations.map((d) => (
+                                      <div key={d.id} className="flex-row">
+                                        <select value={d.property} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: b.declarations.map(x => x.id === d.id ? { ...x, property: e.target.value } : x) } : b))}>
+                                          {['font-family','font-size','font-weight','color','background-color','border','border-radius','padding','margin','display','justify-content','align-items','width','height','max-width','text-align','line-height','gap','grid-template-columns'].map(p => <option key={p} value={p}>{p}</option>)}
+                                        </select>
+                                        <input className="flex-1" placeholder="value" value={d.value} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: b.declarations.map(x => x.id === d.id ? { ...x, value: e.target.value } : x) } : b))} />
+                                        <button onClick={() => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: b.declarations.filter(x => x.id !== d.id) } : b))}>-</button>
+                                      </div>
+                                    ))}
+                                    <div><button onClick={() => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: [...b.declarations, createStyleDecl()] } : b))}>Add style</button></div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <label>
+                      <div>Template Source (tokens like {'{%text:"Name"}'})</div>
+                      <textarea value={templateSourceInput} onChange={e => setTemplateSourceInput(e.target.value)} className="new-child-description input-100" />
+                    </label>
+                  )}
+                  {templateRawMode ? (
+                    <label>
+                      <div>Style CSS (optional)</div>
+                      <textarea value={templateCssInput} onChange={e => setTemplateCssInput(e.target.value)} className="new-child-description input-100" />
+                    </label>
+                  ) : null}
+                  <div className="muted">
+                    {templateRawMode
+                      ? 'Advanced source mode is enabled; edit source directly.'
+                      : `Generated source preview: ${templateSourceInput || '(empty)'}`}
+                  </div>
+                </div>
+                <div className="actions">
+                  <button onClick={() => setTemplateEditorOpen(false)}>Cancel</button>
+                  <button onClick={saveTemplateDefinition}>Save</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {templatePickerOpen && (
+            <div className="modal-overlay" {...createOverlayClickHandler(setTemplatePickerOpen)}>
+              <div className="dialog-card">
+                <h3 className="mt-0">Insert Template</h3>
+                <div className="maxh-260 border-top mt-10">
+                  <ul className="list-reset">
+                    {templateDefs.length === 0 ? <div className="muted pad-8">No templates</div> : templateDefs.map(tpl => (
+                      <li key={tpl.id} className="list-item-row">
+                        <span className="tag-name">{tpl.name}</span>
+                        <button onClick={async () => { await handleInsertTemplateInstance(tpl) }}>Insert</button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="actions">
+                  <button onClick={() => setTemplatePickerOpen(false)}>Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {templateInstanceLibraryOpen && (
+            <div className="modal-overlay" onClick={() => setTemplateInstanceLibraryOpen(false)}>
+              <div className="dialog-card w-520" onClick={e => e.stopPropagation()}>
+                <h3 className="mt-0">Template Instances</h3>
+                <div className="muted">Reuse existing instances or remove stale ones.</div>
+                <div className="maxh-260 border-top mt-10">
+                  <ul className="list-reset">
+                    {templateInstanceLibraryRows.length === 0 ? <div className="muted pad-8">No instances</div> : templateInstanceLibraryRows.map(row => (
+                      <li key={row.id} className="list-item-row">
+                        <span className="tag-name" title={row.id}>
+                          {row.template_name} - {row.object_name}
+                        </span>
+                        <div className="flex-gap-6">
+                          <button onClick={async () => {
+                            if (!activeId) { toast('Select an object first', 'info'); return }
+                            if (row.object_id === activeId) {
+                              insertTemplateMarkerAtSelection(`{{tpl:${row.id}}}`)
+                              toast('Inserted existing instance', 'success')
+                              return
+                            }
+                            const cloned = await window.ipcRenderer.invoke('gamedocs:clone-template-instance-to-object', row.id, activeId).catch(() => null)
+                            const newId = cloned?.id as string | undefined
+                            if (!newId) { toast('Failed to clone instance', 'error'); return }
+                            insertTemplateMarkerAtSelection(`{{tpl:${newId}}}`)
+                            await loadObjectScopedData(activeId)
+                            toast('Cloned and inserted instance', 'success')
+                          }}>Insert Here</button>
+                          <button onClick={async () => {
+                            await window.ipcRenderer.invoke('gamedocs:delete-template-instance', row.id).catch(() => null)
+                            await loadTemplateInstanceLibrary()
+                            if (activeId) await loadObjectScopedData(activeId)
+                          }}>Delete</button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="actions">
+                  <button onClick={() => setTemplateInstanceLibraryOpen(false)}>Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {templateInstanceEditor.open && templateInstanceEditor.instance && (
+            <div className="modal-overlay" onClick={() => setTemplateInstanceEditor({ open: false, instance: null, values: {} })}>
+              <div className="dialog-card" onClick={e => e.stopPropagation()}  onKeyDown={e => { if (e.key === 'Escape') { setTemplateInstanceEditor({ open: false, instance: null, values: {} }) } }}>
+                <h3 className="mt-0">Edit Template Instance: {templateInstanceEditor.instance.template_name}</h3>
+                <div className="grid-gap-8">
+                  {(() => {
+                    const fields = normalizeTemplateFields(parseTemplateMeta(templateInstanceEditor.instance.template_fields || '[]').fields as any[])
+                    const byParent = new Map<string | null, TemplateVisualField[]>()
+                    for (const f of fields) {
+                      const k = f.parentId ?? null
+                      const arr = byParent.get(k) || []
+                      arr.push(f)
+                      byParent.set(k, arr)
+                    }
+                    for (const [k, arr] of byParent.entries()) {
+                      arr.sort((a, b) => a.order - b.order)
+                      byParent.set(k, arr)
+                    }
+                    const renderFields = (parentId: string | null, depth: number): React.ReactNode => {
+                      const nodes = byParent.get(parentId) || []
+                      return nodes.map((f) => {
+                        if (f.type === 'div') {
+                          return (
+                            <div key={`edit_${f.id}`} className={`boxed ${f.className || ''}`.trim()} style={{ marginLeft: depth * 12 }}>
+                              <div className="box-title">{f.label || 'Group'}</div>
+                              {renderFields(f.id, depth + 1)}
+                            </div>
+                          )
+                        }
+                        return (
+                          <label key={`edit_${f.id}`} style={{ marginLeft: depth * 12 }}>
+                            <div>{f.label}</div>
+                            {(f.type === 'textarea' || f.type === 'richtext') ? (
+                              <>
+                                <textarea placeholder={f.placeholder || ''} value={templateInstanceEditor.values[f.label] || ''} onChange={e => setTemplateInstanceEditor(prev => ({ ...prev, values: { ...prev.values, [f.label]: e.target.value } }))} className="new-child-description input-100" />
+                                {f.type === 'richtext' ? (
+                                  <div className="flex-gap-6 mt-6">
+                                    <button onClick={() => setTemplateInstanceEditor(prev => ({ ...prev, values: { ...prev.values, [f.label]: `${prev.values[f.label] || ''}[{bold|text}]` } }))}>Bold</button>
+                                    <button onClick={() => setTemplateInstanceEditor(prev => ({ ...prev, values: { ...prev.values, [f.label]: `${prev.values[f.label] || ''}[{italic|text}]` } }))}>Italic</button>
+                                    <button onClick={() => setTemplateInstanceEditor(prev => ({ ...prev, values: { ...prev.values, [f.label]: `${prev.values[f.label] || ''}[{h1|Heading}]` } }))}>H1</button>
+                                    <button onClick={() => setTemplateInstanceEditor(prev => ({ ...prev, values: { ...prev.values, [f.label]: `${prev.values[f.label] || ''}[{quote|Quote}]` } }))}>Quote</button>
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : (
+                              <div className="flex-row">
+                                <input placeholder={f.placeholder || ''} value={templateInstanceEditor.values[f.label] || ''} onChange={e => setTemplateInstanceEditor(prev => ({ ...prev, values: { ...prev.values, [f.label]: e.target.value } }))} className="input-100" />
+                                {(f.type === 'image' || f.type === 'attachment') ? (
+                                  <button onClick={async () => {
+                                    const picked = await window.ipcRenderer.invoke('gamedocs:choose-attachment-file').catch(() => null)
+                                    if (picked?.path) setTemplateInstanceEditor(prev => ({ ...prev, values: { ...prev.values, [f.label]: picked.path } }))
+                                  }}>Browse…</button>
+                                ) : null}
+                              </div>
+                            )}
+                          </label>
+                        )
+                      })
+                    }
+                    return renderFields(null, 0)
+                  })()}
+                </div>
+                <div className="actions">
+                  <button onClick={() => setTemplateInstanceEditor({ open: false, instance: null, values: {} })}>Cancel</button>
+                  <button onClick={async () => {
+                    const inst = templateInstanceEditor.instance
+                    if (!inst) return
+                    const fields = normalizeTemplateFields(parseTemplateMeta(inst.template_fields || '[]').fields as any[])
+                    const nextValues: Record<string, string> = { ...templateInstanceEditor.values }
+                    for (const f of fields) {
+                      if (f.type !== 'image') continue
+                      const raw = String(nextValues[f.label] || '').trim()
+                      if (!raw || /^data:image\//i.test(raw)) continue
+                      const maybe = await window.ipcRenderer.invoke('gamedocs:get-file-dataurl', raw).catch(() => null) as { ok?: boolean; dataUrl?: string | null } | null
+                      if (maybe?.ok && maybe.dataUrl) nextValues[f.label] = maybe.dataUrl
+                    }
+                    await window.ipcRenderer.invoke('gamedocs:update-template-instance-values', inst.id, JSON.stringify(nextValues))
+                    if (activeId) await loadObjectScopedData(activeId)
+                    if (editorRef.current) setDesc(htmlToDesc(editorRef.current))
+                    setTemplateInstanceEditor({ open: false, instance: null, values: {} })
+                  }}>Save</button>
                 </div>
               </div>
             </div>
@@ -4395,10 +6375,11 @@ span[data-tag] {
                   <label>
                     <div>Type</div>
                     <select value={catType} onChange={e => setCatType(e.target.value as any)} className="input-100">
-                      <option value='Other'>Other</option>
-                      <option value='Place'>Place</option>
-                      <option value='Person'>Person</option>
-                      <option value='Lore'>Lore</option>
+                      {getSelectableTypes(catType).map(t => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}{t.isHidden ? ' (hidden)' : ''}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   {catErr && <div className="text-tomato">{catErr}</div>}
@@ -4428,10 +6409,11 @@ span[data-tag] {
                   <label>
                     <div>Type</div>
                     <select value={wizardType} onChange={e => setWizardType(e.target.value as any)} className="input-100">
-                      <option value='Other'>Other</option>
-                      <option value='Place'>Place</option>
-                      <option value='Person'>Person</option>
-                      <option value='Lore'>Lore</option>
+                      {getSelectableTypes(wizardType).map(t => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}{t.isHidden ? ' (hidden)' : ''}
+                        </option>
+                      ))}
                     </select>
                   </label>
                 </div>
@@ -4441,7 +6423,8 @@ span[data-tag] {
                   const label = (wizardName || '').trim()
                     if (!label) return
                     const rootObj = await window.ipcRenderer.invoke('gamedocs:get-root', campaign!.id)
-                  const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, activeId || rootObj.id, label, (wizardType as string))
+                    const ownerId = activeId || rootObj.id
+                    const res = await window.ipcRenderer.invoke('gamedocs:create-object-and-link-tag', campaign!.id, ownerId, ownerId, label, wizardType as string)
                     setShowWizard(false)
                   replaceSelectionWithSpan(label, res.tagId, true)
                   }}>Create</button>
@@ -4453,7 +6436,7 @@ span[data-tag] {
           {/* Link to object modal */}
           {showLinker && (
             <div className="modal-overlay" {...createOverlayClickHandler(() => { setShowLinker(false); setIsLinkLastWordMode(false) })}>
-              <div className="dialog-card w-520" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false); setIsLinkLastWordMode(false) } }}>
+              <div className="dialog-card" onKeyDown={e => { if (e.key === 'Escape') { setShowLinker(false); setIsLinkLastWordMode(false) } }}>
                 <h3 className="mt-0">Link to object</h3>
                 <div className="flex-row">
                   <input value={linkerInput} autoFocus onChange={async e => {
@@ -4505,6 +6488,7 @@ span[data-tag] {
                               tid = res.tagId
                               setLinkerTagId(tid)
                             }
+                            await ensureWordAttachmentTransition(tid as string, pc.id)
                             await window.ipcRenderer.invoke('gamedocs:add-link-target', tid as string, pc.id)
                             replaceSelectionWithSpan(linkerInput || pc.name, tid as string, isLinkLastWordMode)
                             setShowLinker(false)
@@ -4534,6 +6518,7 @@ span[data-tag] {
                                 tid = res.tagId
                                 setLinkerTagId(tid)
                               }
+                              await ensureWordAttachmentTransition(tid as string, m.id)
                               await window.ipcRenderer.invoke('gamedocs:add-link-target', tid as string, m.id)
                               replaceSelectionWithSpan(linkerInput || m.name, tid as string, isLinkLastWordMode)
                               setShowLinker(false)

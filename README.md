@@ -40,6 +40,20 @@ The application provides a hierarchical, linkable documentation system that allo
 - Set default images for objects
 - Full screen image viewing
 
+**File Attachments and PDF Support**
+- Attach general files (PDF, DOCX, PPTX, etc.) to objects
+- Mark one file as the object's main attachment
+- Open non-PDF files with the operating system default app
+- Open PDFs in an in-app inline modal (PDF.js) or pop-out window
+- Attach files directly to unlinked words, then move/remove when linking
+
+**Template System**
+- Define reusable templates with token fields (for example `{%text:"Name"}`)
+- Insert templates into object descriptions from context menu or command palette
+- Edit template instances inline via card edit actions
+- Manage templates from Settings, including advanced raw-source editing mode
+- Includes built-in examples for a DnD-style stat block and a flexible callout card
+
 ### Advanced Features
 
 **Command Palette**
@@ -53,6 +67,7 @@ The application provides a hierarchical, linkable documentation system that allo
 - Export to PDF with professional formatting
 - Export to Share format for collaboration
 - Backup and restore functionality
+- Toggle styled vs plain template rendering for HTML/PDF export
 
 **Customization**
 - Multiple color themes (Dracula, Solarized, GitHub, Night Owl, Monokai, Parchment, and more)

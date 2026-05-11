@@ -10,11 +10,50 @@ CREATE TABLE IF NOT EXISTS games (
   deleted_at TEXT DEFAULT NULL
 );
 
+CREATE TABLE IF NOT EXISTS types (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL,
+  is_builtin INTEGER NOT NULL DEFAULT 0,
+  is_protected INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT DEFAULT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_types_name_ci ON types(lower(name)) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS type_tags (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT DEFAULT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_type_tags_name_ci ON type_tags(lower(name)) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS type_tag_connections (
+  type_id TEXT NOT NULL REFERENCES types(id),
+  type_tag_id TEXT NOT NULL REFERENCES type_tags(id),
+  created_at TEXT NOT NULL,
+  deleted_at TEXT DEFAULT NULL,
+  PRIMARY KEY (type_id, type_tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_type_tag_connections_tag ON type_tag_connections(type_tag_id);
+
+CREATE TABLE IF NOT EXISTS campaign_hidden_types (
+  game_id TEXT NOT NULL REFERENCES games(id),
+  type_id TEXT NOT NULL REFERENCES types(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (game_id, type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_hidden_types_type ON campaign_hidden_types(type_id);
+
 CREATE TABLE IF NOT EXISTS objects (
   id TEXT PRIMARY KEY,
   game_id TEXT NOT NULL REFERENCES games(id),
   name TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'Other' CHECK(type IN ('Place', 'Person', 'Lore', 'Other')),
+  type TEXT NOT NULL DEFAULT 'other',
+  type_id TEXT REFERENCES types(id),
   parent_id TEXT REFERENCES objects(id),
   description TEXT,
   locked INTEGER NOT NULL DEFAULT 0,
@@ -24,6 +63,7 @@ CREATE TABLE IF NOT EXISTS objects (
 );
 CREATE INDEX IF NOT EXISTS idx_objects_game_parent ON objects(game_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_objects_game_name ON objects(game_id, name);
+CREATE INDEX IF NOT EXISTS idx_objects_type_id ON objects(type_id);
 
 CREATE TABLE IF NOT EXISTS images (
   id TEXT PRIMARY KEY,
@@ -94,6 +134,49 @@ CREATE TABLE IF NOT EXISTS tag_links (
   PRIMARY KEY (tag_id, object_id)
 );
 CREATE INDEX IF NOT EXISTS idx_tag_links_object ON tag_links(object_id);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  game_id TEXT NOT NULL REFERENCES games(id),
+  object_id TEXT REFERENCES objects(id),
+  tag_id TEXT REFERENCES link_tags(id),
+  file_path TEXT NOT NULL,
+  name TEXT,
+  mime TEXT,
+  ext TEXT,
+  is_main INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT DEFAULT NULL,
+  CHECK (object_id IS NOT NULL OR tag_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_object ON attachments(object_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_tag ON attachments(tag_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_game ON attachments(game_id);
+
+CREATE TABLE IF NOT EXISTS templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  style_css TEXT,
+  fields_json TEXT NOT NULL,
+  is_builtin INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS template_instances (
+  id TEXT PRIMARY KEY,
+  object_id TEXT NOT NULL REFERENCES objects(id),
+  template_id TEXT NOT NULL REFERENCES templates(id),
+  values_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT DEFAULT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_template_instances_object ON template_instances(object_id);
+CREATE INDEX IF NOT EXISTS idx_template_instances_template ON template_instances(template_id);
 
 -- Logs table for event logging
 CREATE TABLE IF NOT EXISTS logs (
