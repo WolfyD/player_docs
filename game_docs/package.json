@@ -60,6 +60,8 @@
     "rebuild:native": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@tiptap/react": "^3.23.1",
+    "@tiptap/starter-kit": "^3.23.1",
     "@uiw/react-markdown-preview": "^5.1.5",
     "@uiw/react-md-editor": "^4.0.8",
     "archiver": "^6.0.2",

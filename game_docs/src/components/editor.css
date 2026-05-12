@@ -1871,3 +1871,44 @@ select option {
   color: #f0c68a;
   margin: 8px 0;
 }
+
+.template-builder-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 320px;
+  gap: 10px;
+}
+
+.template-builder-palette,
+.template-builder-canvas,
+.template-builder-props {
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 180px;
+}
+
+.template-builder-canvas {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.template-builder-node {
+  border: 1px solid #2f2f2f;
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+
+.template-builder-node.active {
+  border-color: #6495ed;
+  box-shadow: 0 0 0 1px rgba(100, 149, 237, 0.4) inset;
+}
+
+.template-builder-node-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}

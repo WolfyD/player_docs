@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { ProjectSetup } from './components/ProjectSetup'
 import { Editor } from './components/Editor'
 import PlaceMap from '@/components/PlaceMap'
+import EditorNext from './components/EditorNext'
 
 function App() {
   const [hash, setHash] = useState<string>(location.hash)
@@ -12,10 +13,11 @@ function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
   const isEditor = hash.startsWith('#/editor/')
+  const isEditorNext = hash.startsWith('#/editor-next/')
   const isMap = hash.startsWith('#/map')
   return (
     <div className='App'>
-      {isEditor ? <Editor /> : isMap ? (
+      {isEditor ? <Editor /> : isEditorNext ? <EditorNext /> : isMap ? (
         <PlaceMap />
       ) : (
         <>

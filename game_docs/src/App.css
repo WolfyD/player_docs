@@ -50,3 +50,53 @@
   align-items: center;
   justify-content: center;
 }
+
+.editor-next-surface {
+  min-height: 420px;
+  outline: none;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.editor-next-surface .poc-link-tag {
+  color: #9cc4ff;
+  background: rgba(100, 149, 237, 0.18);
+  border-bottom: 1px dotted #6495ed;
+  text-decoration: none;
+  padding: 1px 2px;
+  border-radius: 3px;
+}
+
+.editor-next-surface .poc-template-token {
+  display: inline-block;
+  color: #f1d58a;
+  background: rgba(241, 213, 138, 0.12);
+  border: 1px solid rgba(241, 213, 138, 0.45);
+  padding: 6px;
+  border-radius: 6px;
+  min-width: 220px;
+}
+
+.editor-next-surface .poc-template-title {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.editor-next-surface .poc-template-preview {
+  display: block;
+  color: #c5c5c5;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.editor-next-surface .poc-template-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.editor-next-surface .poc-template-actions button {
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 2px 6px;
+}

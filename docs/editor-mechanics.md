@@ -142,9 +142,13 @@
 
 ### Template operations
 - Create/edit template definitions in Settings using token DSL fields.
+- Visual builder uses a three-part flow: block palette, drag/reorder canvas, and selected-field properties panel.
 - Visual builder supports nested `div`/group fields with child field lists.
 - Visual builder includes a `richtext` field type for markdown-like style-token content.
-- CSS editor supports round-trip conversion between block/property mode and raw CSS mode.
+- CSS editor supports searchable property input and custom property names.
+- Visual/raw mode switching is deterministic:
+  - Visual -> Raw: source/CSS generated from current visual state.
+  - Raw -> Visual: source parsed into visual fields; parse errors keep editor in raw mode.
 - Insert template instance markers into description.
 - Open template instance editor (double-click/edit button) and persist field values.
 - Image fields render as inline previews and are persisted as data URLs when possible.
@@ -163,5 +167,18 @@
 ## Current Implementation Characteristics
 - **Strength:** feature-rich single screen with direct access to most workflows.
 - **Strength:** consistent IPC-backed persistence and operational actions.
+- **Strength:** isolated TipTap POC route exists for testing editor-engine migration risk.
 - **Tradeoff:** very large component increases coupling and cognitive load.
 - **Tradeoff:** some shortcut branches and legacy/commented code paths indicate partial/in-progress features.
+
+## EditorNext POC Parity Coverage
+- Shared token parsing/normalization utilities now power TipTap token extraction and render/parse flow.
+- Link tag behavior includes:
+  - hover preview with debounce,
+  - click open with 0/1/many target branching,
+  - multi-target chooser modal,
+  - attachment fallback when a tag has no object targets.
+- Right-click flow supports a context-menu-first interaction path with formatting actions (bold/italic/h2/bullets/undo/redo), link open, and template actions.
+- Template markers render as interactive cards (name + value preview + edit/remove actions) instead of raw token text.
+- Template cards can be edited inline via modal and persisted through `update-template-instance-values`; remove updates both instance row and serialized description token.
+- Existing build remains blocked by pre-existing strict-null TypeScript errors in `Editor.tsx`; no new TypeScript errors were introduced by `EditorNext` parity updates.

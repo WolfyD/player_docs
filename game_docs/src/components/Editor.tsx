@@ -84,6 +84,10 @@ type TemplateInstanceLibraryRow = {
   updated_at: string
 }
 
+const CSS_PROPERTY_OPTIONS = [
+  'align-items','align-content','align-self','appearance','aspect-ratio','background','background-attachment','background-clip','background-color','background-image','background-position','background-repeat','background-size','border','border-color','border-radius','border-style','border-width','bottom','box-shadow','box-sizing','color','column-gap','cursor','display','filter','flex','flex-basis','flex-direction','flex-flow','flex-grow','flex-shrink','flex-wrap','float','font','font-family','font-size','font-style','font-weight','gap','grid','grid-auto-columns','grid-auto-flow','grid-auto-rows','grid-column','grid-column-end','grid-column-start','grid-row','grid-row-end','grid-row-start','grid-template','grid-template-areas','grid-template-columns','grid-template-rows','height','inset','justify-content','justify-items','justify-self','left','letter-spacing','line-height','margin','margin-bottom','margin-left','margin-right','margin-top','max-height','max-width','min-height','min-width','object-fit','opacity','order','outline','overflow','overflow-x','overflow-y','padding','padding-bottom','padding-left','padding-right','padding-top','place-content','place-items','place-self','position','right','row-gap','text-align','text-decoration','text-overflow','text-transform','top','transform','transform-origin','transition','user-select','vertical-align','visibility','white-space','width','word-break','word-spacing','z-index'
+]
+
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const ALL_REMIX_ICONS = Array.from(
@@ -348,10 +352,13 @@ export const Editor: React.FC = () => {
   const [templateSourceInput, setTemplateSourceInput] = useState('')
   const [templateCssInput, setTemplateCssInput] = useState('')
   const [templateRawMode, setTemplateRawMode] = useState(false)
+  const [templateRawError, setTemplateRawError] = useState<string | null>(null)
   const [templateVisualFields, setTemplateVisualFields] = useState<TemplateVisualField[]>([])
   const [templateLayoutColumns, setTemplateLayoutColumns] = useState<number>(1)
   const [templateCardClassInput, setTemplateCardClassInput] = useState('')
   const [templateStyleBlocks, setTemplateStyleBlocks] = useState<TemplateStyleBlock[]>([])
+  const [templateSelectedFieldId, setTemplateSelectedFieldId] = useState<string | null>(null)
+  const [templateDragFieldId, setTemplateDragFieldId] = useState<string | null>(null)
   const [templateInstanceEditor, setTemplateInstanceEditor] = useState<{ open: boolean; instance: TemplateInstance | null; values: Record<string, string> }>({ open: false, instance: null, values: {} })
   const [editImages, setEditImages] = useState<Array<{ id: string; object_id: string; file_path: string; thumb_path: string; name: string | null; is_default: number; file_url?: string | null; thumb_url?: string | null; thumb_data_url?: string | null }>>([])
   const [addPictureModal, setAddPictureModal] = useState(false)
@@ -1211,6 +1218,57 @@ span[data-tag] {
     return lines.join('\n')
   }, [])
 
+  const parseVisualFieldsFromRawSource = useCallback((source: string): TemplateVisualField[] => {
+    const parsed = parseTemplateFields(source)
+    if (parsed.length === 0 && String(source || '').trim()) {
+      throw new Error('No valid template tokens were found in source.')
+    }
+    return normalizeTemplateFields(parsed.map((f, idx) => ({
+      id: `tvf_raw_${idx}`,
+      type: f.type,
+      label: f.label,
+      placeholder: '',
+      required: false,
+      className: '',
+      parentId: null,
+      order: idx,
+    })))
+  }, [normalizeTemplateFields, parseTemplateFields])
+
+  const toggleTemplateMode = useCallback(() => {
+    if (templateRawMode) {
+      try {
+        const nextVisual = parseVisualFieldsFromRawSource(templateSourceInput)
+        setTemplateVisualFields(nextVisual)
+        if (templateCssInput.trim()) {
+          setTemplateStyleBlocks(parseCssToStyleBlocks(templateCssInput))
+        }
+        setTemplateRawError(null)
+        setTemplateRawMode(false)
+      } catch (error: any) {
+        setTemplateRawError(error?.message || 'Failed to parse raw template source.')
+      }
+      return
+    }
+    const generatedSource = buildTemplateSourceFromVisual(templateNameInput, templateVisualFields, templateLayoutColumns)
+    setTemplateSourceInput(generatedSource)
+    setTemplateCssInput(buildCssFromStyleBlocks(templateStyleBlocks))
+    setTemplateRawError(null)
+    setTemplateRawMode(true)
+  }, [
+    buildCssFromStyleBlocks,
+    buildTemplateSourceFromVisual,
+    parseCssToStyleBlocks,
+    parseVisualFieldsFromRawSource,
+    templateCssInput,
+    templateLayoutColumns,
+    templateNameInput,
+    templateRawMode,
+    templateSourceInput,
+    templateStyleBlocks,
+    templateVisualFields,
+  ])
+
   const normalizeTemplateSpacing = useCallback((input: string): string => {
     const src = String(input || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
     return src.replace(/\{\{tpl:[^}]+\}\}/g, (m: string, offset: number, full: string) => {
@@ -1317,6 +1375,10 @@ span[data-tag] {
     setTemplateCardClassInput(meta.cardClass || '')
     setTemplateStyleBlocks(parseCssToStyleBlocks(tpl?.style_css || ''))
     setTemplateLayoutColumns(1)
+    setTemplateRawMode(false)
+    setTemplateRawError(null)
+    setTemplateSelectedFieldId(null)
+    setTemplateDragFieldId(null)
     setTemplateEditorOpen(true)
   }, [normalizeTemplateFields, parseCssToStyleBlocks, parseTemplateFields, parseTemplateMeta])
 
@@ -1335,7 +1397,9 @@ span[data-tag] {
     setTemplateVisualFields(prev => {
       const siblings = prev.filter(f => (f.parentId || null) === (parentId || null))
       const nextOrder = siblings.length ? Math.max(...siblings.map(s => s.order)) + 1 : 0
-      return [...prev, createVisualField({ type, parentId, order: nextOrder, label: type === 'div' ? 'Group' : `Field ${prev.length + 1}` })]
+      const next = createVisualField({ type, parentId, order: nextOrder, label: type === 'div' ? 'Group' : `Field ${prev.length + 1}` })
+      setTemplateSelectedFieldId(next.id)
+      return [...prev, next]
     })
   }, [createVisualField])
 
@@ -1351,9 +1415,12 @@ span[data-tag] {
           }
         }
       }
+      if (templateSelectedFieldId && removeIds.has(templateSelectedFieldId)) {
+        setTemplateSelectedFieldId(null)
+      }
       return prev.filter(f => !removeIds.has(f.id))
     })
-  }, [])
+  }, [templateSelectedFieldId])
 
   const moveTemplateField = useCallback((fieldId: string, dir: -1 | 1) => {
     setTemplateVisualFields(prev => {
@@ -1397,15 +1464,6 @@ span[data-tag] {
     const generated = buildTemplateSourceFromVisual(templateNameInput, templateVisualFields, templateLayoutColumns)
     setTemplateSourceInput(generated)
   }, [buildTemplateSourceFromVisual, templateEditorOpen, templateLayoutColumns, templateNameInput, templateRawMode, templateVisualFields])
-
-  useEffect(() => {
-    if (!templateEditorOpen) return
-    if (templateRawMode) {
-      setTemplateCssInput(buildCssFromStyleBlocks(templateStyleBlocks))
-    } else if (templateCssInput.trim()) {
-      setTemplateStyleBlocks(parseCssToStyleBlocks(templateCssInput))
-    }
-  }, [buildCssFromStyleBlocks, parseCssToStyleBlocks, templateCssInput, templateEditorOpen, templateRawMode])
 
   useEffect(() => {
     // Template instances load asynchronously after object selection.
@@ -5721,14 +5779,11 @@ span[data-tag] {
                           <button onClick={() => openTemplateEditor(null)}>New template</button>
                           <button onClick={openTemplateInstanceLibrary}>Manage instances</button>
                           <button onClick={() => {
-                            if (templateRawMode) {
-                              setTemplateStyleBlocks(parseCssToStyleBlocks(templateCssInput))
-                              setTemplateRawMode(false)
-                            } else {
-                              setTemplateCssInput(buildCssFromStyleBlocks(templateStyleBlocks))
-                              setTemplateRawMode(true)
-                            }
-                          }}>{templateRawMode ? 'Visual mode' : 'Advanced source mode'}</button>
+                            if (!campaign?.id) return
+                            const url = `${location.origin}${location.pathname}#/editor-next/${encodeURIComponent(campaign.id)}`
+                            window.open(url, '_blank', 'popup=yes,width=1400,height=900')
+                          }}>Open editor POC</button>
+                          <button onClick={toggleTemplateMode}>{templateRawMode ? 'Visual mode' : 'Advanced source mode'}</button>
                         </div>
                         <div className="maxh-260 border-top mt-10">
                           <ul className="list-reset">
@@ -6010,86 +6065,145 @@ span[data-tag] {
                   {!templateRawMode ? (
                     <>
                       <div className="boxed">
-                        <div className="box-title">Layout</div>
-                        <div className="flex-row">
-                          <label className="w-160">Columns
-                            <select value={templateLayoutColumns} onChange={e => setTemplateLayoutColumns(parseInt(e.target.value || '1', 10))} className="input-100">
-                              <option value={1}>1 column</option>
-                              <option value={2}>2 columns</option>
-                              <option value={3}>3 columns</option>
-                            </select>
-                          </label>
-                          <input className="flex-1" placeholder="Card class (optional)" value={templateCardClassInput} onChange={e => setTemplateCardClassInput(e.target.value)} />
-                          <button onClick={() => setTemplateVisualFields(prev => [...prev, createVisualField({ type: 'text', label: `Field ${prev.length + 1}` })])}>Add Field</button>
-                        </div>
-                      </div>
-
-                      <div className="boxed">
-                        <div className="box-title">Fields</div>
-                        <div className="actions">
-                          <button onClick={() => addTemplateField(null, 'text')}>Add Text</button>
-                          <button onClick={() => addTemplateField(null, 'richtext')}>Add Rich Text</button>
-                          <button onClick={() => addTemplateField(null, 'textarea')}>Add Long Text</button>
-                          <button onClick={() => addTemplateField(null, 'image')}>Add Image</button>
-                          <button onClick={() => addTemplateField(null, 'attachment')}>Add Attachment</button>
-                          <button onClick={() => addTemplateField(null, 'div')}>Add Div/Group</button>
-                        </div>
-                        {templateVisualFields.length === 0 ? (
-                          <div className="muted">No fields yet. Click "Add Field".</div>
-                        ) : (
-                          <div className="grid-gap-8">
-                            {(() => {
-                              const renderFieldEditor = (parentId: string | null, depth: number): React.ReactNode => {
-                                const nodes = getTemplateChildren(parentId)
-                                return nodes.map((f) => (
-                                  <div key={f.id} className="grid-gap-8" style={{ marginLeft: depth * 16 }}>
-                                    <div className="list-item-row">
-                                      <div className="flex-1 grid-gap-8">
-                                        <div className="flex-row">
-                                          <select value={f.type} onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, type: e.target.value as any } : x))}>
-                                            <option value="text">Text</option>
-                                            <option value="richtext">Rich text</option>
-                                            <option value="textarea">Long text</option>
-                                            <option value="image">Image</option>
-                                            <option value="attachment">Attachment</option>
-                                            <option value="div">Div / Group</option>
-                                          </select>
-                                          <input value={f.label} placeholder={f.type === 'div' ? 'Group name' : 'Label'} onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, label: e.target.value } : x))} className="flex-1" />
-                                        </div>
-                                        <div className="flex-row">
-                                          {f.type === 'div' ? null : (
-                                            <input value={f.placeholder} placeholder="Placeholder (optional)" onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, placeholder: e.target.value } : x))} className="flex-1" />
-                                          )}
-                                          <input value={f.className} placeholder="Class name (optional)" onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, className: e.target.value } : x))} className="flex-1" />
-                                          {f.type === 'div' ? null : (
-                                            <label className="items-center flex-gap-6"><input type="checkbox" checked={f.required} onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === f.id ? { ...x, required: e.target.checked } : x))} /> Required</label>
-                                          )}
+                        <div className="box-title">Visual Builder</div>
+                        <div className="template-builder-grid">
+                          <div className="template-builder-palette">
+                            <div className="muted">Drag is for ordering. Use blocks below to add new items.</div>
+                            <input className="input-100" placeholder="Card class (optional)" value={templateCardClassInput} onChange={e => setTemplateCardClassInput(e.target.value)} />
+                            <div className="actions">
+                              <button onClick={() => addTemplateField(null, 'text')}>+ Text</button>
+                              <button onClick={() => addTemplateField(null, 'richtext')}>+ Rich Text</button>
+                              <button onClick={() => addTemplateField(null, 'textarea')}>+ Long Text</button>
+                              <button onClick={() => addTemplateField(null, 'image')}>+ Image</button>
+                              <button onClick={() => addTemplateField(null, 'attachment')}>+ Attachment</button>
+                              <button onClick={() => addTemplateField(null, 'div')}>+ Group</button>
+                            </div>
+                          </div>
+                          <div className="template-builder-canvas">
+                            {templateVisualFields.length === 0 ? (
+                              <div className="muted">No fields yet. Add one from the left panel.</div>
+                            ) : (
+                              (() => {
+                                const renderBuilderCanvas = (parentId: string | null, depth: number): React.ReactNode => {
+                                  const nodes = getTemplateChildren(parentId)
+                                  return nodes.map((f) => (
+                                    <div
+                                      key={f.id}
+                                      className={`template-builder-node ${templateSelectedFieldId === f.id ? 'active' : ''}`}
+                                      style={{ marginLeft: depth * 14 }}
+                                      draggable
+                                      onDragStart={() => setTemplateDragFieldId(f.id)}
+                                      onDragOver={e => e.preventDefault()}
+                                      onDrop={() => {
+                                        if (!templateDragFieldId || templateDragFieldId === f.id) return
+                                        setTemplateVisualFields(prev => {
+                                          const dragged = prev.find(x => x.id === templateDragFieldId)
+                                          const target = prev.find(x => x.id === f.id)
+                                          if (!dragged || !target) return prev
+                                          if ((dragged.parentId || null) !== (target.parentId || null)) return prev
+                                          return prev.map(x => {
+                                            if (x.id === dragged.id) return { ...x, order: target.order }
+                                            if (x.id === target.id) return { ...x, order: dragged.order }
+                                            return x
+                                          })
+                                        })
+                                        setTemplateDragFieldId(null)
+                                      }}
+                                      onDragEnd={() => setTemplateDragFieldId(null)}
+                                      onClick={() => setTemplateSelectedFieldId(f.id)}
+                                    >
+                                      <div className="template-builder-node-header">
+                                        <span><strong>{f.label || '(unnamed)'}</strong> <span className="muted">[{f.type}]</span></span>
+                                        <div className="flex-gap-6">
+                                          <button onClick={(e) => { e.stopPropagation(); moveTemplateField(f.id, -1) }}>↑</button>
+                                          <button onClick={(e) => { e.stopPropagation(); moveTemplateField(f.id, 1) }}>↓</button>
+                                          <button onClick={(e) => { e.stopPropagation(); removeTemplateField(f.id) }}>Remove</button>
                                         </div>
                                       </div>
-                                      <div className="flex-gap-6">
-                                        <button onClick={() => moveTemplateField(f.id, -1)}>↑</button>
-                                        <button onClick={() => moveTemplateField(f.id, 1)}>↓</button>
-                                        <button onClick={() => removeTemplateField(f.id)}>Remove</button>
-                                      </div>
+                                      {f.type === 'div' ? (
+                                        <div className="actions mt-6">
+                                          <button onClick={(e) => { e.stopPropagation(); addTemplateField(f.id, 'text') }}>+ Text</button>
+                                          <button onClick={(e) => { e.stopPropagation(); addTemplateField(f.id, 'richtext') }}>+ Rich Text</button>
+                                          <button onClick={(e) => { e.stopPropagation(); addTemplateField(f.id, 'textarea') }}>+ Long Text</button>
+                                          <button onClick={(e) => { e.stopPropagation(); addTemplateField(f.id, 'image') }}>+ Image</button>
+                                          <button onClick={(e) => { e.stopPropagation(); addTemplateField(f.id, 'attachment') }}>+ Attachment</button>
+                                          <button onClick={(e) => { e.stopPropagation(); addTemplateField(f.id, 'div') }}>+ Group</button>
+                                        </div>
+                                      ) : null}
+                                      {renderBuilderCanvas(f.id, depth + 1)}
                                     </div>
-                                    {f.type === 'div' ? (
-                                      <div className="actions" style={{ marginLeft: 8 }}>
-                                        <button onClick={() => addTemplateField(f.id, 'text')}>+ Text</button>
-                                        <button onClick={() => addTemplateField(f.id, 'richtext')}>+ Rich Text</button>
-                                        <button onClick={() => addTemplateField(f.id, 'textarea')}>+ Long Text</button>
-                                        <button onClick={() => addTemplateField(f.id, 'image')}>+ Image</button>
-                                        <button onClick={() => addTemplateField(f.id, 'attachment')}>+ Attachment</button>
-                                        <button onClick={() => addTemplateField(f.id, 'div')}>+ Div</button>
-                                      </div>
-                                    ) : null}
-                                    {renderFieldEditor(f.id, depth + 1)}
+                                  ))
+                                }
+                                return renderBuilderCanvas(null, 0)
+                              })()
+                            )}
+                          </div>
+                          <div className="template-builder-props">
+                            {(() => {
+                              const selected = templateVisualFields.find(f => f.id === templateSelectedFieldId) || null
+                              if (!selected) return <div className="muted">Select a field on the canvas to edit its properties.</div>
+                              return (
+                                <div className="grid-gap-8">
+                                  <div className="box-title">Field Properties</div>
+                                  <label>
+                                    <div>Type</div>
+                                    <select
+                                      value={selected.type}
+                                      onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === selected.id ? { ...x, type: e.target.value as any } : x))}
+                                      className="input-100"
+                                    >
+                                      <option value="text">Text</option>
+                                      <option value="richtext">Rich text</option>
+                                      <option value="textarea">Long text</option>
+                                      <option value="image">Image</option>
+                                      <option value="attachment">Attachment</option>
+                                      <option value="div">Div / Group</option>
+                                    </select>
+                                  </label>
+                                  <label>
+                                    <div>{selected.type === 'div' ? 'Group name' : 'Label'}</div>
+                                    <input
+                                      value={selected.label}
+                                      onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === selected.id ? { ...x, label: e.target.value } : x))}
+                                      className="input-100"
+                                    />
+                                  </label>
+                                  {selected.type !== 'div' ? (
+                                    <label>
+                                      <div>Placeholder</div>
+                                      <input
+                                        value={selected.placeholder}
+                                        onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === selected.id ? { ...x, placeholder: e.target.value } : x))}
+                                        className="input-100"
+                                      />
+                                    </label>
+                                  ) : null}
+                                  <label>
+                                    <div>Class name</div>
+                                    <input
+                                      value={selected.className}
+                                      onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === selected.id ? { ...x, className: e.target.value } : x))}
+                                      className="input-100"
+                                    />
+                                  </label>
+                                  {selected.type !== 'div' ? (
+                                    <label className="items-center flex-gap-6">
+                                      <input
+                                        type="checkbox"
+                                        checked={selected.required}
+                                        onChange={e => setTemplateVisualFields(prev => prev.map(x => x.id === selected.id ? { ...x, required: e.target.checked } : x))}
+                                      />
+                                      Required
+                                    </label>
+                                  ) : null}
+                                  <div className="actions">
+                                    <button onClick={() => removeTemplateField(selected.id)}>Delete field</button>
                                   </div>
-                                ))
-                              }
-                              return renderFieldEditor(null, 0)
+                                </div>
+                              )
                             })()}
                           </div>
-                        )}
+                        </div>
                       </div>
 
                       <div className="boxed">
@@ -6163,15 +6277,23 @@ span[data-tag] {
                                   <textarea className="new-child-description input-100 mt-10" value={block.rawCss} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, rawCss: e.target.value } : b))} />
                                 ) : (
                                   <div className="grid-gap-8 mt-10">
+                                    <datalist id="css-property-options">
+                                      {CSS_PROPERTY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                                    </datalist>
                                     {block.declarations.map((d) => (
                                       <div key={d.id} className="flex-row">
-                                        <select value={d.property} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: b.declarations.map(x => x.id === d.id ? { ...x, property: e.target.value } : x) } : b))}>
-                                          {['font-family','font-size','font-weight','color','background-color','border','border-radius','padding','margin','display','justify-content','align-items','width','height','max-width','text-align','line-height','gap','grid-template-columns'].map(p => <option key={p} value={p}>{p}</option>)}
-                                        </select>
+                                        <input
+                                          className="flex-1"
+                                          list="css-property-options"
+                                          placeholder="property (e.g. margin-top or custom-prop)"
+                                          value={d.property}
+                                          onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: b.declarations.map(x => x.id === d.id ? { ...x, property: e.target.value } : x) } : b))}
+                                        />
                                         <input className="flex-1" placeholder="value" value={d.value} onChange={e => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: b.declarations.map(x => x.id === d.id ? { ...x, value: e.target.value } : x) } : b))} />
                                         <button onClick={() => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: b.declarations.filter(x => x.id !== d.id) } : b))}>-</button>
                                       </div>
                                     ))}
+                                    <div className="muted">Use the property box as searchable/custom input. You can type any CSS property name.</div>
                                     <div><button onClick={() => setTemplateStyleBlocks(prev => prev.map(b => b.id === block.id ? { ...b, declarations: [...b.declarations, createStyleDecl()] } : b))}>Add style</button></div>
                                   </div>
                                 )}
@@ -6192,6 +6314,9 @@ span[data-tag] {
                       <div>Style CSS (optional)</div>
                       <textarea value={templateCssInput} onChange={e => setTemplateCssInput(e.target.value)} className="new-child-description input-100" />
                     </label>
+                  ) : null}
+                  {templateRawMode && templateRawError ? (
+                    <div className="text-tomato">{templateRawError}</div>
                   ) : null}
                   <div className="muted">
                     {templateRawMode

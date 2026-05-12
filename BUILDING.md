@@ -90,6 +90,13 @@ From `game_docs/`:
 - **Dev app not loading:** verify Node version and that `npm install` completed in `game_docs/`.
 - **TypeScript strict null errors in `Editor.tsx`:** some known legacy nullability errors can fail `tsc` until they are cleaned up.
 
+## Editor POC Route (TipTap)
+
+- Phase-1 introduces an experimental editor route for internal testing:
+  - `#/editor-next/<gameId>`
+- This route is intentionally isolated from the main editor route (`#/editor/<gameId>`).
+- Purpose: evaluate alternate editor internals safely before any full migration.
+
 ## CI behavior (for reference)
 
 - Build workflow runs on push to `main` across macOS/Ubuntu/Windows.

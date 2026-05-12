@@ -31,6 +31,7 @@ flowchart LR
 2. **Renderer routing**
    - `App.tsx` uses `location.hash`:
      - `#/editor/<gameId>` -> `Editor`
+     - `#/editor-next/<gameId>` -> `EditorNext` (TipTap POC route)
      - `#/map?...` -> `PlaceMap`
      - otherwise -> `ProjectSetup`
 3. **Main process boot**
@@ -49,6 +50,7 @@ flowchart LR
 ## Window Model
 - **Main window:** campaign setup/list management.
 - **Editor window:** dedicated route for campaign editing (`#/editor/<id>`).
+- **Editor POC window:** optional experimental route for TipTap internals (`#/editor-next/<id>`).
 - **Map window:** place graph view (`#/map?gameId=...`).
 - Main process persists and restores window geometry in `settings` (e.g., `ui.mainWindow`, `ui.mapWindow`).
 

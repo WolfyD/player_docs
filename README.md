@@ -51,8 +51,14 @@ The application provides a hierarchical, linkable documentation system that allo
 - Define reusable templates with token fields (for example `{%text:"Name"}`)
 - Insert templates into object descriptions from context menu or command palette
 - Edit template instances inline via card edit actions
-- Manage templates from Settings, including advanced raw-source editing mode
+- Manage templates from Settings with a visual builder (palette, canvas, properties, preview)
+- Advanced raw-source mode is still available for power users, with explicit visual/raw conversion
+- Style editing now supports searchable CSS property input and custom property names
 - Includes built-in examples for a DnD-style stat block and a flexible callout card
+
+**Editor Engine POC**
+- Includes an isolated TipTap-based editor proof-of-concept window (`#/editor-next/<gameId>`)
+- Lets you evaluate alternate editor internals without replacing the current production editor
 
 ### Advanced Features
 
