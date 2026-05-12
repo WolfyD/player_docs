@@ -4,6 +4,7 @@
 - **Read this when:** you need the system-level picture (process boundaries, startup lifecycle, and runtime flow).
 - **Primary source files:** `game_docs/src/main.tsx`, `game_docs/src/App.tsx`, `game_docs/electron/preload/index.ts`, `game_docs/electron/main/index.ts`, `game_docs/electron/main/config.ts`, `game_docs/electron/main/update.ts`.
 - **One-line model:** PlayerDocs is an Electron desktop app where a React renderer drives UX, while the Electron main process owns persistence, filesystem access, and all privileged operations through `gamedocs:*` IPC handlers.
+- **Frontend module layout:** See [docs/editor-frontend-structure.md](editor-frontend-structure.md) for the full file tree of the modular editor refactor (`Editor.tsx` + `editor/` sub-modules).
 
 ## General Idea
 PlayerDocs is a campaign/world documentation tool focused on linked knowledge:

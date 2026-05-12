@@ -3,7 +3,7 @@
 ## LLM Quick Context
 - **Read this when:** you need exact editor behavior, state flow, and interaction rules.
 - **Primary source files:** `game_docs/src/components/Editor.tsx`, `game_docs/src/components/editor.css`, `game_docs/src/components/Confirm.tsx`, `game_docs/src/components/ShortcutInput.tsx`.
-- **Core reality:** `Editor.tsx` is a large feature hub and acts as both view layer and interaction orchestrator.
+- **Core reality:** `Editor.tsx` is a large feature hub and acts as both view layer and interaction orchestrator. The bulk of its logic has been extracted into focused sub-modules; see [docs/editor-frontend-structure.md](editor-frontend-structure.md) for the full breakdown.
 
 ## What the Editor Currently Does
 - Loads campaign/root/current children and keeps a hierarchical navigator.
